@@ -57,7 +57,7 @@ PERCENT_METRICS = {
 }
 
 CURRENCY_METRICS = {
-    "객단가", "CPM", "CPC", "CPUV", "광고비", "거래액", "거래액(총)",
+    "객단가", "CPM", "CPC", "CPUV", "광고비", "거래액(총)",
     "객단가(총)", "가입CPA", "첫구매CPA", "첫구매거래액", "신규거래액", "윈백거래액",
 }
 
@@ -105,6 +105,8 @@ def aggregate_by(df: pd.DataFrame, group_col: str) -> pd.DataFrame:
 def format_value(metric: str, value: float) -> str:
     if pd.isna(value):
         return "-"
+    if metric == "ROAS":
+        return f"{value * 100:,.0f}%"
     if metric in PERCENT_METRICS:
         return f"{value * 100:,.2f}%"
     if metric in MULT_METRICS:
@@ -129,7 +131,7 @@ def format_million(value: float) -> str:
 def format_roas_percent(value: float) -> str:
     if pd.isna(value):
         return "-"
-    return f"{value * 100:,.1f}%"
+    return f"{value * 100:,.0f}%"
 
 
 # ── 조회단위(일별/주별/월별/월마감) 기준 기간 산출 ─────────────────────
@@ -170,6 +172,35 @@ def period_label(start: pd.Timestamp, end: pd.Timestamp, unit: str) -> str:
         return f"{start.date()} ~ {end.date()} (주)"
     suffix = " · 월마감" if unit == "월마감" else ""
     return f"{start.year}년 {start.month}월{suffix}"
+
+
+def days_in_period(start: pd.Timestamp, end: pd.Timestamp) -> int:
+    return (end - start).days + 1
+
+
+def build_ref_options(unit: str, min_date, max_date):
+    """조회단위가 주별/월별/월마감일 때, 기준일자를 날짜 대신 '주/월' 단위로 고를 수 있도록
+    선택지 리스트 [(라벨, 대표날짜), ...] 를 최신순으로 반환한다. (일별은 date_input 그대로 사용)"""
+    options = []
+    max_ts = pd.Timestamp(max_date)
+
+    if unit == "주별":
+        cur = pd.Timestamp(min_date) - pd.Timedelta(days=pd.Timestamp(min_date).weekday())
+        while cur <= max_ts:
+            wk_end = min(cur + pd.Timedelta(days=6), max_ts)
+            label = f"{cur.date()} ~ {wk_end.date()} (주)"
+            options.append((label, cur.date()))
+            cur += pd.Timedelta(days=7)
+    else:  # 월별 / 월마감
+        cur = pd.Timestamp(min_date).replace(day=1)
+        while cur <= max_ts:
+            month_end = cur + pd.offsets.MonthEnd(0)
+            if unit == "월마감" and max_ts.normalize() < month_end.normalize():
+                break  # 아직 마감되지 않은 진행 중인 달 이후는 선택지에서 제외
+            options.append((f"{cur.year}년 {cur.month}월", cur.date()))
+            cur += pd.DateOffset(months=1)
+
+    return options[::-1]  # 최신이 먼저 나오도록
 
 
 def build_2026_buckets(df: pd.DataFrame, unit: str):
