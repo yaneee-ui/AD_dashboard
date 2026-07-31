@@ -9,9 +9,12 @@ from utils import (
     yoy_same_weekday_dates, RATIO_DEFS, BASE_METRICS,
     format_million, format_roas_percent, UNIT_OPTIONS,
     get_period_bounds, period_label, build_2026_buckets, bucket_yoy_series,
-    get_comparison_periods,
+    get_comparison_periods, build_ref_options, days_in_period,
 )
-from styles import inject_css, render_kpi_cards, render_page_header, render_section_title, pct_change
+from styles import (
+    inject_css, render_kpi_cards, render_page_header, render_section_title,
+    pct_change, format_delta_text, delta_cell_style,
+)
 
 st.set_page_config(page_title="쇼핑검색광고 실적 대시보드", layout="wide")
 inject_css()
@@ -47,17 +50,29 @@ def to_excel_bytes(data: pd.DataFrame) -> bytes:
 # PAGE 1: 쇼핑검색광고 실적
 # ════════════════════════════════════════════════════════════════
 if menu == "쇼핑검색광고 실적":
-    # ── 기준일자 (사이드바 조회단위에 맞춰 기간 산출) ──
-    ref_date = st.date_input("기준일자", value=MAX_DATE,
-                              min_value=MIN_DATE, max_value=MAX_DATE)
+    # ── 기준일자: 조회단위에 맞춰 일/주/월 단위로 선택 ──
+    c_ref, c_mode = st.columns([2.5, 1.5])
+    with c_ref:
+        if unit == "일별":
+            ref_date = st.date_input("기준일자", value=MAX_DATE,
+                                      min_value=MIN_DATE, max_value=MAX_DATE)
+        else:
+            ref_options = build_ref_options(unit, MIN_DATE, MAX_DATE)
+            label_to_date = dict(ref_options)
+            picker_label = "기준 주차" if unit == "주별" else "기준 월"
+            chosen = st.selectbox(picker_label, list(label_to_date.keys()), index=0)
+            ref_date = label_to_date[chosen]
+    with c_mode:
+        mode = st.radio("표시방식", ["누계", "일평균"], horizontal=True)
 
     start_ts, end_ts = get_period_bounds(ref_date, unit, MIN_DATE, MAX_DATE)
     cur_label = period_label(start_ts, end_ts, unit)
+    cur_days = days_in_period(start_ts, end_ts)
 
     render_page_header(
         eyebrow="쇼핑검색광고 · 네이버",
         title=f"쇼핑검색광고 실적 — {cur_label}",
-        sub=f"조회단위: {unit}  ·  집계기간: {start_ts.date()} ~ {end_ts.date()}",
+        sub=f"조회단위: {unit}  ·  표시방식: {mode}  ·  집계기간: {start_ts.date()} ~ {end_ts.date()} ({cur_days}일)",
     )
 
     mask = (df["date"] >= start_ts) & (df["date"] <= end_ts)
@@ -69,74 +84,80 @@ if menu == "쇼핑검색광고 실적":
 
     agg = aggregate(view)
 
+    def scaled(metric, value, days):
+        """누계/일평균 모드 적용: base(합산) metric만 일수로 나누고, 비율지표는 그대로 둔다."""
+        if value is None:
+            return None
+        if mode == "일평균" and metric in BASE_METRICS and days:
+            return value / days
+        return value
+
     # ── 비교기간 (전일/전주/전월비 + 전년비) 산출 ──
     comp_periods = get_comparison_periods(ref_date, unit, MIN_DATE, MAX_DATE)
     comp_aggs = {}
+    comp_days = {}
     for label, (p_start, p_end) in comp_periods.items():
         p_view = df[(df["date"] >= p_start) & (df["date"] <= p_end)]
         comp_aggs[label] = aggregate(p_view) if not p_view.empty else None
+        comp_days[label] = days_in_period(p_start, p_end)
 
     def deltas_for(metric):
         out = []
+        cur_v = scaled(metric, agg[metric], cur_days)
         for label, p_agg in comp_aggs.items():
-            prev_val = p_agg[metric] if p_agg else None
-            out.append((label, pct_change(agg[metric], prev_val)))
+            prev_raw = p_agg[metric] if p_agg else None
+            prev_v = scaled(metric, prev_raw, comp_days[label])
+            out.append((label, pct_change(cur_v, prev_v)))
         return out
 
     # ── KPI 카드 ──
     kpi_metrics = ["거래액", "광고비", "ROAS", "UV", "결제고객수", "첫구매수"]
     cards = []
     for m in kpi_metrics:
+        display_val = scaled(m, agg[m], cur_days)
+        label_txt = m if m not in BASE_METRICS else f"{m} · {mode}"
         if m in ("거래액", "광고비"):
-            value_str = format_million(agg[m])
+            value_str = format_million(display_val)
         elif m == "ROAS":
-            value_str = format_roas_percent(agg[m])
+            value_str = format_roas_percent(display_val)
         else:
-            value_str = format_value(m, agg[m])
-        cards.append({"label": m, "value": value_str, "deltas": deltas_for(m)})
+            value_str = format_value(m, display_val)
+        cards.append({"label": label_txt, "value": value_str, "deltas": deltas_for(m)})
 
     render_kpi_cards(cards)
     st.markdown(
-        '<div class="kpi-footnote">※ 거래액·광고비는 기간 합계 기준(백만원)이며, '
-        'ROAS·CR·CTR 등 비율지표는 합산이 아닌 재산정한 값입니다.</div>',
+        '<div class="kpi-footnote">※ 거래액·광고비·UV 등 수량·금액 지표는 선택한 '
+        f'표시방식({mode}) 기준이며, ROAS·CR·CTR 등 비율지표는 합산이 아닌 재산정한 값입니다.</div>',
         unsafe_allow_html=True,
     )
 
     # ── 실적요약 (직전기간 대비) 테이블 ──
     immediate_label = next(iter(comp_periods.keys()))
     prev_agg_for_table = comp_aggs.get(immediate_label)
+    prev_days_for_table = comp_days[immediate_label]
     prev_start, prev_end = comp_periods[immediate_label]
 
-    render_section_title(f"실적요약 · {immediate_label} 비교")
+    render_section_title(f"실적요약 · {immediate_label} 비교 ({mode})")
 
     summary_metrics = ["노출수", "클릭수", "CTR", "CR", "객단가", "결제고객수",
                        "CPC", "CPUV", "UV", "광고비", "거래액", "ROAS"]
     prev_col_name = period_label(prev_start, prev_end, unit)
     rows = []
     for m in summary_metrics:
-        cur_v = agg[m]
-        prev_v = prev_agg_for_table[m] if prev_agg_for_table else None
+        cur_v = scaled(m, agg[m], cur_days)
+        prev_raw = prev_agg_for_table[m] if prev_agg_for_table else None
+        prev_v = scaled(m, prev_raw, prev_days_for_table)
         delta = pct_change(cur_v, prev_v)
         rows.append({
             "지표": m,
             prev_col_name: format_value(m, prev_v) if prev_v is not None else "-",
             cur_label: format_value(m, cur_v),
-            f"{immediate_label}(%)": f"{delta:+.1f}%" if delta is not None else "-",
+            f"{immediate_label}(%)": format_delta_text(delta),
         })
     summary_df = pd.DataFrame(rows)
 
-    def _color_delta(val):
-        if isinstance(val, str) and val.endswith("%") and val not in ("-",):
-            try:
-                num = float(val.replace("%", "").replace("+", ""))
-                color = "#DC2626" if num > 0 else ("#2563EB" if num < 0 else "#64748B")
-                return f"color: {color}; font-weight: 600;"
-            except ValueError:
-                return ""
-        return ""
-
     st.dataframe(
-        summary_df.style.map(_color_delta, subset=[f"{immediate_label}(%)"]),
+        summary_df.style.map(delta_cell_style, subset=[f"{immediate_label}(%)"]),
         use_container_width=True, hide_index=True, height=460,
     )
 
@@ -233,13 +254,13 @@ else:
             )
 
             v_cur, v_prev = cur_agg[metric_choice2], prev_agg[metric_choice2]
-            delta_pct = ((v_cur - v_prev) / v_prev * 100) if v_prev else 0
+            delta_pct = pct_change(v_cur, v_prev)
 
             m1, m2, m3 = st.columns(3)
             m1.metric(f"올해 ({cur_start} ~ {cur_end})", format_value(metric_choice2, v_cur))
             m2.metric(f"전년 동일요일 ({prev_range.min().date()} ~ {prev_range.max().date()})",
                       format_value(metric_choice2, v_prev))
-            m3.metric("증감률", f"{delta_pct:+.1f}%")
+            m3.metric("증감률", format_delta_text(delta_pct))
 
             # 일자별 라인 비교 (순서상 매칭: n번째 날짜끼리)
             cur_sorted = cur_view.sort_values("date").reset_index(drop=True)
@@ -268,10 +289,14 @@ else:
                 "날짜(전년)": prev_sorted["date"][:n].dt.date,
                 "전년": prev_sorted[metric_choice2][:n],
             })
-            compare_table["증감률(%)"] = (
-                (compare_table["올해"] - compare_table["전년"]) / compare_table["전년"] * 100
-            ).round(1)
-            st.dataframe(compare_table, use_container_width=True, height=300)
+            compare_table["증감률(%)"] = [
+                pct_change(c, p) for c, p in zip(compare_table["올해"], compare_table["전년"])
+            ]
+            compare_table["증감률(%)"] = compare_table["증감률(%)"].apply(format_delta_text)
+            st.dataframe(
+                compare_table.style.map(delta_cell_style, subset=["증감률(%)"]),
+                use_container_width=True, height=300,
+            )
             st.download_button(
                 "📥 Excel 다운로드",
                 data=to_excel_bytes(compare_table),
@@ -317,10 +342,10 @@ else:
                     f"{year_cur}": [cur_m.loc[m, metric_choice3] for m in common_months],
                     f"{year_prev}": [prev_m.loc[m, metric_choice3] for m in common_months],
                 })
-                bar_df["YoY(%)"] = (
-                    (bar_df[f"{year_cur}"] - bar_df[f"{year_prev}"])
-                    / bar_df[f"{year_prev}"] * 100
-                ).round(1)
+                bar_df["YoY(%)"] = [
+                    pct_change(bar_df.loc[i, f"{year_cur}"], bar_df.loc[i, f"{year_prev}"])
+                    for i in bar_df.index
+                ]
 
                 fig3 = go.Figure()
                 fig3.add_trace(go.Bar(x=bar_df["월"], y=bar_df[f"{year_prev}"],
@@ -334,9 +359,11 @@ else:
                 )
                 st.plotly_chart(fig3, use_container_width=True)
 
+                display_bar_df = bar_df.copy()
+                display_bar_df["YoY(%)"] = display_bar_df["YoY(%)"].apply(format_delta_text)
                 st.dataframe(
-                    bar_df.style.format({f"{year_cur}": "{:,.1f}",
-                                          f"{year_prev}": "{:,.1f}"}),
+                    display_bar_df.style.format({f"{year_cur}": "{:,.1f}", f"{year_prev}": "{:,.1f}"})
+                                        .map(delta_cell_style, subset=["YoY(%)"]),
                     use_container_width=True,
                 )
                 st.download_button(
