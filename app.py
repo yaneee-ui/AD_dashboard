@@ -1,0 +1,286 @@
+import streamlit as st
+import pandas as pd
+import plotly.graph_objects as go
+from io import BytesIO
+from datetime import timedelta
+
+from utils import (
+    load_data, aggregate, aggregate_by, format_value,
+    yoy_same_weekday_dates, RATIO_DEFS, BASE_METRICS,
+)
+
+st.set_page_config(page_title="쇼핑검색광고 실적 대시보드", layout="wide")
+
+# ── 데이터 로드 ────────────────────────────────────────────────────
+df = load_data()
+MIN_DATE, MAX_DATE = df["date"].min().date(), df["date"].max().date()
+
+ALL_METRICS = ["노출수", "클릭수", "UV", "광고비"] + list(RATIO_DEFS.keys()) + [
+    "거래액", "거래액(총)", "결제고객수", "결제고객수(총)",
+    "가입수", "첫구매수", "첫구매거래액", "신규고객수", "신규거래액",
+]
+ALL_METRICS = list(dict.fromkeys(ALL_METRICS))  # 중복 제거, 순서 유지
+
+# ── 사이드바 메뉴 ──────────────────────────────────────────────────
+st.sidebar.title("📊 쇼핑검색광고 대시보드")
+menu = st.sidebar.radio("메뉴", ["쇼핑검색광고 실적", "전년비교"])
+st.sidebar.caption(f"데이터 기간: {MIN_DATE} ~ {MAX_DATE}")
+
+
+def to_excel_bytes(data: pd.DataFrame) -> bytes:
+    buf = BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        data.to_excel(writer, index=False, sheet_name="data")
+    return buf.getvalue()
+
+
+# ════════════════════════════════════════════════════════════════
+# PAGE 1: 쇼핑검색광고 실적
+# ════════════════════════════════════════════════════════════════
+if menu == "쇼핑검색광고 실적":
+    st.title("쇼핑검색광고 실적")
+
+    # ── 기간 필터 ──
+    c1, c2, c3 = st.columns([2, 2, 3])
+    with c1:
+        start_date = st.date_input("시작일", value=MAX_DATE - timedelta(days=29),
+                                    min_value=MIN_DATE, max_value=MAX_DATE)
+    with c2:
+        end_date = st.date_input("종료일", value=MAX_DATE,
+                                  min_value=MIN_DATE, max_value=MAX_DATE)
+    with c3:
+        quick = st.radio("빠른 선택", ["직접선택", "최근7일", "최근30일", "이번달", "전체"],
+                          horizontal=True, label_visibility="collapsed")
+
+    if quick == "최근7일":
+        start_date, end_date = MAX_DATE - timedelta(days=6), MAX_DATE
+    elif quick == "최근30일":
+        start_date, end_date = MAX_DATE - timedelta(days=29), MAX_DATE
+    elif quick == "이번달":
+        start_date = MAX_DATE.replace(day=1)
+        end_date = MAX_DATE
+    elif quick == "전체":
+        start_date, end_date = MIN_DATE, MAX_DATE
+
+    if start_date > end_date:
+        st.error("시작일이 종료일보다 늦을 수 없습니다.")
+        st.stop()
+
+    mask = (df["date"].dt.date >= start_date) & (df["date"].dt.date <= end_date)
+    view = df.loc[mask].copy()
+
+    if view.empty:
+        st.warning("선택한 기간에 데이터가 없습니다.")
+        st.stop()
+
+    agg = aggregate(view)
+
+    st.subheader("핵심 지표 요약")
+    kpi_metrics = ["UV", "거래액", "광고비", "ROAS", "CR", "CTR"]
+    cols = st.columns(len(kpi_metrics))
+    for col, m in zip(cols, kpi_metrics):
+        col.metric(m, format_value(m, agg[m]))
+
+    kpi_metrics2 = ["신규거래액", "신규비중", "첫구매수", "첫구매비중", "가입수", "가입률"]
+    cols2 = st.columns(len(kpi_metrics2))
+    for col, m in zip(cols2, kpi_metrics2):
+        col.metric(m, format_value(m, agg[m]))
+
+    st.divider()
+
+    # ── 추이 차트 ──
+    st.subheader("일자별 추이")
+    metric_choice = st.selectbox("지표 선택", ALL_METRICS,
+                                  index=ALL_METRICS.index("거래액"))
+
+    trend = view[["date", metric_choice]].sort_values("date")
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=trend["date"], y=trend[metric_choice],
+        mode="lines+markers", name=metric_choice,
+        line=dict(width=2),
+    ))
+    fig.update_layout(
+        height=420, margin=dict(t=20, b=20, l=10, r=10),
+        yaxis_title=metric_choice, xaxis_title=None,
+        hovermode="x unified",
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.divider()
+
+    # ── 데이터 테이블 & 다운로드 ──
+    st.subheader("일자별 데이터")
+    display_cols = ["date"] + ALL_METRICS
+    display_df = view[display_cols].sort_values("date", ascending=False)
+    st.dataframe(display_df, use_container_width=True, height=350)
+
+    st.download_button(
+        "📥 Excel 다운로드",
+        data=to_excel_bytes(display_df),
+        file_name=f"쇼핑검색광고_실적_{start_date}_{end_date}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
+# ════════════════════════════════════════════════════════════════
+# PAGE 2: 전년비교
+# ════════════════════════════════════════════════════════════════
+else:
+    st.title("전년비교")
+    tab1, tab2 = st.tabs(["일자별 YoY (전년 동일 요일)", "월별 누적 YoY"])
+
+    # ── TAB 1: 일자별 YoY ──
+    with tab1:
+        st.caption("선택한 기간을 기준으로, 전년 동일 요일(364일 전)과 비교합니다.")
+
+        c1, c2 = st.columns(2)
+        with c1:
+            cur_start = st.date_input(
+                "비교 시작일", value=MAX_DATE - timedelta(days=6),
+                min_value=MIN_DATE + timedelta(days=364), max_value=MAX_DATE,
+                key="yoy_start",
+            )
+        with c2:
+            cur_end = st.date_input(
+                "비교 종료일", value=MAX_DATE,
+                min_value=MIN_DATE + timedelta(days=364), max_value=MAX_DATE,
+                key="yoy_end",
+            )
+
+        if cur_start > cur_end:
+            st.error("시작일이 종료일보다 늦을 수 없습니다.")
+            st.stop()
+
+        cur_range = pd.date_range(cur_start, cur_end, freq="D")
+        prev_range = yoy_same_weekday_dates(pd.Series(cur_range))
+
+        cur_view = df[df["date"].isin(cur_range)].copy()
+        prev_view = df[df["date"].isin(prev_range)].copy()
+
+        if prev_view.empty:
+            st.warning("전년 동일 요일에 해당하는 데이터가 없습니다. (데이터 시작일 이전)")
+        else:
+            cur_agg = aggregate(cur_view)
+            prev_agg = aggregate(prev_view)
+
+            metric_choice2 = st.selectbox(
+                "지표 선택", ["UV", "거래액", "광고비", "ROAS", "CR", "CTR",
+                             "신규거래액", "첫구매수", "가입수"],
+                key="yoy_metric",
+            )
+
+            v_cur, v_prev = cur_agg[metric_choice2], prev_agg[metric_choice2]
+            delta_pct = ((v_cur - v_prev) / v_prev * 100) if v_prev else 0
+
+            m1, m2, m3 = st.columns(3)
+            m1.metric(f"올해 ({cur_start} ~ {cur_end})", format_value(metric_choice2, v_cur))
+            m2.metric(f"전년 동일요일 ({prev_range.min().date()} ~ {prev_range.max().date()})",
+                      format_value(metric_choice2, v_prev))
+            m3.metric("증감률", f"{delta_pct:+.1f}%")
+
+            # 일자별 라인 비교 (순서상 매칭: n번째 날짜끼리)
+            cur_sorted = cur_view.sort_values("date").reset_index(drop=True)
+            prev_sorted = prev_view.sort_values("date").reset_index(drop=True)
+            n = min(len(cur_sorted), len(prev_sorted))
+
+            fig2 = go.Figure()
+            fig2.add_trace(go.Scatter(
+                x=cur_sorted["date"][:n], y=cur_sorted[metric_choice2][:n],
+                mode="lines+markers", name="올해",
+            ))
+            fig2.add_trace(go.Scatter(
+                x=cur_sorted["date"][:n], y=prev_sorted[metric_choice2][:n],
+                mode="lines+markers", name="전년(동일요일)",
+                line=dict(dash="dash"),
+            ))
+            fig2.update_layout(
+                height=420, margin=dict(t=20, b=20, l=10, r=10),
+                yaxis_title=metric_choice2, hovermode="x unified",
+            )
+            st.plotly_chart(fig2, use_container_width=True)
+
+            compare_table = pd.DataFrame({
+                "날짜(올해)": cur_sorted["date"][:n].dt.date,
+                "올해": cur_sorted[metric_choice2][:n],
+                "날짜(전년)": prev_sorted["date"][:n].dt.date,
+                "전년": prev_sorted[metric_choice2][:n],
+            })
+            compare_table["증감률(%)"] = (
+                (compare_table["올해"] - compare_table["전년"]) / compare_table["전년"] * 100
+            ).round(1)
+            st.dataframe(compare_table, use_container_width=True, height=300)
+            st.download_button(
+                "📥 Excel 다운로드",
+                data=to_excel_bytes(compare_table),
+                file_name=f"일자별YoY_{cur_start}_{cur_end}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="dl_yoy_daily",
+            )
+
+    # ── TAB 2: 월별 누적 YoY ──
+    with tab2:
+        st.caption("월 단위로 올해와 전년 실적을 비교합니다. (겹치는 월만 표시)")
+
+        monthly = aggregate_by(df.assign(ym=df["date"].dt.to_period("M")), "ym")
+        monthly["연도"] = monthly["ym"].dt.year
+        monthly["월"] = monthly["ym"].dt.month
+
+        years = sorted(monthly["연도"].unique())
+        if len(years) < 2:
+            st.warning("비교할 연도 데이터가 충분하지 않습니다.")
+        else:
+            c1, c2 = st.columns(2)
+            with c1:
+                year_cur = st.selectbox("비교 연도", years[::-1], index=0)
+            with c2:
+                year_prev = st.selectbox("기준(전년) 연도", years[::-1],
+                                          index=min(1, len(years) - 1))
+
+            metric_choice3 = st.selectbox(
+                "지표 선택", ["UV", "거래액", "광고비", "ROAS", "CR", "CTR",
+                             "신규거래액", "첫구매수", "가입수"],
+                key="yoy_month_metric",
+            )
+
+            cur_m = monthly[monthly["연도"] == year_cur].set_index("월")
+            prev_m = monthly[monthly["연도"] == year_prev].set_index("월")
+            common_months = sorted(set(cur_m.index) & set(prev_m.index))
+
+            if not common_months:
+                st.warning("두 연도 간 겹치는 월이 없습니다.")
+            else:
+                bar_df = pd.DataFrame({
+                    "월": [f"{m}월" for m in common_months],
+                    f"{year_cur}": [cur_m.loc[m, metric_choice3] for m in common_months],
+                    f"{year_prev}": [prev_m.loc[m, metric_choice3] for m in common_months],
+                })
+                bar_df["YoY(%)"] = (
+                    (bar_df[f"{year_cur}"] - bar_df[f"{year_prev}"])
+                    / bar_df[f"{year_prev}"] * 100
+                ).round(1)
+
+                fig3 = go.Figure()
+                fig3.add_trace(go.Bar(x=bar_df["월"], y=bar_df[f"{year_prev}"],
+                                       name=f"{year_prev}", marker_color="lightgray"))
+                fig3.add_trace(go.Bar(x=bar_df["월"], y=bar_df[f"{year_cur}"],
+                                       name=f"{year_cur}", marker_color="#4C78A8"))
+                fig3.update_layout(
+                    barmode="group", height=440,
+                    margin=dict(t=20, b=20, l=10, r=10),
+                    yaxis_title=metric_choice3, hovermode="x unified",
+                )
+                st.plotly_chart(fig3, use_container_width=True)
+
+                st.dataframe(
+                    bar_df.style.format({f"{year_cur}": "{:,.1f}",
+                                          f"{year_prev}": "{:,.1f}"}),
+                    use_container_width=True,
+                )
+                st.download_button(
+                    "📥 Excel 다운로드",
+                    data=to_excel_bytes(bar_df),
+                    file_name=f"월별YoY_{year_cur}_vs_{year_prev}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="dl_yoy_month",
+                )
