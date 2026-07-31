@@ -18,6 +18,14 @@ _CANDIDATE_PATHS = [
 ]
 DATA_PATH = next((p for p in _CANDIDATE_PATHS if os.path.exists(p)), _CANDIDATE_PATHS[0])
 
+_CATEGORY_CANDIDATE_PATHS = [
+    os.path.join(BASE_DIR, "data", "category_daily.csv"),
+    os.path.join(BASE_DIR, "category_daily.csv"),
+]
+CATEGORY_DATA_PATH = next(
+    (p for p in _CATEGORY_CANDIDATE_PATHS if os.path.exists(p)), _CATEGORY_CANDIDATE_PATHS[0]
+)
+
 # ── 합산 가능한 base metric (분자/분모 원천값) ─────────────────────────
 BASE_METRICS = [
     "노출수", "클릭수", "UV", "광고비",
@@ -231,16 +239,28 @@ def build_2026_buckets(df: pd.DataFrame, unit: str):
     return buckets
 
 
-def bucket_yoy_series(df: pd.DataFrame, buckets, metric: str):
-    """buckets: build_2026_buckets() 결과. (labels, 올해값, 전년값) 튜플 반환."""
+def bucket_yoy_series(df: pd.DataFrame, buckets, metric: str, mode: str = "누계"):
+    """buckets: build_2026_buckets() 결과. (labels, 올해값, 전년값) 튜플 반환.
+    mode="일평균"이면 base(합산) metric만 해당 버킷의 일수로 나눠 일평균으로 환산한다."""
     labels, cur_vals, prev_vals = [], [], []
+    is_base = metric in BASE_METRICS
     for label, dates in buckets:
+        n_days = len(dates)
         cur = df[df["date"].isin(dates)]
         prev_dates = [pd.Timestamp(d) - pd.Timedelta(days=364) for d in dates]
         prev = df[df["date"].isin(prev_dates)]
         labels.append(label)
-        cur_vals.append(aggregate(cur)[metric] if not cur.empty else 0)
-        prev_vals.append(aggregate(prev)[metric] if not prev.empty else None)
+
+        cur_val = aggregate(cur)[metric] if not cur.empty else 0
+        prev_val = aggregate(prev)[metric] if not prev.empty else None
+
+        if mode == "일평균" and is_base and n_days:
+            cur_val = cur_val / n_days
+            if prev_val is not None:
+                prev_val = prev_val / n_days
+
+        cur_vals.append(cur_val)
+        prev_vals.append(prev_val)
     return labels, cur_vals, prev_vals
 
 
@@ -272,3 +292,72 @@ def get_comparison_periods(ref_date, unit: str, min_date, max_date):
     periods["전년비"] = get_period_bounds(year_ref.date(), unit, min_date, max_date)
 
     return periods
+
+
+# ════════════════════════════════════════════════════════════════
+# 카테고리별 실적 (쇼핑검색광고 vs EP채널 비교)
+# ════════════════════════════════════════════════════════════════
+CATEGORY_BASE_METRICS = ["광고_거래액", "EP_거래액"]
+
+
+@st.cache_data
+def load_category_data():
+    if not os.path.exists(CATEGORY_DATA_PATH):
+        st.error(
+            f"카테고리 데이터 파일을 찾을 수 없습니다.\n\n"
+            f"다음 경로를 확인했습니다:\n"
+            + "\n".join(f"- `{p}`" for p in _CATEGORY_CANDIDATE_PATHS)
+            + f"\n\nGitHub 리포지토리에 `category_daily.csv`가 실제로 커밋되어 있는지 확인해주세요."
+        )
+        st.stop()
+    df = pd.read_csv(CATEGORY_DATA_PATH, parse_dates=["date"], encoding="utf-8-sig")
+    for c in ["광고_이월", "광고_입점", "광고_정상", "EP_이월", "EP_입점", "EP_정상"]:
+        if c not in df.columns:
+            df[c] = 0
+        df[c] = df[c].fillna(0)
+    df["광고_거래액"] = df["광고_이월"] + df["광고_입점"] + df["광고_정상"]
+    df["EP_거래액"] = df["EP_이월"] + df["EP_입점"] + df["EP_정상"]
+    df["연도"] = df["date"].dt.year
+    return df
+
+
+def aggregate_category(df: pd.DataFrame) -> dict:
+    """광고_거래액/EP_거래액 합산 + 광고비중(=광고/EP) 재계산."""
+    ad = df["광고_거래액"].sum()
+    ep = df["EP_거래액"].sum()
+    return {
+        "광고_거래액": ad,
+        "EP_거래액": ep,
+        "광고비중": (ad / ep) if ep else 0,
+    }
+
+
+def aggregate_category_by(df: pd.DataFrame, group_col: str = "category") -> pd.DataFrame:
+    """카테고리별로 광고_거래액/EP_거래액 합산 + 광고비중 계산한 DataFrame 반환."""
+    grouped = df.groupby(group_col)[CATEGORY_BASE_METRICS].sum().reset_index()
+    grouped["광고비중"] = grouped.apply(
+        lambda r: (r["광고_거래액"] / r["EP_거래액"]) if r["EP_거래액"] else 0, axis=1
+    )
+    return grouped
+
+
+def category_bucket_yoy_series(df: pd.DataFrame, buckets, value_col: str, mode: str = "누계"):
+    """build_2026_buckets() 결과를 그대로 받아, 카테고리 데이터의 특정 합산 컬럼(광고_거래액/EP_거래액)에
+    대해 (labels, 올해값, 전년값)을 반환한다. mode='일평균'이면 버킷 일수로 나눈다."""
+    labels, cur_vals, prev_vals = [], [], []
+    for label, dates in buckets:
+        n_days = len(dates)
+        cur_val = df.loc[df["date"].isin(dates), value_col].sum()
+        prev_dates = [pd.Timestamp(d) - pd.Timedelta(days=364) for d in dates]
+        prev_mask = df["date"].isin(prev_dates)
+        prev_val = df.loc[prev_mask, value_col].sum() if prev_mask.any() else None
+
+        if mode == "일평균" and n_days:
+            cur_val = cur_val / n_days
+            if prev_val is not None:
+                prev_val = prev_val / n_days
+
+        labels.append(label)
+        cur_vals.append(cur_val)
+        prev_vals.append(prev_val)
+    return labels, cur_vals, prev_vals
