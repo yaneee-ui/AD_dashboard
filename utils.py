@@ -4,10 +4,19 @@
 (EP 대시보드에서 확인된 것과 동일한 원칙)
 """
 
+import os
 import pandas as pd
 import streamlit as st
 
-DATA_PATH = "data/shopping_ad_daily.csv"
+# 실행 위치(cwd)에 의존하지 않도록, 이 파일 기준 절대경로로 지정.
+# GitHub 웹 UI로 드래그앤드롭 업로드하면 폴더 구조 없이 리포 루트에
+# 파일이 평평하게 올라가는 경우가 있어, data/ 폴더와 루트 둘 다 확인한다.
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+_CANDIDATE_PATHS = [
+    os.path.join(BASE_DIR, "data", "shopping_ad_daily.csv"),
+    os.path.join(BASE_DIR, "shopping_ad_daily.csv"),
+]
+DATA_PATH = next((p for p in _CANDIDATE_PATHS if os.path.exists(p)), _CANDIDATE_PATHS[0])
 
 # ── 합산 가능한 base metric (분자/분모 원천값) ─────────────────────────
 BASE_METRICS = [
@@ -57,6 +66,15 @@ MULT_METRICS = {"ROAS", "ROAS(총)"}
 
 @st.cache_data
 def load_data():
+    if not os.path.exists(DATA_PATH):
+        st.error(
+            f"데이터 파일을 찾을 수 없습니다.\n\n"
+            f"다음 경로를 확인했습니다:\n"
+            + "\n".join(f"- `{p}`" for p in _CANDIDATE_PATHS)
+            + f"\n\nGitHub 리포지토리에 `shopping_ad_daily.csv`가 실제로 커밋되어 있는지 "
+              f"확인해주세요."
+        )
+        st.stop()
     df = pd.read_csv(DATA_PATH, parse_dates=["date"], encoding="utf-8-sig")
     df["연도"] = df["date"].dt.year
     df["월"] = df["date"].dt.month
