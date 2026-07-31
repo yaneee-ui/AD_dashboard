@@ -299,6 +299,15 @@ def get_comparison_periods(ref_date, unit: str, min_date, max_date):
 # ════════════════════════════════════════════════════════════════
 CATEGORY_BASE_METRICS = ["광고_거래액", "EP_거래액"]
 
+# 거래유형(정상/이월/입점) 선택에 따라 어떤 원천 컬럼을 합산할지 매핑
+TXN_TYPE_OPTIONS = ["전체", "정상", "이월", "입점"]
+TXN_TYPE_COLS = {
+    "전체": ("광고_거래액", "EP_거래액"),
+    "정상": ("광고_정상", "EP_정상"),
+    "이월": ("광고_이월", "EP_이월"),
+    "입점": ("광고_입점", "EP_입점"),
+}
+
 
 @st.cache_data
 def load_category_data():
@@ -321,24 +330,30 @@ def load_category_data():
     return df
 
 
-def aggregate_category(df: pd.DataFrame) -> dict:
-    """광고_거래액/EP_거래액 합산 + 광고비중(=광고/EP) 재계산."""
-    ad = df["광고_거래액"].sum()
-    ep = df["EP_거래액"].sum()
+def aggregate_category(df: pd.DataFrame, txn_type: str = "전체") -> dict:
+    """선택한 거래유형(전체/정상/이월/입점) 기준으로 광고_거래액/EP_거래액을 합산."""
+    ad_col, ep_col = TXN_TYPE_COLS[txn_type]
     return {
-        "광고_거래액": ad,
-        "EP_거래액": ep,
-        "광고비중": (ad / ep) if ep else 0,
+        "광고_거래액": df[ad_col].sum(),
+        "EP_거래액": df[ep_col].sum(),
     }
 
 
-def aggregate_category_by(df: pd.DataFrame, group_col: str = "category") -> pd.DataFrame:
-    """카테고리별로 광고_거래액/EP_거래액 합산 + 광고비중 계산한 DataFrame 반환."""
-    grouped = df.groupby(group_col)[CATEGORY_BASE_METRICS].sum().reset_index()
-    grouped["광고비중"] = grouped.apply(
-        lambda r: (r["광고_거래액"] / r["EP_거래액"]) if r["EP_거래액"] else 0, axis=1
-    )
+def aggregate_category_by(df: pd.DataFrame, group_col: str = "category", txn_type: str = "전체") -> pd.DataFrame:
+    """카테고리별로 선택한 거래유형 기준 광고_거래액/EP_거래액을 합산한 DataFrame 반환."""
+    ad_col, ep_col = TXN_TYPE_COLS[txn_type]
+    grouped = df.groupby(group_col)[[ad_col, ep_col]].sum().reset_index()
+    grouped.columns = [group_col, "광고_거래액", "EP_거래액"]
     return grouped
+
+
+def category_txn_type_breakdown(df: pd.DataFrame) -> pd.DataFrame:
+    """선택된 기간(+카테고리 범위)에 대해 정상/이월/입점 유형별 광고·EP 거래액 구성을 반환."""
+    rows = []
+    for t in ["정상", "이월", "입점"]:
+        ad_col, ep_col = TXN_TYPE_COLS[t]
+        rows.append({"거래유형": t, "쇼핑검색광고 거래액": df[ad_col].sum(), "EP채널 거래액": df[ep_col].sum()})
+    return pd.DataFrame(rows)
 
 
 def category_bucket_yoy_series(df: pd.DataFrame, buckets, value_col: str, mode: str = "누계"):
@@ -361,3 +376,22 @@ def category_bucket_yoy_series(df: pd.DataFrame, buckets, value_col: str, mode: 
         cur_vals.append(cur_val)
         prev_vals.append(prev_val)
     return labels, cur_vals, prev_vals
+
+
+def category_dual_channel_series(df: pd.DataFrame, buckets, txn_type: str = "전체", mode: str = "누계"):
+    """동일 기간에 대해 쇼핑검색광고 거래액 흐름과 EP채널 거래액 흐름을 나란히 비교하기 위한
+    (labels, 광고값, EP값) 튜플 반환. 전년비 없이 같은 기간의 두 채널만 비교한다."""
+    ad_col, ep_col = TXN_TYPE_COLS[txn_type]
+    labels, ad_vals, ep_vals = [], [], []
+    for label, dates in buckets:
+        n_days = len(dates)
+        mask = df["date"].isin(dates)
+        ad_val = df.loc[mask, ad_col].sum()
+        ep_val = df.loc[mask, ep_col].sum()
+        if mode == "일평균" and n_days:
+            ad_val = ad_val / n_days
+            ep_val = ep_val / n_days
+        labels.append(label)
+        ad_vals.append(ad_val)
+        ep_vals.append(ep_val)
+    return labels, ad_vals, ep_vals
