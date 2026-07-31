@@ -117,3 +117,97 @@ def format_value(metric: str, value: float) -> str:
 def yoy_same_weekday_dates(target_dates: pd.Series) -> pd.Series:
     """전년 동일 요일 매칭을 위해 364일(52주) 전 날짜를 반환."""
     return target_dates - pd.Timedelta(days=364)
+
+
+# ── 카드 전용 포맷 (거래액/광고비: n.n백만, ROAS: %) ─────────────────
+def format_million(value: float) -> str:
+    if pd.isna(value):
+        return "-"
+    return f"{value / 1_000_000:,.1f}백만"
+
+
+def format_roas_percent(value: float) -> str:
+    if pd.isna(value):
+        return "-"
+    return f"{value * 100:,.1f}%"
+
+
+# ── 조회단위(일별/주별/월별/월마감) 기준 기간 산출 ─────────────────────
+UNIT_OPTIONS = ["일별", "주별", "월별", "월마감"]
+
+
+def get_period_bounds(ref_date, unit: str, min_date, max_date):
+    """기준일자 + 조회단위 → (start, end) 기간 경계 (둘 다 pd.Timestamp)."""
+    ref_ts = pd.Timestamp(ref_date)
+
+    if unit == "일별":
+        start = end = ref_ts
+    elif unit == "주별":
+        start = ref_ts - pd.Timedelta(days=ref_ts.weekday())  # 월요일
+        end = start + pd.Timedelta(days=6)
+    elif unit == "월별":
+        start = ref_ts.replace(day=1)
+        end = start + pd.offsets.MonthEnd(0)
+    else:  # 월마감: 기준일자가 속한 달이 아직 안 끝났으면 직전 '완결'된 달을 사용
+        last_day_of_month = ref_ts + pd.offsets.MonthEnd(0)
+        if ref_ts.normalize() < last_day_of_month.normalize():
+            end = ref_ts.replace(day=1) - pd.Timedelta(days=1)
+            start = end.replace(day=1)
+        else:
+            start = ref_ts.replace(day=1)
+            end = last_day_of_month
+
+    start = max(start, pd.Timestamp(min_date))
+    end = min(end, pd.Timestamp(max_date))
+    return start, end
+
+
+def period_label(start: pd.Timestamp, end: pd.Timestamp, unit: str) -> str:
+    weekday_kr = ["월", "화", "수", "목", "금", "토", "일"]
+    if unit == "일별":
+        return f"{start.date()} ({weekday_kr[start.weekday()]})"
+    if unit == "주별":
+        return f"{start.date()} ~ {end.date()} (주)"
+    suffix = " · 월마감" if unit == "월마감" else ""
+    return f"{start.year}년 {start.month}월{suffix}"
+
+
+def build_2026_buckets(df: pd.DataFrame, unit: str):
+    """2026년 데이터를 조회단위로 나눠 [(label, [dates...]), ...] 리스트 반환 (정렬됨)."""
+    d2026 = df[df["연도"] == 2026].copy()
+    max_date = df["date"].max()
+    buckets = []
+
+    if unit == "일별":
+        for d in sorted(d2026["date"].unique()):
+            d = pd.Timestamp(d)
+            buckets.append((d.strftime("%m-%d"), [d]))
+
+    elif unit == "주별":
+        d2026["_wk"] = d2026["date"] - pd.to_timedelta(d2026["date"].dt.weekday, unit="D")
+        for wk, g in sorted(d2026.groupby("_wk"), key=lambda x: x[0]):
+            dates = sorted(g["date"].tolist())
+            buckets.append((f"{wk.strftime('%m/%d')}주", dates))
+
+    else:  # 월별 / 월마감
+        d2026["_ym"] = d2026["date"].dt.to_period("M")
+        for ym, g in sorted(d2026.groupby("_ym"), key=lambda x: x[0]):
+            if unit == "월마감" and max_date.normalize() < ym.end_time.normalize():
+                continue  # 아직 마감되지 않은(진행 중인) 월은 제외
+            dates = sorted(g["date"].tolist())
+            buckets.append((f"{ym.month}월", dates))
+
+    return buckets
+
+
+def bucket_yoy_series(df: pd.DataFrame, buckets, metric: str):
+    """buckets: build_2026_buckets() 결과. (labels, 올해값, 전년값) 튜플 반환."""
+    labels, cur_vals, prev_vals = [], [], []
+    for label, dates in buckets:
+        cur = df[df["date"].isin(dates)]
+        prev_dates = [pd.Timestamp(d) - pd.Timedelta(days=364) for d in dates]
+        prev = df[df["date"].isin(prev_dates)]
+        labels.append(label)
+        cur_vals.append(aggregate(cur)[metric] if not cur.empty else 0)
+        prev_vals.append(aggregate(prev)[metric] if not prev.empty else None)
+    return labels, cur_vals, prev_vals
