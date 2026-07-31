@@ -211,3 +211,33 @@ def bucket_yoy_series(df: pd.DataFrame, buckets, metric: str):
         cur_vals.append(aggregate(cur)[metric] if not cur.empty else 0)
         prev_vals.append(aggregate(prev)[metric] if not prev.empty else None)
     return labels, cur_vals, prev_vals
+
+
+# ── 카드용 비교기간 (전일/전주/전월/전년비) ─────────────────────────
+def get_comparison_periods(ref_date, unit: str, min_date, max_date):
+    """조회단위 기준 '직전 동일단위' 기간 + 전월비 + 전년비 기간을 반환.
+    반환: {"직전기간 라벨": (start, end), "전월비": (start, end), "전년비": (start, end)}
+    (일별 조회 시에는 '직전기간'이 곧 전일비이므로 전월비만 별도로 추가됨)
+    """
+    ref_ts = pd.Timestamp(ref_date)
+
+    if unit == "일별":
+        immediate_label = "전일비"
+        immediate_ref = ref_ts - pd.Timedelta(days=1)
+    elif unit == "주별":
+        immediate_label = "전주비"
+        immediate_ref = ref_ts - pd.Timedelta(days=7)
+    else:  # 월별 / 월마감
+        immediate_label = "전월비"
+        immediate_ref = ref_ts - pd.DateOffset(months=1)
+
+    periods = {immediate_label: get_period_bounds(immediate_ref.date(), unit, min_date, max_date)}
+
+    if immediate_label != "전월비":
+        month_ref = ref_ts - pd.DateOffset(months=1)
+        periods["전월비"] = get_period_bounds(month_ref.date(), unit, min_date, max_date)
+
+    year_ref = ref_ts - pd.Timedelta(days=364)
+    periods["전년비"] = get_period_bounds(year_ref.date(), unit, min_date, max_date)
+
+    return periods

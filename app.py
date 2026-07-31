@@ -9,9 +9,12 @@ from utils import (
     yoy_same_weekday_dates, RATIO_DEFS, BASE_METRICS,
     format_million, format_roas_percent, UNIT_OPTIONS,
     get_period_bounds, period_label, build_2026_buckets, bucket_yoy_series,
+    get_comparison_periods,
 )
+from styles import inject_css, render_kpi_cards, render_page_header, render_section_title, pct_change
 
 st.set_page_config(page_title="쇼핑검색광고 실적 대시보드", layout="wide")
+inject_css()
 
 # ── 데이터 로드 ────────────────────────────────────────────────────
 df = load_data()
@@ -24,10 +27,13 @@ ALL_METRICS = ["노출수", "클릭수", "UV", "광고비"] + list(RATIO_DEFS.ke
 ALL_METRICS = list(dict.fromkeys(ALL_METRICS))  # 중복 제거, 순서 유지
 
 # ── 사이드바 메뉴 ──────────────────────────────────────────────────
-st.sidebar.title("📊 쇼핑검색광고 대시보드")
-menu = st.sidebar.radio("메뉴", ["쇼핑검색광고 실적", "전년비교"])
+st.sidebar.markdown("### 🛍️ 쇼핑검색광고 · 네이버")
+menu = st.sidebar.radio("메뉴", ["📋 01. 쇼핑검색광고 실적", "📈 02. 전년비교"], label_visibility="collapsed")
+menu = "쇼핑검색광고 실적" if "01" in menu else "전년비교"
+st.sidebar.markdown("---")
 unit = st.sidebar.radio("조회단위", UNIT_OPTIONS, horizontal=True)
-st.sidebar.caption(f"데이터 기간: {MIN_DATE} ~ {MAX_DATE}")
+st.sidebar.markdown("---")
+st.sidebar.caption(f"데이터 기간\n\n{MIN_DATE} ~ {MAX_DATE}")
 
 
 def to_excel_bytes(data: pd.DataFrame) -> bytes:
@@ -41,14 +47,18 @@ def to_excel_bytes(data: pd.DataFrame) -> bytes:
 # PAGE 1: 쇼핑검색광고 실적
 # ════════════════════════════════════════════════════════════════
 if menu == "쇼핑검색광고 실적":
-    st.title("쇼핑검색광고 실적")
-
     # ── 기준일자 (사이드바 조회단위에 맞춰 기간 산출) ──
     ref_date = st.date_input("기준일자", value=MAX_DATE,
                               min_value=MIN_DATE, max_value=MAX_DATE)
 
     start_ts, end_ts = get_period_bounds(ref_date, unit, MIN_DATE, MAX_DATE)
-    st.caption(f"📌 조회단위: **{unit}**  ·  기준기간: **{period_label(start_ts, end_ts, unit)}**")
+    cur_label = period_label(start_ts, end_ts, unit)
+
+    render_page_header(
+        eyebrow="쇼핑검색광고 · 네이버",
+        title=f"쇼핑검색광고 실적 — {cur_label}",
+        sub=f"조회단위: {unit}  ·  집계기간: {start_ts.date()} ~ {end_ts.date()}",
+    )
 
     mask = (df["date"] >= start_ts) & (df["date"] <= end_ts)
     view = df.loc[mask].copy()
@@ -59,29 +69,79 @@ if menu == "쇼핑검색광고 실적":
 
     agg = aggregate(view)
 
-    st.subheader("핵심 지표 요약")
-    kpi_metrics = ["UV", "거래액", "광고비", "ROAS", "CR", "CTR"]
-    cols = st.columns(len(kpi_metrics))
-    for col, m in zip(cols, kpi_metrics):
+    # ── 비교기간 (전일/전주/전월비 + 전년비) 산출 ──
+    comp_periods = get_comparison_periods(ref_date, unit, MIN_DATE, MAX_DATE)
+    comp_aggs = {}
+    for label, (p_start, p_end) in comp_periods.items():
+        p_view = df[(df["date"] >= p_start) & (df["date"] <= p_end)]
+        comp_aggs[label] = aggregate(p_view) if not p_view.empty else None
+
+    def deltas_for(metric):
+        out = []
+        for label, p_agg in comp_aggs.items():
+            prev_val = p_agg[metric] if p_agg else None
+            out.append((label, pct_change(agg[metric], prev_val)))
+        return out
+
+    # ── KPI 카드 ──
+    kpi_metrics = ["거래액", "광고비", "ROAS", "UV", "결제고객수", "첫구매수"]
+    cards = []
+    for m in kpi_metrics:
         if m in ("거래액", "광고비"):
-            col.metric(m, format_million(agg[m]))
+            value_str = format_million(agg[m])
         elif m == "ROAS":
-            col.metric(m, format_roas_percent(agg[m]))
+            value_str = format_roas_percent(agg[m])
         else:
-            col.metric(m, format_value(m, agg[m]))
+            value_str = format_value(m, agg[m])
+        cards.append({"label": m, "value": value_str, "deltas": deltas_for(m)})
 
-    kpi_metrics2 = ["신규거래액", "신규비중", "첫구매수", "첫구매비중", "가입수", "가입률"]
-    cols2 = st.columns(len(kpi_metrics2))
-    for col, m in zip(cols2, kpi_metrics2):
-        if m == "신규거래액":
-            col.metric(m, format_million(agg[m]))
-        else:
-            col.metric(m, format_value(m, agg[m]))
+    render_kpi_cards(cards)
+    st.markdown(
+        '<div class="kpi-footnote">※ 거래액·광고비는 기간 합계 기준(백만원)이며, '
+        'ROAS·CR·CTR 등 비율지표는 합산이 아닌 재산정한 값입니다.</div>',
+        unsafe_allow_html=True,
+    )
 
-    st.divider()
+    # ── 실적요약 (직전기간 대비) 테이블 ──
+    immediate_label = next(iter(comp_periods.keys()))
+    prev_agg_for_table = comp_aggs.get(immediate_label)
+    prev_start, prev_end = comp_periods[immediate_label]
+
+    render_section_title(f"실적요약 · {immediate_label} 비교")
+
+    summary_metrics = ["노출수", "클릭수", "CTR", "CR", "객단가", "결제고객수",
+                       "CPC", "CPUV", "UV", "광고비", "거래액", "ROAS"]
+    prev_col_name = period_label(prev_start, prev_end, unit)
+    rows = []
+    for m in summary_metrics:
+        cur_v = agg[m]
+        prev_v = prev_agg_for_table[m] if prev_agg_for_table else None
+        delta = pct_change(cur_v, prev_v)
+        rows.append({
+            "지표": m,
+            prev_col_name: format_value(m, prev_v) if prev_v is not None else "-",
+            cur_label: format_value(m, cur_v),
+            f"{immediate_label}(%)": f"{delta:+.1f}%" if delta is not None else "-",
+        })
+    summary_df = pd.DataFrame(rows)
+
+    def _color_delta(val):
+        if isinstance(val, str) and val.endswith("%") and val not in ("-",):
+            try:
+                num = float(val.replace("%", "").replace("+", ""))
+                color = "#DC2626" if num > 0 else ("#2563EB" if num < 0 else "#64748B")
+                return f"color: {color}; font-weight: 600;"
+            except ValueError:
+                return ""
+        return ""
+
+    st.dataframe(
+        summary_df.style.map(_color_delta, subset=[f"{immediate_label}(%)"]),
+        use_container_width=True, hide_index=True, height=460,
+    )
 
     # ── 추이 차트: 2026년 기준 + 전년비 비교선 (조회단위별 집계) ──
-    st.subheader("2026년 추이 (전년비 비교)")
+    render_section_title("2026년 추이 (전년비 비교)")
     metric_choice = st.selectbox("지표 선택", ALL_METRICS,
                                   index=ALL_METRICS.index("거래액"))
 
@@ -107,10 +167,8 @@ if menu == "쇼핑검색광고 실적":
         )
         st.plotly_chart(fig, use_container_width=True)
 
-    st.divider()
-
     # ── 데이터 테이블 & 다운로드 ──
-    st.subheader(f"{unit} 데이터 ({period_label(start_ts, end_ts, unit)})")
+    render_section_title(f"{unit} 원본 데이터 · {cur_label}")
     display_cols = ["date"] + ALL_METRICS
     display_df = view[display_cols].sort_values("date", ascending=False)
     st.dataframe(display_df, use_container_width=True, height=350)
@@ -127,7 +185,11 @@ if menu == "쇼핑검색광고 실적":
 # PAGE 2: 전년비교
 # ════════════════════════════════════════════════════════════════
 else:
-    st.title("전년비교")
+    render_page_header(
+        eyebrow="쇼핑검색광고 · 네이버",
+        title="전년비교",
+        sub="일자별(전년 동일 요일) 및 월별 누적 기준으로 전년 대비 실적을 비교합니다.",
+    )
     tab1, tab2 = st.tabs(["일자별 YoY (전년 동일 요일)", "월별 누적 YoY"])
 
     # ── TAB 1: 일자별 YoY ──
