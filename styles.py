@@ -13,7 +13,8 @@ SIDEBAR_TEXT = "#CBD5E1"
 SIDEBAR_TEXT_MUTED = "#64748B"
 CARD_BG = "#FFFFFF"
 PAGE_BG = "#F5F7FA"
-DOWN_COLOR = "#DC2626"  # 감소 = 빨강 (강조), 증가는 별도 강조색 없이 +표기
+UP_COLOR = "#16A34A"    # 증가 = 초록
+DOWN_COLOR = "#DC2626"  # 감소 = 빨강
 
 
 def inject_css():
@@ -89,26 +90,36 @@ def inject_css():
     }}
     .kpi-deltas {{
         display: flex;
-        flex-wrap: wrap;
-        gap: 6px;
+        flex-direction: column;
+        gap: 3px;
     }}
-    .kpi-badge {{
-        font-size: 0.74rem;
-        font-weight: 600;
-        padding: 2px 7px;
-        border-radius: 6px;
+    .kpi-delta-row {{
+        display: flex;
+        justify-content: space-between;
+        align-items: baseline;
+        font-size: 0.8rem;
+        line-height: 1.5;
     }}
-    .kpi-badge.up {{
-        color: #334155;
-        background: #F1F5F9;
-    }}
-    .kpi-badge.down {{
-        color: {DOWN_COLOR};
-        background: #FEF2F2;
-    }}
-    .kpi-badge.flat {{
+    .kpi-delta-label {{
         color: #64748B;
-        background: #F1F5F9;
+    }}
+    .kpi-delta-value {{
+        font-weight: 600;
+    }}
+    .kpi-delta-value.up {{
+        color: {UP_COLOR};
+    }}
+    .kpi-delta-value.down {{
+        color: {DOWN_COLOR};
+    }}
+    .kpi-delta-value.flat {{
+        color: #64748B;
+        font-weight: 400;
+    }}
+    .kpi-delta-prev {{
+        color: #94A3B8;
+        font-weight: 400;
+        margin-left: 3px;
     }}
     .kpi-footnote {{
         color: #94A3B8;
@@ -133,28 +144,41 @@ def inject_css():
     """), unsafe_allow_html=True)
 
 
-def _delta_badge(label: str, pct) -> str:
+def _delta_row(label: str, pct, prev_str: str = None) -> str:
+    prev_html = f'<span class="kpi-delta-prev">({prev_str})</span>' if prev_str else ""
     if pct is None or pd.isna(pct):
-        return f'<span class="kpi-badge flat">{label} -</span>'
-    if pct > 0:
-        return f'<span class="kpi-badge up">+{pct:.1f}% {label}</span>'
-    if pct < 0:
-        return f'<span class="kpi-badge down">▼{abs(pct):.1f}% {label}</span>'
-    return f'<span class="kpi-badge flat">+0.0% {label}</span>'
+        return (
+            '<div class="kpi-delta-row">'
+            f'<span class="kpi-delta-label">{label}</span>'
+            f'<span class="kpi-delta-value flat">- {prev_html}</span>'
+            '</div>'
+        )
+    cls = "up" if pct > 0 else ("down" if pct < 0 else "flat")
+    arrow = "▲" if pct > 0 else ("▼" if pct < 0 else "-")
+    return (
+        '<div class="kpi-delta-row">'
+        f'<span class="kpi-delta-label">{label}</span>'
+        f'<span class="kpi-delta-value {cls}">{arrow} {abs(pct):.1f}% {prev_html}</span>'
+        '</div>'
+    )
 
 
 def render_kpi_cards(cards: list):
     """
-    cards: [{"label": "거래액", "value": "39.2백만", "deltas": [("전주비", 12.3), ("전월비", -4.1), ("전년비", 8.0)]}, ...]
+    cards: [{
+        "label": "거래액", "value": "39.2백만",
+        "deltas": [("전주비", 12.3, "34.9백만"), ("전월비", -4.1, "40.9백만"), ("전년비", 8.0, "36.3백만")]
+    }, ...]
+    각 delta 튜플은 (라벨, 증감률(%), 이전기간 원값 문자열-선택) 형태.
     """
     parts = ['<div class="kpi-grid">']
     for c in cards:
-        badges = "".join(_delta_badge(lbl, pct) for lbl, pct in c["deltas"])
+        rows = "".join(_delta_row(*d) for d in c["deltas"])
         parts.append(
             '<div class="kpi-card">'
             f'<div class="kpi-label">{c["label"]}</div>'
             f'<div class="kpi-value">{c["value"]}</div>'
-            f'<div class="kpi-deltas">{badges}</div>'
+            f'<div class="kpi-deltas">{rows}</div>'
             '</div>'
         )
     parts.append("</div>")
