@@ -13,6 +13,7 @@ from utils import (
     load_category_data, aggregate_category, aggregate_category_by,
     category_bucket_yoy_series, category_dual_channel_series,
     category_txn_type_breakdown, TXN_TYPE_OPTIONS,
+    load_fitflop_data, fitflop_roas,
 )
 from styles import (
     inject_css, render_kpi_cards, render_page_header, render_section_title,
@@ -40,15 +41,17 @@ ALL_METRICS = list(dict.fromkeys(ALL_METRICS))  # 중복 제거, 순서 유지
 st.sidebar.markdown("### 🛍️ 쇼핑검색광고 · 네이버")
 menu = st.sidebar.radio(
     "메뉴",
-    ["📋 01. 쇼핑검색광고 실적", "📈 02. 전년비교", "📊 03. 카테고리별 실적"],
+    ["📋 01. 쇼핑검색광고 실적", "📈 02. 전년비교", "📊 03. 카테고리별 실적", "🧩 04. 핏플랍 제외 비교"],
     label_visibility="collapsed",
 )
 if "01" in menu:
     menu = "쇼핑검색광고 실적"
 elif "02" in menu:
     menu = "전년비교"
-else:
+elif "03" in menu:
     menu = "카테고리별 실적"
+else:
+    menu = "핏플랍 제외 비교"
 st.sidebar.markdown("---")
 unit = st.sidebar.radio("조회단위", UNIT_OPTIONS, horizontal=True)
 st.sidebar.markdown("---")
@@ -401,7 +404,7 @@ elif menu == "전년비교":
 # ════════════════════════════════════════════════════════════════
 # PAGE 3: 카테고리별 실적 (쇼핑검색광고 vs EP채널 비교)
 # ════════════════════════════════════════════════════════════════
-else:
+elif menu == "카테고리별 실적":
     c_ref, c_mode = st.columns([2.5, 1.5])
     with c_ref:
         if unit == "일별":
@@ -583,4 +586,108 @@ else:
         file_name=f"카테고리별_원본데이터_{cat_start_ts.date()}_{cat_end_ts.date()}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key="dl_category_raw",
+    )
+
+
+# ════════════════════════════════════════════════════════════════
+# PAGE 4: 핏플랍 제외 비교
+# ════════════════════════════════════════════════════════════════
+else:
+    ff_df = load_fitflop_data().sort_values("ym").reset_index(drop=True)
+    ff_df["ROAS_전체"] = ff_df.apply(lambda r: fitflop_roas(r, "자사_거래액", "자사_광고비"), axis=1)
+    ff_df["ROAS_제외"] = ff_df.apply(lambda r: fitflop_roas(r, "핏플랍제외_거래액", "핏플랍제외_광고비"), axis=1)
+
+    ff_month = st.selectbox("기준월", ff_df["ym_label"].tolist()[::-1], index=0, key="ff_month")
+    ff_row = ff_df[ff_df["ym_label"] == ff_month].iloc[0]
+
+    render_page_header(
+        eyebrow="쇼핑검색광고 · 네이버",
+        title=f"핏플랍 제외 비교 — {ff_month}",
+        sub="핏플랍 브랜드 퇴점으로 인한 거래액·광고비 왜곡을 제외하고, 자사(정상+이월) 실적의 실제 흐름을 비교합니다.",
+    )
+
+    st.markdown(
+        '<div class="kpi-footnote">※ 이 페이지는 월별 데이터만 제공됩니다 '
+        '(핏플랍 광고비 원본이 월 단위로만 제공되어, 일/주 단위로는 분리할 수 없습니다). '
+        '핏플랍 거래액은 정상+이월 기준이며 입점 거래는 제외했습니다.</div>',
+        unsafe_allow_html=True,
+    )
+
+    render_section_title(f"{ff_month} 요약 — 포함 vs 제외")
+
+    def _fmt_amt(v):
+        return format_million(v) if pd.notna(v) else "-"
+
+    def _fmt_roas(v):
+        return format_roas_percent(v) if pd.notna(v) else "-"
+
+    summary_rows = [
+        {
+            "지표": "거래액",
+            "포함 (자사 전체)": _fmt_amt(ff_row["자사_거래액"]),
+            "핏플랍": _fmt_amt(ff_row["핏플랍_거래액"]),
+            "제외 (핏플랍 제외)": _fmt_amt(ff_row["핏플랍제외_거래액"]),
+        },
+        {
+            "지표": "광고비",
+            "포함 (자사 전체)": _fmt_amt(ff_row["자사_광고비"]),
+            "핏플랍": _fmt_amt(ff_row["핏플랍_광고비"]),
+            "제외 (핏플랍 제외)": _fmt_amt(ff_row["핏플랍제외_광고비"]),
+        },
+        {
+            "지표": "ROAS",
+            "포함 (자사 전체)": _fmt_roas(ff_row["ROAS_전체"]),
+            "핏플랍": "-",
+            "제외 (핏플랍 제외)": _fmt_roas(ff_row["ROAS_제외"]),
+        },
+    ]
+    st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
+
+    render_section_title("월별 추이 — 포함(자사 전체) vs 제외(핏플랍 제외)")
+    ff_metric = st.selectbox("지표 선택", ["거래액", "광고비", "ROAS"], key="ff_metric")
+
+    if ff_metric == "거래액":
+        col_all, col_ex, yaxis_lbl = "자사_거래액", "핏플랍제외_거래액", "거래액"
+    elif ff_metric == "광고비":
+        col_all, col_ex, yaxis_lbl = "자사_광고비", "핏플랍제외_광고비", "광고비"
+    else:
+        col_all, col_ex, yaxis_lbl = "ROAS_전체", "ROAS_제외", "ROAS"
+
+    fig_ff = go.Figure()
+    fig_ff.add_trace(go.Scatter(
+        x=ff_df["ym_label"], y=ff_df[col_all], mode="lines+markers",
+        name="포함 (자사 전체)", line=dict(width=2, color="#94A3B8"),
+    ))
+    fig_ff.add_trace(go.Scatter(
+        x=ff_df["ym_label"], y=ff_df[col_ex], mode="lines+markers",
+        name="제외 (핏플랍 제외)", line=dict(width=2, color="#2563EB"),
+    ))
+    fig_ff.update_layout(
+        height=420, margin=dict(t=20, b=20, l=10, r=10),
+        yaxis_title=yaxis_lbl, xaxis=dict(type="category", title=None),
+        hovermode="x unified",
+    )
+    st.plotly_chart(fig_ff, use_container_width=True)
+    st.caption("※ 핏플랍이 퇴점한 이후(2025-11~)에는 핏플랍 거래액·광고비가 0이라 두 선이 겹칩니다.")
+
+    render_section_title("월별 원본 데이터")
+    ff_display = pd.DataFrame({
+        "월": ff_df["ym_label"],
+        "자사 거래액(전체)": ff_df["자사_거래액"].apply(_fmt_amt),
+        "핏플랍 거래액": ff_df["핏플랍_거래액"].apply(_fmt_amt),
+        "핏플랍 제외 거래액": ff_df["핏플랍제외_거래액"].apply(_fmt_amt),
+        "자사 광고비(전체)": ff_df["자사_광고비"].apply(_fmt_amt),
+        "핏플랍 광고비": ff_df["핏플랍_광고비"].apply(_fmt_amt),
+        "핏플랍 제외 광고비": ff_df["핏플랍제외_광고비"].apply(_fmt_amt),
+        "ROAS(전체)": ff_df["ROAS_전체"].apply(_fmt_roas),
+        "ROAS(제외)": ff_df["ROAS_제외"].apply(_fmt_roas),
+    })
+    st.dataframe(ff_display, use_container_width=True, hide_index=True, height=440)
+
+    st.download_button(
+        "📥 Excel 다운로드",
+        data=to_excel_bytes(ff_df),
+        file_name="핏플랍_제외_비교_월별.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="dl_fitflop",
     )
