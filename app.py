@@ -7,6 +7,8 @@ from datetime import timedelta
 from utils import (
     load_data, aggregate, aggregate_by, format_value,
     yoy_same_weekday_dates, RATIO_DEFS, BASE_METRICS,
+    format_million, format_roas_percent, UNIT_OPTIONS,
+    get_period_bounds, period_label, build_2026_buckets, bucket_yoy_series,
 )
 
 st.set_page_config(page_title="쇼핑검색광고 실적 대시보드", layout="wide")
@@ -24,6 +26,7 @@ ALL_METRICS = list(dict.fromkeys(ALL_METRICS))  # 중복 제거, 순서 유지
 # ── 사이드바 메뉴 ──────────────────────────────────────────────────
 st.sidebar.title("📊 쇼핑검색광고 대시보드")
 menu = st.sidebar.radio("메뉴", ["쇼핑검색광고 실적", "전년비교"])
+unit = st.sidebar.radio("조회단위", UNIT_OPTIONS, horizontal=True)
 st.sidebar.caption(f"데이터 기간: {MIN_DATE} ~ {MAX_DATE}")
 
 
@@ -40,33 +43,14 @@ def to_excel_bytes(data: pd.DataFrame) -> bytes:
 if menu == "쇼핑검색광고 실적":
     st.title("쇼핑검색광고 실적")
 
-    # ── 기간 필터 ──
-    c1, c2, c3 = st.columns([2, 2, 3])
-    with c1:
-        start_date = st.date_input("시작일", value=MAX_DATE - timedelta(days=29),
-                                    min_value=MIN_DATE, max_value=MAX_DATE)
-    with c2:
-        end_date = st.date_input("종료일", value=MAX_DATE,
-                                  min_value=MIN_DATE, max_value=MAX_DATE)
-    with c3:
-        quick = st.radio("빠른 선택", ["직접선택", "최근7일", "최근30일", "이번달", "전체"],
-                          horizontal=True, label_visibility="collapsed")
+    # ── 기준일자 (사이드바 조회단위에 맞춰 기간 산출) ──
+    ref_date = st.date_input("기준일자", value=MAX_DATE,
+                              min_value=MIN_DATE, max_value=MAX_DATE)
 
-    if quick == "최근7일":
-        start_date, end_date = MAX_DATE - timedelta(days=6), MAX_DATE
-    elif quick == "최근30일":
-        start_date, end_date = MAX_DATE - timedelta(days=29), MAX_DATE
-    elif quick == "이번달":
-        start_date = MAX_DATE.replace(day=1)
-        end_date = MAX_DATE
-    elif quick == "전체":
-        start_date, end_date = MIN_DATE, MAX_DATE
+    start_ts, end_ts = get_period_bounds(ref_date, unit, MIN_DATE, MAX_DATE)
+    st.caption(f"📌 조회단위: **{unit}**  ·  기준기간: **{period_label(start_ts, end_ts, unit)}**")
 
-    if start_date > end_date:
-        st.error("시작일이 종료일보다 늦을 수 없습니다.")
-        st.stop()
-
-    mask = (df["date"].dt.date >= start_date) & (df["date"].dt.date <= end_date)
+    mask = (df["date"] >= start_ts) & (df["date"] <= end_ts)
     view = df.loc[mask].copy()
 
     if view.empty:
@@ -79,38 +63,54 @@ if menu == "쇼핑검색광고 실적":
     kpi_metrics = ["UV", "거래액", "광고비", "ROAS", "CR", "CTR"]
     cols = st.columns(len(kpi_metrics))
     for col, m in zip(cols, kpi_metrics):
-        col.metric(m, format_value(m, agg[m]))
+        if m in ("거래액", "광고비"):
+            col.metric(m, format_million(agg[m]))
+        elif m == "ROAS":
+            col.metric(m, format_roas_percent(agg[m]))
+        else:
+            col.metric(m, format_value(m, agg[m]))
 
     kpi_metrics2 = ["신규거래액", "신규비중", "첫구매수", "첫구매비중", "가입수", "가입률"]
     cols2 = st.columns(len(kpi_metrics2))
     for col, m in zip(cols2, kpi_metrics2):
-        col.metric(m, format_value(m, agg[m]))
+        if m == "신규거래액":
+            col.metric(m, format_million(agg[m]))
+        else:
+            col.metric(m, format_value(m, agg[m]))
 
     st.divider()
 
-    # ── 추이 차트 ──
-    st.subheader("일자별 추이")
+    # ── 추이 차트: 2026년 기준 + 전년비 비교선 (조회단위별 집계) ──
+    st.subheader("2026년 추이 (전년비 비교)")
     metric_choice = st.selectbox("지표 선택", ALL_METRICS,
                                   index=ALL_METRICS.index("거래액"))
 
-    trend = view[["date", metric_choice]].sort_values("date")
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=trend["date"], y=trend[metric_choice],
-        mode="lines+markers", name=metric_choice,
-        line=dict(width=2),
-    ))
-    fig.update_layout(
-        height=420, margin=dict(t=20, b=20, l=10, r=10),
-        yaxis_title=metric_choice, xaxis_title=None,
-        hovermode="x unified",
-    )
-    st.plotly_chart(fig, use_container_width=True)
+    buckets = build_2026_buckets(df, unit)
+    if not buckets:
+        st.info("2026년 데이터가 없거나, 선택한 조회단위 기준으로 마감된 구간이 없습니다.")
+    else:
+        labels, cur_vals, prev_vals = bucket_yoy_series(df, buckets, metric_choice)
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=labels, y=cur_vals, mode="lines+markers", name="2026년(올해)",
+            line=dict(width=2),
+        ))
+        fig.add_trace(go.Scatter(
+            x=labels, y=prev_vals, mode="lines+markers", name="전년비",
+            line=dict(width=2, dash="dash"), connectgaps=True,
+        ))
+        fig.update_layout(
+            height=420, margin=dict(t=20, b=20, l=10, r=10),
+            yaxis_title=metric_choice, xaxis_title=None,
+            hovermode="x unified",
+        )
+        st.plotly_chart(fig, use_container_width=True)
 
     st.divider()
 
     # ── 데이터 테이블 & 다운로드 ──
-    st.subheader("일자별 데이터")
+    st.subheader(f"{unit} 데이터 ({period_label(start_ts, end_ts, unit)})")
     display_cols = ["date"] + ALL_METRICS
     display_df = view[display_cols].sort_values("date", ascending=False)
     st.dataframe(display_df, use_container_width=True, height=350)
@@ -118,7 +118,7 @@ if menu == "쇼핑검색광고 실적":
     st.download_button(
         "📥 Excel 다운로드",
         data=to_excel_bytes(display_df),
-        file_name=f"쇼핑검색광고_실적_{start_date}_{end_date}.xlsx",
+        file_name=f"쇼핑검색광고_실적_{start_ts.date()}_{end_ts.date()}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
