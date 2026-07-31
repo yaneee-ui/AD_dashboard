@@ -13,8 +13,7 @@ SIDEBAR_TEXT = "#CBD5E1"
 SIDEBAR_TEXT_MUTED = "#64748B"
 CARD_BG = "#FFFFFF"
 PAGE_BG = "#F5F7FA"
-UP_COLOR = "#DC2626"    # 상승 = 빨강 (국내 관례)
-DOWN_COLOR = "#2563EB"  # 하락 = 파랑
+DOWN_COLOR = "#DC2626"  # 감소 = 빨강 (강조), 증가는 별도 강조색 없이 +표기
 
 
 def inject_css():
@@ -100,12 +99,12 @@ def inject_css():
         border-radius: 6px;
     }}
     .kpi-badge.up {{
-        color: {UP_COLOR};
-        background: #FEF2F2;
+        color: #334155;
+        background: #F1F5F9;
     }}
     .kpi-badge.down {{
         color: {DOWN_COLOR};
-        background: #EFF6FF;
+        background: #FEF2F2;
     }}
     .kpi-badge.flat {{
         color: #64748B;
@@ -137,9 +136,11 @@ def inject_css():
 def _delta_badge(label: str, pct) -> str:
     if pct is None or pd.isna(pct):
         return f'<span class="kpi-badge flat">{label} -</span>'
-    cls = "up" if pct > 0 else ("down" if pct < 0 else "flat")
-    arrow = "▲" if pct > 0 else ("▼" if pct < 0 else "-")
-    return f'<span class="kpi-badge {cls}">{arrow}{abs(pct):.1f}% {label}</span>'
+    if pct > 0:
+        return f'<span class="kpi-badge up">+{pct:.1f}% {label}</span>'
+    if pct < 0:
+        return f'<span class="kpi-badge down">▼{abs(pct):.1f}% {label}</span>'
+    return f'<span class="kpi-badge flat">+0.0% {label}</span>'
 
 
 def render_kpi_cards(cards: list):
@@ -180,3 +181,17 @@ def pct_change(cur, prev):
         return (cur - prev) / abs(prev) * 100
     except Exception:
         return None
+
+
+def format_delta_text(delta) -> str:
+    if delta is None or pd.isna(delta):
+        return "-"
+    if delta < 0:
+        return f"▼{abs(delta):.1f}%"
+    return f"+{delta:.1f}%"
+
+
+def delta_cell_style(val: str) -> str:
+    if isinstance(val, str) and val.startswith("▼"):
+        return "color: #DC2626; font-weight: 600;"
+    return ""
