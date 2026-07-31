@@ -26,6 +26,14 @@ CATEGORY_DATA_PATH = next(
     (p for p in _CATEGORY_CANDIDATE_PATHS if os.path.exists(p)), _CATEGORY_CANDIDATE_PATHS[0]
 )
 
+_FITFLOP_CANDIDATE_PATHS = [
+    os.path.join(BASE_DIR, "data", "fitflop_monthly.csv"),
+    os.path.join(BASE_DIR, "fitflop_monthly.csv"),
+]
+FITFLOP_DATA_PATH = next(
+    (p for p in _FITFLOP_CANDIDATE_PATHS if os.path.exists(p)), _FITFLOP_CANDIDATE_PATHS[0]
+)
+
 # ── 합산 가능한 base metric (분자/분모 원천값) ─────────────────────────
 BASE_METRICS = [
     "노출수", "클릭수", "UV", "광고비",
@@ -395,3 +403,29 @@ def category_dual_channel_series(df: pd.DataFrame, buckets, txn_type: str = "전
         ad_vals.append(ad_val)
         ep_vals.append(ep_val)
     return labels, ad_vals, ep_vals
+
+
+# ════════════════════════════════════════════════════════════════
+# 핏플랍(브랜드) 영향 제외 비교
+# ════════════════════════════════════════════════════════════════
+@st.cache_data
+def load_fitflop_data():
+    """월별 자사(정상+이월) 거래액/광고비 vs 핏플랍 거래액/광고비, 핏플랍 제외 값까지 포함된 데이터."""
+    if not os.path.exists(FITFLOP_DATA_PATH):
+        st.error(
+            f"핏플랍 비교 데이터 파일을 찾을 수 없습니다.\n\n"
+            f"다음 경로를 확인했습니다:\n"
+            + "\n".join(f"- `{p}`" for p in _FITFLOP_CANDIDATE_PATHS)
+            + f"\n\nGitHub 리포지토리에 `fitflop_monthly.csv`가 실제로 커밋되어 있는지 확인해주세요."
+        )
+        st.stop()
+    df = pd.read_csv(FITFLOP_DATA_PATH, dtype={"ym": str}, encoding="utf-8-sig")
+    df["ym_label"] = df["ym"].str[:4] + "년 " + df["ym"].str[4:6].astype(int).astype(str) + "월"
+    return df
+
+
+def fitflop_roas(row, col_ad, col_cost):
+    cost = row[col_cost]
+    if pd.isna(cost) or cost == 0:
+        return None
+    return row[col_ad] / cost
