@@ -10,6 +10,8 @@ from utils import (
     format_million, format_roas_percent, UNIT_OPTIONS,
     get_period_bounds, period_label, build_2026_buckets, bucket_yoy_series,
     get_comparison_periods, build_ref_options, days_in_period,
+    load_category_data, aggregate_category, aggregate_category_by,
+    category_bucket_yoy_series, CATEGORY_BASE_METRICS,
 )
 from styles import (
     inject_css, render_kpi_cards, render_page_header, render_section_title,
@@ -23,6 +25,10 @@ inject_css()
 df = load_data()
 MIN_DATE, MAX_DATE = df["date"].min().date(), df["date"].max().date()
 
+cat_df = load_category_data()
+CAT_MIN_DATE, CAT_MAX_DATE = cat_df["date"].min().date(), cat_df["date"].max().date()
+CATEGORY_LIST = sorted(cat_df["category"].unique())
+
 ALL_METRICS = ["노출수", "클릭수", "UV", "광고비"] + list(RATIO_DEFS.keys()) + [
     "거래액", "거래액(총)", "결제고객수", "결제고객수(총)",
     "가입수", "첫구매수", "첫구매거래액", "신규고객수", "신규거래액",
@@ -31,8 +37,17 @@ ALL_METRICS = list(dict.fromkeys(ALL_METRICS))  # 중복 제거, 순서 유지
 
 # ── 사이드바 메뉴 ──────────────────────────────────────────────────
 st.sidebar.markdown("### 🛍️ 쇼핑검색광고 · 네이버")
-menu = st.sidebar.radio("메뉴", ["📋 01. 쇼핑검색광고 실적", "📈 02. 전년비교"], label_visibility="collapsed")
-menu = "쇼핑검색광고 실적" if "01" in menu else "전년비교"
+menu = st.sidebar.radio(
+    "메뉴",
+    ["📋 01. 쇼핑검색광고 실적", "📈 02. 전년비교", "📊 03. 카테고리별 실적"],
+    label_visibility="collapsed",
+)
+if "01" in menu:
+    menu = "쇼핑검색광고 실적"
+elif "02" in menu:
+    menu = "전년비교"
+else:
+    menu = "카테고리별 실적"
 st.sidebar.markdown("---")
 unit = st.sidebar.radio("조회단위", UNIT_OPTIONS, horizontal=True)
 st.sidebar.markdown("---")
@@ -162,7 +177,7 @@ if menu == "쇼핑검색광고 실적":
     )
 
     # ── 추이 차트: 2026년 기준 + 전년비 비교선 (조회단위별 집계) ──
-    render_section_title("2026년 추이 (전년비 비교)")
+    render_section_title(f"2026년 추이 (전년비 비교) · {mode}")
     metric_choice = st.selectbox("지표 선택", ALL_METRICS,
                                   index=ALL_METRICS.index("거래액"))
 
@@ -170,7 +185,8 @@ if menu == "쇼핑검색광고 실적":
     if not buckets:
         st.info("2026년 데이터가 없거나, 선택한 조회단위 기준으로 마감된 구간이 없습니다.")
     else:
-        labels, cur_vals, prev_vals = bucket_yoy_series(df, buckets, metric_choice)
+        labels, cur_vals, prev_vals = bucket_yoy_series(df, buckets, metric_choice, mode)
+        axis_metric_label = metric_choice if metric_choice not in BASE_METRICS else f"{metric_choice} ({mode})"
 
         fig = go.Figure()
         fig.add_trace(go.Scatter(
@@ -183,7 +199,7 @@ if menu == "쇼핑검색광고 실적":
         ))
         fig.update_layout(
             height=420, margin=dict(t=20, b=20, l=10, r=10),
-            yaxis_title=metric_choice, xaxis_title=None,
+            yaxis_title=axis_metric_label, xaxis_title=None,
             hovermode="x unified",
         )
         st.plotly_chart(fig, use_container_width=True)
@@ -205,7 +221,7 @@ if menu == "쇼핑검색광고 실적":
 # ════════════════════════════════════════════════════════════════
 # PAGE 2: 전년비교
 # ════════════════════════════════════════════════════════════════
-else:
+elif menu == "전년비교":
     render_page_header(
         eyebrow="쇼핑검색광고 · 네이버",
         title="전년비교",
@@ -373,3 +389,172 @@ else:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     key="dl_yoy_month",
                 )
+
+
+# ════════════════════════════════════════════════════════════════
+# PAGE 3: 카테고리별 실적 (쇼핑검색광고 vs EP채널 비교)
+# ════════════════════════════════════════════════════════════════
+else:
+    c_ref, c_mode = st.columns([2.5, 1.5])
+    with c_ref:
+        if unit == "일별":
+            cat_ref_date = st.date_input("기준일자", value=CAT_MAX_DATE,
+                                          min_value=CAT_MIN_DATE, max_value=CAT_MAX_DATE,
+                                          key="cat_ref_date")
+        else:
+            cat_ref_options = build_ref_options(unit, CAT_MIN_DATE, CAT_MAX_DATE)
+            cat_label_to_date = dict(cat_ref_options)
+            picker_label = "기준 주차" if unit == "주별" else "기준 월"
+            cat_chosen = st.selectbox(picker_label, list(cat_label_to_date.keys()),
+                                       index=0, key="cat_ref_select")
+            cat_ref_date = cat_label_to_date[cat_chosen]
+    with c_mode:
+        cat_mode = st.radio("표시방식", ["누계", "일평균"], horizontal=True, key="cat_mode")
+
+    category_filter = st.selectbox("카테고리", ["전체"] + CATEGORY_LIST, key="cat_filter")
+
+    cat_start_ts, cat_end_ts = get_period_bounds(cat_ref_date, unit, CAT_MIN_DATE, CAT_MAX_DATE)
+    cat_cur_label = period_label(cat_start_ts, cat_end_ts, unit)
+    cat_cur_days = days_in_period(cat_start_ts, cat_end_ts)
+    cat_scope_suffix = f" · {category_filter}" if category_filter != "전체" else ""
+
+    render_page_header(
+        eyebrow="쇼핑검색광고 · EP채널",
+        title=f"카테고리별 실적 — {cat_cur_label}{cat_scope_suffix}",
+        sub=f"조회단위: {unit}  ·  표시방식: {cat_mode}  ·  집계기간: {cat_start_ts.date()} ~ {cat_end_ts.date()} ({cat_cur_days}일)",
+    )
+
+    cat_mask = (cat_df["date"] >= cat_start_ts) & (cat_df["date"] <= cat_end_ts)
+    cat_view = cat_df.loc[cat_mask].copy()
+    cat_view_scope = cat_view if category_filter == "전체" else cat_view[cat_view["category"] == category_filter]
+
+    if cat_view_scope.empty:
+        st.warning("선택한 기간/카테고리에 데이터가 없습니다.")
+        st.stop()
+
+    cat_agg = aggregate_category(cat_view_scope)
+
+    def cat_scaled(metric, value, days):
+        if value is None:
+            return None
+        if cat_mode == "일평균" and metric in CATEGORY_BASE_METRICS and days:
+            return value / days
+        return value
+
+    # ── 비교기간 (전일/전주/전월비 + 전년비) ──
+    cat_comp_periods = get_comparison_periods(cat_ref_date, unit, CAT_MIN_DATE, CAT_MAX_DATE)
+    cat_comp_aggs, cat_comp_days = {}, {}
+    for label, (p_start, p_end) in cat_comp_periods.items():
+        p_view = cat_df[(cat_df["date"] >= p_start) & (cat_df["date"] <= p_end)]
+        if category_filter != "전체":
+            p_view = p_view[p_view["category"] == category_filter]
+        cat_comp_aggs[label] = aggregate_category(p_view) if not p_view.empty else None
+        cat_comp_days[label] = days_in_period(p_start, p_end)
+
+    def cat_deltas_for(metric):
+        out = []
+        cur_v = cat_scaled(metric, cat_agg[metric], cat_cur_days)
+        for label, p_agg in cat_comp_aggs.items():
+            prev_raw = p_agg[metric] if p_agg else None
+            prev_v = cat_scaled(metric, prev_raw, cat_comp_days[label])
+            out.append((label, pct_change(cur_v, prev_v)))
+        return out
+
+    # ── KPI 카드: 쇼핑검색광고 거래액 / EP채널 거래액 / 광고비중 ──
+    cards = []
+    for m in ["광고_거래액", "EP_거래액", "광고비중"]:
+        display_val = cat_scaled(m, cat_agg[m], cat_cur_days)
+        if m == "광고비중":
+            value_str = f"{display_val * 100:,.1f}%"
+            label_txt = "광고비중 (광고÷EP)"
+        else:
+            value_str = format_million(display_val)
+            channel_name = "쇼핑검색광고" if m == "광고_거래액" else "EP채널"
+            label_txt = f"{channel_name} 거래액 · {cat_mode}"
+        cards.append({"label": label_txt, "value": value_str, "deltas": cat_deltas_for(m)})
+
+    render_kpi_cards(cards)
+    st.markdown(
+        '<div class="kpi-footnote">※ 거래액은 선택한 표시방식 기준이며, '
+        '광고비중은 쇼핑검색광고 거래액 ÷ EP채널 전체 거래액입니다.</div>',
+        unsafe_allow_html=True,
+    )
+
+    # ── 카테고리별 비교 (그룹 막대차트, 항상 전체 12개 카테고리 기준) ──
+    render_section_title(f"카테고리별 비교 · {cat_cur_label} ({cat_mode})")
+    cat_rank = aggregate_category_by(cat_view, "category")
+    if cat_mode == "일평균" and cat_cur_days:
+        cat_rank["광고_거래액"] = cat_rank["광고_거래액"] / cat_cur_days
+        cat_rank["EP_거래액"] = cat_rank["EP_거래액"] / cat_cur_days
+    cat_rank = cat_rank.sort_values("광고_거래액", ascending=False)
+
+    fig_cat = go.Figure()
+    fig_cat.add_trace(go.Bar(x=cat_rank["category"], y=cat_rank["EP_거래액"],
+                              name="EP채널", marker_color="#CBD5E1"))
+    fig_cat.add_trace(go.Bar(x=cat_rank["category"], y=cat_rank["광고_거래액"],
+                              name="쇼핑검색광고", marker_color="#2563EB"))
+    fig_cat.update_layout(
+        barmode="group", height=420, margin=dict(t=20, b=20, l=10, r=10),
+        yaxis_title=f"거래액 ({cat_mode})", hovermode="x unified",
+    )
+    st.plotly_chart(fig_cat, use_container_width=True)
+
+    cat_table = cat_rank.copy()
+    cat_table["광고비중"] = (cat_table["광고비중"] * 100).round(1).astype(str) + "%"
+    cat_table_display = pd.DataFrame({
+        "카테고리": cat_table["category"],
+        "쇼핑검색광고 거래액": cat_table["광고_거래액"].apply(format_million),
+        "EP채널 거래액": cat_table["EP_거래액"].apply(format_million),
+        "광고비중": cat_table["광고비중"],
+    })
+    st.dataframe(cat_table_display, use_container_width=True, hide_index=True, height=440)
+
+    st.download_button(
+        "📥 Excel 다운로드",
+        data=to_excel_bytes(cat_rank),
+        file_name=f"카테고리별실적_{cat_start_ts.date()}_{cat_end_ts.date()}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="dl_category_rank",
+    )
+
+    # ── 2026년 추이 (선택 카테고리 기준, 채널 선택 + 전년비 비교) ──
+    render_section_title(f"2026년 추이 (전년비 비교) · {cat_mode}{cat_scope_suffix or ' · 전체'}")
+    trend_scope = cat_df if category_filter == "전체" else cat_df[cat_df["category"] == category_filter]
+    channel_choice = st.selectbox("채널 선택", ["쇼핑검색광고", "EP채널"], key="cat_channel_choice")
+    value_col = "광고_거래액" if channel_choice == "쇼핑검색광고" else "EP_거래액"
+
+    cat_buckets = build_2026_buckets(trend_scope, unit)
+    if not cat_buckets:
+        st.info("2026년 데이터가 없거나, 선택한 조회단위 기준으로 마감된 구간이 없습니다.")
+    else:
+        cat_labels, cat_cur_vals, cat_prev_vals = category_bucket_yoy_series(
+            trend_scope, cat_buckets, value_col, cat_mode
+        )
+
+        fig_trend = go.Figure()
+        fig_trend.add_trace(go.Scatter(x=cat_labels, y=cat_cur_vals, mode="lines+markers",
+                                        name="2026년(올해)", line=dict(width=2)))
+        fig_trend.add_trace(go.Scatter(x=cat_labels, y=cat_prev_vals, mode="lines+markers",
+                                        name="전년비", line=dict(width=2, dash="dash"),
+                                        connectgaps=True))
+        fig_trend.update_layout(
+            height=420, margin=dict(t=20, b=20, l=10, r=10),
+            yaxis_title=f"{channel_choice} 거래액 ({cat_mode})", xaxis_title=None,
+            hovermode="x unified",
+        )
+        st.plotly_chart(fig_trend, use_container_width=True)
+
+    # ── 원본 데이터 테이블 & 다운로드 ──
+    render_section_title(f"{unit} 원본 데이터 · {cat_cur_label}{cat_scope_suffix}")
+    cat_display_cols = ["date", "category", "광고_거래액", "EP_거래액"]
+    cat_display_df = cat_view_scope[cat_display_cols].sort_values(
+        ["date", "category"], ascending=[False, True]
+    )
+    st.dataframe(cat_display_df, use_container_width=True, height=350)
+    st.download_button(
+        "📥 Excel 다운로드",
+        data=to_excel_bytes(cat_display_df),
+        file_name=f"카테고리별_원본데이터_{cat_start_ts.date()}_{cat_end_ts.date()}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        key="dl_category_raw",
+    )
