@@ -108,6 +108,15 @@ if menu == "쇼핑검색광고 실적":
             return value / days
         return value
 
+    def format_kpi_value(metric, value):
+        if value is None:
+            return None
+        if metric in ("거래액", "광고비"):
+            return format_million(value)
+        if metric == "ROAS":
+            return format_roas_percent(value)
+        return format_value(metric, value)
+
     # ── 비교기간 (전일/전주/전월비 + 전년비) 산출 ──
     comp_periods = get_comparison_periods(ref_date, unit, MIN_DATE, MAX_DATE)
     comp_aggs = {}
@@ -123,7 +132,8 @@ if menu == "쇼핑검색광고 실적":
         for label, p_agg in comp_aggs.items():
             prev_raw = p_agg[metric] if p_agg else None
             prev_v = scaled(metric, prev_raw, comp_days[label])
-            out.append((label, pct_change(cur_v, prev_v)))
+            prev_str = format_kpi_value(metric, prev_v)
+            out.append((label, pct_change(cur_v, prev_v), prev_str))
         return out
 
     # ── KPI 카드 ──
@@ -132,12 +142,7 @@ if menu == "쇼핑검색광고 실적":
     for m in kpi_metrics:
         display_val = scaled(m, agg[m], cur_days)
         label_txt = m if m not in BASE_METRICS else f"{m} · {mode}"
-        if m in ("거래액", "광고비"):
-            value_str = format_million(display_val)
-        elif m == "ROAS":
-            value_str = format_roas_percent(display_val)
-        else:
-            value_str = format_value(m, display_val)
+        value_str = format_kpi_value(m, display_val)
         cards.append({"label": label_txt, "value": value_str, "deltas": deltas_for(m)})
 
     render_kpi_cards(cards)
@@ -463,7 +468,8 @@ else:
         for label, p_agg in cat_comp_aggs.items():
             prev_raw = p_agg[metric] if p_agg else None
             prev_v = cat_scaled(prev_raw, cat_comp_days[label])
-            out.append((label, pct_change(cur_v, prev_v)))
+            prev_str = format_million(prev_v) if prev_v is not None else None
+            out.append((label, pct_change(cur_v, prev_v), prev_str))
         return out
 
     # ── KPI 카드: 쇼핑검색광고 거래액 / EP채널 거래액 (동일 기간 비교) ──
