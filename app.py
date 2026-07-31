@@ -206,6 +206,7 @@ if menu == "쇼핑검색광고 실적":
         fig.update_layout(
             height=420, margin=dict(t=20, b=20, l=10, r=10),
             yaxis_title=axis_metric_label, xaxis_title=None,
+            xaxis=dict(type="category"),
             hovermode="x unified",
         )
         st.plotly_chart(fig, use_container_width=True)
@@ -560,7 +561,8 @@ else:
             height=440, margin=dict(t=20, b=20, l=10, r=60),
             yaxis=dict(title=f"쇼핑검색광고 거래액 ({cat_mode})"),
             yaxis2=dict(title=f"EP채널 거래액 ({cat_mode})", overlaying="y", side="right"),
-            xaxis_title=None, hovermode="x unified",
+            xaxis=dict(type="category", title=None),
+            hovermode="x unified",
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
         )
         st.plotly_chart(fig_trend, use_container_width=True)
