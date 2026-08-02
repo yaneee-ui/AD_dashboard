@@ -429,3 +429,40 @@ def fitflop_roas(row, col_ad, col_cost):
     if pd.isna(cost) or cost == 0:
         return None
     return row[col_ad] / cost
+
+
+def fitflop_yoy_table(ff_df: pd.DataFrame, metric: str) -> pd.DataFrame:
+    """metric in {거래액, 광고비, ROAS}에 대해 월별로 (올해/전년/전년비)를
+    포함(자사 전체)과 제외(핏플랍 제외) 두 기준으로 나란히 계산한 표를 반환.
+    2026년 각 월과 전년 동월(2025)이 모두 있는 월만 포함."""
+    all_col = {"거래액": "자사_거래액", "광고비": "자사_광고비"}
+    ex_col = {"거래액": "핏플랍제외_거래액", "광고비": "핏플랍제외_광고비"}
+
+    by_ym = ff_df.set_index("ym")
+    rows = []
+    for m in range(1, 13):
+        cur_ym, prev_ym = f"2026{m:02d}", f"2025{m:02d}"
+        if cur_ym not in by_ym.index or prev_ym not in by_ym.index:
+            continue
+        cur, prev = by_ym.loc[cur_ym], by_ym.loc[prev_ym]
+
+        if metric == "ROAS":
+            cur_all = fitflop_roas(cur, "자사_거래액", "자사_광고비")
+            prev_all = fitflop_roas(prev, "자사_거래액", "자사_광고비")
+            cur_ex = fitflop_roas(cur, "핏플랍제외_거래액", "핏플랍제외_광고비")
+            prev_ex = fitflop_roas(prev, "핏플랍제외_거래액", "핏플랍제외_광고비")
+        else:
+            cur_all, prev_all = cur[all_col[metric]], prev[all_col[metric]]
+            cur_ex, prev_ex = cur[ex_col[metric]], prev[ex_col[metric]]
+
+        def _yoy(c, p):
+            if c is None or p is None or pd.isna(c) or pd.isna(p) or p == 0:
+                return None
+            return (c - p) / abs(p) * 100
+
+        rows.append({
+            "월": f"{m}월",
+            "포함_올해": cur_all, "포함_전년": prev_all, "포함_전년비": _yoy(cur_all, prev_all),
+            "제외_올해": cur_ex, "제외_전년": prev_ex, "제외_전년비": _yoy(cur_ex, prev_ex),
+        })
+    return pd.DataFrame(rows)
