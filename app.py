@@ -13,7 +13,7 @@ from utils import (
     load_category_data, aggregate_category, aggregate_category_by,
     category_bucket_yoy_series, category_dual_channel_series,
     category_txn_type_breakdown, TXN_TYPE_OPTIONS,
-    load_fitflop_data, fitflop_roas,
+    load_fitflop_data, fitflop_roas, fitflop_yoy_table,
 )
 from styles import (
     inject_css, render_kpi_cards, render_page_header, render_section_title,
@@ -642,6 +642,76 @@ else:
         },
     ]
     st.dataframe(pd.DataFrame(summary_rows), use_container_width=True, hide_index=True)
+
+    # ── 전년비교 (2026 vs 2025, 포함 vs 제외) ──
+    render_section_title("전년비교 — 핏플랍 포함 vs 제외 (2026 vs 2025)")
+    yoy_metric = st.radio("지표", ["거래액", "광고비", "ROAS"], horizontal=True, key="ff_yoy_metric")
+    yoy_tbl = fitflop_yoy_table(ff_df, yoy_metric)
+
+    if yoy_tbl.empty:
+        st.info("전년 동월 데이터가 있는 2026년 월이 없습니다.")
+    else:
+        # 누적(1~6월 등 데이터가 있는 전 구간) 전년비 — ROAS는 재산정, 금액은 합산 후 비율
+        valid = yoy_tbl.dropna(subset=["포함_전년비", "제외_전년비"], how="all")
+        if yoy_metric == "ROAS":
+            # 누적 ROAS는 원천 금액 합산으로 재계산
+            paired_months = [int(m.replace("월", "")) for m in yoy_tbl["월"]]
+            cur_ids = [f"2026{m:02d}" for m in paired_months]
+            prev_ids = [f"2025{m:02d}" for m in paired_months]
+            cur_slice = ff_df[ff_df["ym"].isin(cur_ids)]
+            prev_slice = ff_df[ff_df["ym"].isin(prev_ids)]
+            def _roas(s, rev, cost):
+                c = s[cost].sum()
+                return (s[rev].sum() / c) if c else None
+            cum_all_cur = _roas(cur_slice, "자사_거래액", "자사_광고비")
+            cum_all_prev = _roas(prev_slice, "자사_거래액", "자사_광고비")
+            cum_ex_cur = _roas(cur_slice, "핏플랍제외_거래액", "핏플랍제외_광고비")
+            cum_ex_prev = _roas(prev_slice, "핏플랍제외_거래액", "핏플랍제외_광고비")
+            cum_all_yoy = (cum_all_cur - cum_all_prev) / cum_all_prev * 100 if cum_all_prev else None
+            cum_ex_yoy = (cum_ex_cur - cum_ex_prev) / cum_ex_prev * 100 if cum_ex_prev else None
+        else:
+            cum_all_yoy = pct_change(valid["포함_올해"].sum(), valid["포함_전년"].sum())
+            cum_ex_yoy = pct_change(valid["제외_올해"].sum(), valid["제외_전년"].sum())
+
+        m1, m2, m3 = st.columns(3)
+        m1.metric("포함 기준 전년비 (누적)", format_delta_text(cum_all_yoy))
+        m2.metric("제외 기준 전년비 (누적)", format_delta_text(cum_ex_yoy))
+        if cum_all_yoy is not None and cum_ex_yoy is not None:
+            gap = cum_ex_yoy - cum_all_yoy
+            m3.metric("핏플랍 왜곡폭 (제외−포함)", f"{gap:+.1f}%p")
+
+        # 월별 전년비 그룹 막대
+        fig_yoy = go.Figure()
+        fig_yoy.add_trace(go.Bar(x=yoy_tbl["월"], y=yoy_tbl["포함_전년비"],
+                                  name="포함 (자사 전체)", marker_color="#CBD5E1"))
+        fig_yoy.add_trace(go.Bar(x=yoy_tbl["월"], y=yoy_tbl["제외_전년비"],
+                                  name="제외 (핏플랍 제외)", marker_color="#2563EB"))
+        fig_yoy.update_layout(
+            barmode="group", height=420, margin=dict(t=20, b=20, l=10, r=10),
+            yaxis_title=f"{yoy_metric} 전년비(%)", xaxis=dict(type="category", title=None),
+            hovermode="x unified",
+        )
+        st.plotly_chart(fig_yoy, use_container_width=True)
+
+        yoy_display = pd.DataFrame({"월": yoy_tbl["월"]})
+        if yoy_metric == "ROAS":
+            yoy_display["포함 올해"] = yoy_tbl["포함_올해"].apply(_fmt_roas)
+            yoy_display["포함 전년"] = yoy_tbl["포함_전년"].apply(_fmt_roas)
+            yoy_display["제외 올해"] = yoy_tbl["제외_올해"].apply(_fmt_roas)
+            yoy_display["제외 전년"] = yoy_tbl["제외_전년"].apply(_fmt_roas)
+        else:
+            yoy_display["포함 올해"] = yoy_tbl["포함_올해"].apply(_fmt_amt)
+            yoy_display["포함 전년"] = yoy_tbl["포함_전년"].apply(_fmt_amt)
+            yoy_display["제외 올해"] = yoy_tbl["제외_올해"].apply(_fmt_amt)
+            yoy_display["제외 전년"] = yoy_tbl["제외_전년"].apply(_fmt_amt)
+        yoy_display["포함 전년비"] = yoy_tbl["포함_전년비"].apply(format_delta_text)
+        yoy_display["제외 전년비"] = yoy_tbl["제외_전년비"].apply(format_delta_text)
+        st.dataframe(
+            yoy_display.style.map(delta_cell_style, subset=["포함 전년비", "제외 전년비"]),
+            use_container_width=True, hide_index=True,
+        )
+        st.caption("※ 포함 기준은 작년에 있던 핏플랍 거래가 올해 퇴점으로 빠져 전년비가 실제보다 낮게(왜곡되어) 나타납니다. "
+                   "제외 기준이 자사 본연의 성장세입니다.")
 
     render_section_title("월별 추이 — 포함(자사 전체) vs 제외(핏플랍 제외)")
     ff_metric = st.selectbox("지표 선택", ["거래액", "광고비", "ROAS"], key="ff_metric")
