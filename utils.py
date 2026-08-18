@@ -12,11 +12,23 @@ import streamlit as st
 # GitHub 웹 UI로 드래그앤드롭 업로드하면 폴더 구조 없이 리포 루트에
 # 파일이 평평하게 올라가는 경우가 있어, data/ 폴더와 루트 둘 다 확인한다.
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# ── ② 일일리포트[태블로] — 01(실적 흐름)/02(전년비교) 페이지의 기준 데이터 ──
 _CANDIDATE_PATHS = [
-    os.path.join(BASE_DIR, "data", "shopping_ad_daily.csv"),
-    os.path.join(BASE_DIR, "shopping_ad_daily.csv"),
+    os.path.join(BASE_DIR, "data", "tableau_daily.csv"),
+    os.path.join(BASE_DIR, "tableau_daily.csv"),
 ]
 DATA_PATH = next((p for p in _CANDIDATE_PATHS if os.path.exists(p)), _CANDIDATE_PATHS[0])
+
+# ── ① 쇼핑검색광고 리포트(NBOS 매칭) — 지금은 어느 페이지에서도 직접 쓰지 않지만,
+#     추후 상품/카테고리/브랜드 ROAS 매칭용으로 남겨둔 원본. 필요 시 load_ad_report_data()로 로드.
+_AD_REPORT_CANDIDATE_PATHS = [
+    os.path.join(BASE_DIR, "data", "shopping_ad_report_daily.csv"),
+    os.path.join(BASE_DIR, "shopping_ad_report_daily.csv"),
+]
+AD_REPORT_DATA_PATH = next(
+    (p for p in _AD_REPORT_CANDIDATE_PATHS if os.path.exists(p)), _AD_REPORT_CANDIDATE_PATHS[0]
+)
 
 _CATEGORY_CANDIDATE_PATHS = [
     os.path.join(BASE_DIR, "data", "category_daily.csv"),
@@ -87,7 +99,7 @@ def load_data():
             f"데이터 파일을 찾을 수 없습니다.\n\n"
             f"다음 경로를 확인했습니다:\n"
             + "\n".join(f"- `{p}`" for p in _CANDIDATE_PATHS)
-            + f"\n\nGitHub 리포지토리에 `shopping_ad_daily.csv`가 실제로 커밋되어 있는지 "
+            + f"\n\nGitHub 리포지토리에 `tableau_daily.csv`가 실제로 커밋되어 있는지 "
               f"확인해주세요."
         )
         st.stop()
@@ -95,6 +107,19 @@ def load_data():
     df["연도"] = df["date"].dt.year
     df["월"] = df["date"].dt.month
     df["요일"] = df["date"].dt.dayofweek  # 0=월요일
+    return df
+
+
+@st.cache_data
+def load_ad_report_data():
+    """① 쇼핑검색광고 리포트(NBOS 매칭) 원본. 지금은 어느 페이지도 직접 쓰지 않지만,
+    추후 상품/카테고리/브랜드 ROAS 매칭 기능에 쓸 수 있도록 남겨둔 로더."""
+    if not os.path.exists(AD_REPORT_DATA_PATH):
+        return None
+    df = pd.read_csv(AD_REPORT_DATA_PATH, parse_dates=["date"], encoding="utf-8-sig")
+    df["연도"] = df["date"].dt.year
+    df["월"] = df["date"].dt.month
+    df["요일"] = df["date"].dt.dayofweek
     return df
 
 
@@ -466,3 +491,73 @@ def fitflop_yoy_table(ff_df: pd.DataFrame, metric: str) -> pd.DataFrame:
             "제외_올해": cur_ex, "제외_전년": prev_ex, "제외_전년비": _yoy(cur_ex, prev_ex),
         })
     return pd.DataFrame(rows)
+
+
+# ════════════════════════════════════════════════════════════════
+# EP 상관관계 분석 (쇼핑검색광고 확대 → EP 거래액 동반 상승 카테고리 점검)
+# ════════════════════════════════════════════════════════════════
+def category_weekly_changes(cat_df: pd.DataFrame) -> pd.DataFrame:
+    """카테고리별 주간(월요일 시작) 광고_거래액/EP_거래액 합계와 전주 대비 증감률(%)을 반환.
+    광고_거래액은 카테고리별 실제 광고비 원본이 없을 때 '얼마나 밀었는지'의 대리지표로 사용.
+    직전 주 값이 0이라 증감률이 무한대(inf)가 되는 경우는 NaN 처리해 상관계수 계산에서 제외한다."""
+    import numpy as np
+    df = cat_df.copy()
+    df["_wk"] = df["date"] - pd.to_timedelta(df["date"].dt.weekday, unit="D")
+    weekly = df.groupby(["category", "_wk"])[["광고_거래액", "EP_거래액"]].sum().reset_index()
+    weekly = weekly.sort_values(["category", "_wk"]).reset_index(drop=True)
+    weekly["광고_증감률"] = weekly.groupby("category")["광고_거래액"].pct_change() * 100
+    weekly["EP_증감률"] = weekly.groupby("category")["EP_거래액"].pct_change() * 100
+    weekly[["광고_증감률", "EP_증감률"]] = weekly[["광고_증감률", "EP_증감률"]].replace(
+        [np.inf, -np.inf], np.nan
+    )
+    return weekly
+
+
+def category_lag_correlation(weekly_df: pd.DataFrame, max_lag: int = 2, min_samples: int = 4) -> pd.DataFrame:
+    """카테고리별로 '광고 증감률(t) vs EP 증감률(t+lag)' 상관계수를 lag 0~max_lag까지 계산.
+    표본이 min_samples 미만이면 해당 lag는 None. best_lag/best_corr은 절댓값 기준 최고 상관 lag."""
+    rows = []
+    for cat, g in weekly_df.groupby("category"):
+        g = g.sort_values("_wk").reset_index(drop=True)
+        row = {"category": cat}
+        best_lag, best_corr, n_used = 0, None, 0
+        for lag in range(0, max_lag + 1):
+            ad = g["광고_증감률"]
+            ep = g["EP_증감률"].shift(-lag)
+            valid = ad.notna() & ep.notna()
+            n = int(valid.sum())
+            corr = ad[valid].corr(ep[valid]) if n >= min_samples else None
+            row[f"lag{lag}"] = corr
+            row[f"n_lag{lag}"] = n
+            if corr is not None and (best_corr is None or abs(corr) > abs(best_corr)):
+                best_corr, best_lag, n_used = corr, lag, n
+        row["best_lag"] = best_lag
+        row["best_corr"] = best_corr
+        row["best_n"] = n_used
+        rows.append(row)
+    result = pd.DataFrame(rows)
+    result["_abs_corr"] = result["best_corr"].abs()
+    return result.sort_values("_abs_corr", ascending=False).drop(columns="_abs_corr").reset_index(drop=True)
+
+
+def category_lag_scatter_data(weekly_df: pd.DataFrame, category: str, lag: int) -> pd.DataFrame:
+    """선택 카테고리 + lag에 대한 산점도용 (주차, 광고_증감률, EP_증감률) 데이터."""
+    g = weekly_df[weekly_df["category"] == category].sort_values("_wk").reset_index(drop=True)
+    ad = g["광고_증감률"]
+    ep = g["EP_증감률"].shift(-lag)
+    valid = ad.notna() & ep.notna()
+    out = pd.DataFrame({
+        "주차": g.loc[valid, "_wk"],
+        "광고_증감률": ad[valid],
+        "EP_증감률": ep[valid],
+    }).reset_index(drop=True)
+    return out
+
+
+def linear_trend(x: pd.Series, y: pd.Series):
+    """단순 선형회귀 (기울기, 절편) 반환. numpy만 사용."""
+    if len(x) < 2:
+        return None, None
+    import numpy as np
+    slope, intercept = np.polyfit(x, y, 1)
+    return slope, intercept
