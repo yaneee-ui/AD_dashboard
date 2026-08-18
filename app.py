@@ -14,6 +14,8 @@ from utils import (
     category_bucket_yoy_series, category_dual_channel_series,
     category_txn_type_breakdown, TXN_TYPE_OPTIONS,
     load_fitflop_data, fitflop_roas, fitflop_yoy_table,
+    category_weekly_changes, category_lag_correlation,
+    category_lag_scatter_data, linear_trend,
 )
 from styles import (
     inject_css, render_kpi_cards, render_page_header, render_section_title,
@@ -41,7 +43,8 @@ ALL_METRICS = list(dict.fromkeys(ALL_METRICS))  # 중복 제거, 순서 유지
 st.sidebar.markdown("### 🛍️ 쇼핑검색광고 · 네이버")
 menu = st.sidebar.radio(
     "메뉴",
-    ["📋 01. 쇼핑검색광고 실적", "📈 02. 전년비교", "📊 03. 카테고리별 실적", "🧩 04. 핏플랍 제외 비교"],
+    ["📋 01. 쇼핑검색광고 실적", "📈 02. 전년비교", "📊 03. 카테고리별 실적",
+     "🧩 04. 핏플랍 제외 비교", "🔗 05. EP 상관관계 분석"],
     label_visibility="collapsed",
 )
 if "01" in menu:
@@ -50,8 +53,10 @@ elif "02" in menu:
     menu = "전년비교"
 elif "03" in menu:
     menu = "카테고리별 실적"
-else:
+elif "04" in menu:
     menu = "핏플랍 제외 비교"
+else:
+    menu = "EP 상관관계 분석"
 st.sidebar.markdown("---")
 unit = st.sidebar.radio("조회단위", UNIT_OPTIONS, horizontal=True)
 st.sidebar.markdown("---")
@@ -592,7 +597,7 @@ elif menu == "카테고리별 실적":
 # ════════════════════════════════════════════════════════════════
 # PAGE 4: 핏플랍 제외 비교
 # ════════════════════════════════════════════════════════════════
-else:
+elif menu == "핏플랍 제외 비교":
     ff_df = load_fitflop_data().sort_values("ym").reset_index(drop=True)
     ff_df["ROAS_전체"] = ff_df.apply(lambda r: fitflop_roas(r, "자사_거래액", "자사_광고비"), axis=1)
     ff_df["ROAS_제외"] = ff_df.apply(lambda r: fitflop_roas(r, "핏플랍제외_거래액", "핏플랍제외_광고비"), axis=1)
@@ -761,3 +766,102 @@ else:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         key="dl_fitflop",
     )
+
+
+# ════════════════════════════════════════════════════════════════
+# PAGE 5: EP 상관관계 분석
+# ════════════════════════════════════════════════════════════════
+else:
+    render_page_header(
+        eyebrow="쇼핑검색광고 · EP채널",
+        title="EP 상관관계 분석",
+        sub="카테고리별로 쇼핑검색광고 거래액이 늘 때 EP 거래액도 같이 늘어나는지, 주간 증감률 상관관계로 점검합니다.",
+    )
+    st.markdown(
+        '<div class="kpi-footnote">※ 카테고리별 실제 광고비(지출액) 원본이 아직 없어, '
+        '쇼핑검색광고 거래액 증감률을 "얼마나 밀었는지"의 대리지표로 사용했습니다. '
+        '카테고리별 광고비를 받으면 이 지표를 그대로 교체할 수 있습니다. '
+        '또한 상관관계는 인과관계를 증명하지 않으며, 계절성 등 다른 요인이 같이 작용할 수 있습니다.</div>',
+        unsafe_allow_html=True,
+    )
+
+    weekly = category_weekly_changes(cat_df)
+    corr_df = category_lag_correlation(weekly, max_lag=2)
+
+    render_section_title("카테고리별 시차 상관관계 랭킹")
+    st.caption("lag0=같은 주, lag1=1주 후, lag2=2주 후 EP 반응. '최고 시점'은 절댓값 기준 가장 강한 상관관계가 나타난 시차입니다.")
+
+    corr_display = pd.DataFrame({
+        "카테고리": corr_df["category"],
+        "lag0(동주)": corr_df["lag0"].apply(lambda v: f"{v:.2f}" if pd.notna(v) else "-"),
+        "lag1(1주후)": corr_df["lag1"].apply(lambda v: f"{v:.2f}" if pd.notna(v) else "-"),
+        "lag2(2주후)": corr_df["lag2"].apply(lambda v: f"{v:.2f}" if pd.notna(v) else "-"),
+        "최고 시점": corr_df["best_lag"].apply(lambda v: "동주" if v == 0 else f"{v}주 후"),
+        "최고 상관계수": corr_df["best_corr"].apply(lambda v: f"{v:.2f}" if pd.notna(v) else "-"),
+        "표본수": corr_df["best_n"],
+    })
+    st.dataframe(corr_display, use_container_width=True, hide_index=True)
+
+    render_section_title("카테고리별 산점도 (광고 증감률 vs EP 증감률)")
+    valid_cats = corr_df[corr_df["best_corr"].notna()]["category"].tolist()
+
+    if not valid_cats:
+        st.info("상관관계를 계산할 수 있는 카테고리가 없습니다.")
+    else:
+        c1, c2 = st.columns([2, 2])
+        with c1:
+            scatter_cat = st.selectbox("카테고리 선택", valid_cats, index=0, key="corr_cat")
+        default_lag = int(corr_df.loc[corr_df["category"] == scatter_cat, "best_lag"].iloc[0])
+        with c2:
+            scatter_lag = st.radio(
+                "시차(lag)", [0, 1, 2], index=default_lag, horizontal=True,
+                format_func=lambda v: "동주" if v == 0 else f"{v}주 후", key="corr_lag",
+            )
+
+        scatter_data = category_lag_scatter_data(weekly, scatter_cat, scatter_lag)
+
+        if len(scatter_data) < 3:
+            st.info("산점도를 그리기엔 표본이 부족합니다.")
+        else:
+            r = scatter_data["광고_증감률"].corr(scatter_data["EP_증감률"])
+            slope, intercept = linear_trend(scatter_data["광고_증감률"], scatter_data["EP_증감률"])
+
+            fig_corr = go.Figure()
+            fig_corr.add_trace(go.Scatter(
+                x=scatter_data["광고_증감률"], y=scatter_data["EP_증감률"],
+                mode="markers", name="주간 데이터",
+                marker=dict(color="#2563EB", size=8, opacity=0.7),
+            ))
+            if slope is not None:
+                x_range = [scatter_data["광고_증감률"].min(), scatter_data["광고_증감률"].max()]
+                y_range = [slope * x + intercept for x in x_range]
+                fig_corr.add_trace(go.Scatter(
+                    x=x_range, y=y_range, mode="lines", name="추세선",
+                    line=dict(color="#94A3B8", dash="dash"),
+                ))
+            fig_corr.update_layout(
+                height=440, margin=dict(t=20, b=20, l=10, r=10),
+                xaxis_title="쇼핑검색광고 거래액 증감률 (%, 전주비)",
+                yaxis_title=f"EP 거래액 증감률 (%, {'동주' if scatter_lag == 0 else f'{scatter_lag}주 후'})",
+                hovermode="closest",
+            )
+            st.plotly_chart(fig_corr, use_container_width=True)
+            st.caption(
+                f"상관계수 r = {r:.2f} · 표본 {len(scatter_data)}개 주 · {scatter_cat} 카테고리, "
+                f"{'동주' if scatter_lag == 0 else f'{scatter_lag}주 후'} 기준"
+            )
+
+            render_section_title(f"{scatter_cat} 주간 데이터")
+            detail_display = scatter_data.copy()
+            detail_display["주차"] = detail_display["주차"].dt.date
+            detail_display["광고_증감률"] = detail_display["광고_증감률"].round(1).astype(str) + "%"
+            detail_display["EP_증감률"] = detail_display["EP_증감률"].round(1).astype(str) + "%"
+            st.dataframe(detail_display, use_container_width=True, hide_index=True)
+
+            st.download_button(
+                "📥 Excel 다운로드",
+                data=to_excel_bytes(scatter_data),
+                file_name=f"EP상관관계_{scatter_cat}_{scatter_lag}주.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                key="dl_corr",
+            )
