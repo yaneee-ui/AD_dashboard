@@ -20,6 +20,15 @@ _CANDIDATE_PATHS = [
 ]
 DATA_PATH = next((p for p in _CANDIDATE_PATHS if os.path.exists(p)), _CANDIDATE_PATHS[0])
 
+# ── ③ 카테고리별 정상/이월/입점 (태블로 원본, 01·02와 동일 소스) — 03페이지 기준 데이터 ──
+_CATTXN_CANDIDATE_PATHS = [
+    os.path.join(BASE_DIR, "data", "category_txn_daily.csv"),
+    os.path.join(BASE_DIR, "category_txn_daily.csv"),
+]
+CATTXN_DATA_PATH = next(
+    (p for p in _CATTXN_CANDIDATE_PATHS if os.path.exists(p)), _CATTXN_CANDIDATE_PATHS[0]
+)
+
 # ── ① 쇼핑검색광고 리포트(NBOS 매칭) — 지금은 어느 페이지에서도 직접 쓰지 않지만,
 #     추후 상품/카테고리/브랜드 ROAS 매칭용으로 남겨둔 원본. 필요 시 load_ad_report_data()로 로드.
 _AD_REPORT_CANDIDATE_PATHS = [
@@ -597,3 +606,130 @@ def linear_trend(x: pd.Series, y: pd.Series):
     import numpy as np
     slope, intercept = np.polyfit(x, y, 1)
     return slope, intercept
+
+
+# ════════════════════════════════════════════════════════════════
+# 카테고리별 정상/이월/입점 실적 (태블로 원본, 01·02와 동일 소스) — 03페이지
+# ════════════════════════════════════════════════════════════════
+CATTXN_TXN_TYPE_OPTIONS = ["전체", "정상", "이월", "입점"]
+CATTXN_CHANNEL_OPTIONS = ["쇼핑검색광고", "EP채널"]
+CATTXN_METRIC_OPTIONS = ["거래액", "주문고객수", "객단가"]
+
+
+@st.cache_data
+def load_cattxn_data():
+    if not os.path.exists(CATTXN_DATA_PATH):
+        st.error(
+            f"카테고리별 정상/이월/입점 데이터 파일을 찾을 수 없습니다.\n\n"
+            f"다음 경로를 확인했습니다:\n"
+            + "\n".join(f"- `{p}`" for p in _CATTXN_CANDIDATE_PATHS)
+            + f"\n\nGitHub 리포지토리에 `category_txn_daily.csv`가 실제로 커밋되어 있는지 확인해주세요."
+        )
+        st.stop()
+    df = pd.read_csv(CATTXN_DATA_PATH, parse_dates=["date"], encoding="utf-8-sig")
+    for c in ["ad_거래액", "ad_주문고객수", "ep_거래액", "ep_주문고객수"]:
+        df[c] = df[c].fillna(0)
+    df["연도"] = df["date"].dt.year
+    return df
+
+
+def _cattxn_scope(df: pd.DataFrame, txn_type: str = "전체", category: str = "전체") -> pd.DataFrame:
+    scope = df
+    if txn_type != "전체":
+        scope = scope[scope["txn_type"] == txn_type]
+    if category != "전체":
+        scope = scope[scope["category"] == category]
+    return scope
+
+
+def _cattxn_derive(sums: dict) -> dict:
+    """ad_거래액/ad_주문고객수/ep_거래액/ep_주문고객수 합계 딕셔너리에서 객단가까지 파생."""
+    out = {
+        "쇼핑검색광고_거래액": sums["ad_거래액"],
+        "쇼핑검색광고_주문고객수": sums["ad_주문고객수"],
+        "EP채널_거래액": sums["ep_거래액"],
+        "EP채널_주문고객수": sums["ep_주문고객수"],
+    }
+    out["쇼핑검색광고_객단가"] = (
+        out["쇼핑검색광고_거래액"] / out["쇼핑검색광고_주문고객수"] if out["쇼핑검색광고_주문고객수"] else 0
+    )
+    out["EP채널_객단가"] = (
+        out["EP채널_거래액"] / out["EP채널_주문고객수"] if out["EP채널_주문고객수"] else 0
+    )
+    return out
+
+
+def aggregate_cattxn(df: pd.DataFrame, txn_type: str = "전체", category: str = "전체") -> dict:
+    """선택한 거래유형/카테고리 기준으로 채널별 거래액/주문고객수 합산 + 객단가 파생."""
+    scope = _cattxn_scope(df, txn_type, category)
+    sums = {c: scope[c].sum() for c in ["ad_거래액", "ad_주문고객수", "ep_거래액", "ep_주문고객수"]}
+    return _cattxn_derive(sums)
+
+
+def aggregate_cattxn_by(df: pd.DataFrame, group_col: str = "category", txn_type: str = "전체") -> pd.DataFrame:
+    """카테고리별로 채널별 거래액/주문고객수 합산 + 객단가 파생한 DataFrame 반환."""
+    scope = _cattxn_scope(df, txn_type)
+    grouped = scope.groupby(group_col)[["ad_거래액", "ad_주문고객수", "ep_거래액", "ep_주문고객수"]].sum()
+    grouped["쇼핑검색광고_거래액"] = grouped["ad_거래액"]
+    grouped["쇼핑검색광고_주문고객수"] = grouped["ad_주문고객수"]
+    grouped["EP채널_거래액"] = grouped["ep_거래액"]
+    grouped["EP채널_주문고객수"] = grouped["ep_주문고객수"]
+    grouped["쇼핑검색광고_객단가"] = grouped.apply(
+        lambda r: (r["ad_거래액"] / r["ad_주문고객수"]) if r["ad_주문고객수"] else 0, axis=1
+    )
+    grouped["EP채널_객단가"] = grouped.apply(
+        lambda r: (r["ep_거래액"] / r["ep_주문고객수"]) if r["ep_주문고객수"] else 0, axis=1
+    )
+    return grouped.reset_index()
+
+
+def cattxn_txn_type_breakdown(df: pd.DataFrame, category: str = "전체") -> pd.DataFrame:
+    """선택된 카테고리 범위에 대해 정상/이월/입점 유형별 광고·EP 거래액/주문고객수 구성을 반환."""
+    scope = df if category == "전체" else df[df["category"] == category]
+    rows = []
+    for t in ["정상", "이월", "입점"]:
+        sub = scope[scope["txn_type"] == t]
+        rows.append({
+            "거래유형": t,
+            "쇼핑검색광고 거래액": sub["ad_거래액"].sum(),
+            "쇼핑검색광고 주문고객수": sub["ad_주문고객수"].sum(),
+            "EP채널 거래액": sub["ep_거래액"].sum(),
+            "EP채널 주문고객수": sub["ep_주문고객수"].sum(),
+        })
+    return pd.DataFrame(rows)
+
+
+def cattxn_daily_series(df: pd.DataFrame, channel: str, metric: str, txn_type: str,
+                        category: str, start, end):
+    """EP 대시보드 스타일 '실적 추이' 차트용: 임의 날짜범위(조회단위 버킷과 무관)의
+    일별 시계열 + 전년 동요일(364일 전) 비교 시계열을 함께 반환.
+    channel: '쇼핑검색광고' | 'EP채널'  /  metric: '거래액' | '주문고객수' | '객단가'
+    반환: (date_range, cur_vals(list), prev_vals(list, None 포함 가능))
+    """
+    prefix = "ad" if channel == "쇼핑검색광고" else "ep"
+    rev_col, cnt_col = f"{prefix}_거래액", f"{prefix}_주문고객수"
+
+    scope = _cattxn_scope(df, txn_type, category)
+    daily = scope.groupby("date")[[rev_col, cnt_col]].sum()
+
+    def _metric_series(sub: pd.DataFrame):
+        if metric == "거래액":
+            return sub[rev_col]
+        if metric == "주문고객수":
+            return sub[cnt_col]
+        denom = sub[cnt_col].replace(0, pd.NA)
+        return sub[rev_col] / denom
+
+    date_range = pd.date_range(pd.Timestamp(start), pd.Timestamp(end), freq="D")
+
+    cur_daily = daily.reindex(date_range)
+    cur_daily[[rev_col, cnt_col]] = cur_daily[[rev_col, cnt_col]].fillna(0)
+    cur_vals = _metric_series(cur_daily)
+
+    prev_range = date_range - pd.Timedelta(days=364)
+    prev_daily = daily.reindex(prev_range)
+    prev_daily[[rev_col, cnt_col]] = prev_daily[[rev_col, cnt_col]].fillna(0)
+    prev_daily.index = date_range
+    prev_vals = _metric_series(prev_daily)
+
+    return date_range, cur_vals.tolist(), prev_vals.tolist()
