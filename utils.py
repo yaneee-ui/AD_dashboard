@@ -210,9 +210,17 @@ def period_label(start: pd.Timestamp, end: pd.Timestamp, unit: str) -> str:
     if unit == "일별":
         return f"{start.date()} ({weekday_kr[start.weekday()]})"
     if unit == "주별":
+        if start.date() == end.date():
+            # 전년비 등에서 동요일까지만 truncate된 1일짜리 비교기간
+            return f"{start.date()} ({weekday_kr[start.weekday()]})"
         return f"{start.date()} ~ {end.date()} (주)"
-    suffix = " · 월마감" if unit == "월마감" else ""
-    return f"{start.year}년 {start.month}월{suffix}"
+    if unit == "월마감":
+        return f"{start.year}년 {start.month}월 · 월마감"
+    # 월별: 전체 달이면 'YYYY년 M월', 부분월(전월비/전년비 truncation 등)이면 날짜범위 그대로 표기
+    is_full_month = start.day == 1 and end.date() == (start + pd.offsets.MonthEnd(0)).date()
+    if is_full_month:
+        return f"{start.year}년 {start.month}월"
+    return f"{start.date()} ~ {end.date()}"
 
 
 def days_in_period(start: pd.Timestamp, end: pd.Timestamp) -> int:
@@ -312,32 +320,45 @@ def get_comparison_periods(ref_date, unit: str, min_date, max_date):
     """조회단위 기준 '직전 동일단위' 기간 + 전월비 + 전년비 기간을 반환.
     반환: {"직전기간 라벨": (start, end), "전월비": (start, end), "전년비": (start, end)}
     (일별 조회 시에는 '직전기간'이 곧 전일비이므로 전월비만 별도로 추가됨)
+
+    월마감을 제외한 모든 단위는 '현재기간(부분기간 포함)을 그대로 시프트'하는 방식으로
+    비교기간을 만든다 — 즉 현재기간이 진행 중(예: 이번 주 1일치, 이번 달 17일치)이면
+    전주비/전월비/전년비 전부 딱 그만큼의 일수만, 요일이 정렬된 위치로 truncate해서 비교한다.
+    (예: 월별 현재기간이 8/1~17(부분월)이면 → 전월비는 7/1~17, 전년비는 8/2~18만 사용.
+    전체 이전 달/이전 해를 그대로 가져오면 일수가 안 맞아 불공평한 비교가 됨.)
+
+    월마감은 애초에 완결된 달만 다루므로 부분기간 이슈가 없어, 예외적으로 달력 기준
+    정확히 이전 달/이전 해를 그대로 사용한다 (실제 마감 실적끼리 비교).
     """
     ref_ts = pd.Timestamp(ref_date)
+    cur_start, cur_end = get_period_bounds(ref_date, unit, min_date, max_date)
+
+    def shift_period(offset):
+        s = max(cur_start - offset, pd.Timestamp(min_date))
+        e = min(cur_end - offset, pd.Timestamp(max_date))
+        return (s, e)
+
+    if unit == "월마감":
+        month_ref = ref_ts - pd.DateOffset(months=1)
+        year_ref = ref_ts - pd.DateOffset(years=1)
+        return {
+            "전월비": get_period_bounds(month_ref.date(), unit, min_date, max_date),
+            "전년비": get_period_bounds(year_ref.date(), unit, min_date, max_date),
+        }
 
     if unit == "일별":
         immediate_label = "전일비"
-        immediate_ref = ref_ts - pd.Timedelta(days=1)
     elif unit == "주별":
         immediate_label = "전주비"
-        immediate_ref = ref_ts - pd.Timedelta(days=7)
-    else:  # 월별 / 월마감
+    else:  # 월별
         immediate_label = "전월비"
-        immediate_ref = ref_ts - pd.DateOffset(months=1)
 
-    periods = {immediate_label: get_period_bounds(immediate_ref.date(), unit, min_date, max_date)}
-
+    periods = {immediate_label: shift_period(pd.Timedelta(days=7) if unit == "주별" else
+                                              pd.DateOffset(months=1) if unit == "월별" else
+                                              pd.Timedelta(days=1))}
     if immediate_label != "전월비":
-        month_ref = ref_ts - pd.DateOffset(months=1)
-        periods["전월비"] = get_period_bounds(month_ref.date(), unit, min_date, max_date)
-
-    if unit == "월마감":
-        # 월마감은 '동요일비'가 아니라 실제 마감 실적 기준 비교 — 정확히 12개월 전 같은 달
-        year_ref = ref_ts - pd.DateOffset(years=1)
-    else:
-        # 일별/주별/월별은 전년 동요일비(364일=52주 전, 요일 정렬 유지) 기준
-        year_ref = ref_ts - pd.Timedelta(days=364)
-    periods["전년비"] = get_period_bounds(year_ref.date(), unit, min_date, max_date)
+        periods["전월비"] = shift_period(pd.DateOffset(months=1))
+    periods["전년비"] = shift_period(pd.Timedelta(days=364))
 
     return periods
 
