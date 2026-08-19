@@ -148,33 +148,46 @@ if menu == "쇼핑검색광고 실적":
     ]
     st.caption("📅 비교대상 기간 — " + " · ".join(comp_period_strs))
 
-    # ── 실적요약 (직전기간 대비) 테이블 ──
+    # ── 실적요약 (직전기간 대비 + 전년비) 테이블 ──
     immediate_label = next(iter(comp_periods.keys()))
     prev_agg_for_table = comp_aggs.get(immediate_label)
     prev_days_for_table = comp_days[immediate_label]
     prev_start, prev_end = comp_periods[immediate_label]
 
-    render_section_title(f"실적요약 · {immediate_label} 비교 ({mode})")
+    yoy_agg_for_table = comp_aggs.get("전년비")
+    yoy_days_for_table = comp_days["전년비"]
+    yoy_start, yoy_end = comp_periods["전년비"]
+
+    render_section_title(f"실적요약 · {immediate_label} · 전년비 비교 ({mode})")
 
     summary_metrics = ["노출수", "클릭수", "CTR", "CR", "객단가", "결제고객수",
                        "CPC", "CPUV", "UV", "광고비", "거래액", "ROAS"]
     prev_col_name = period_label(prev_start, prev_end, unit)
+    yoy_col_name = f"전년({period_label(yoy_start, yoy_end, unit)})"
     rows = []
     for m in summary_metrics:
         cur_v = scaled(m, agg[m], cur_days)
+
         prev_raw = prev_agg_for_table[m] if prev_agg_for_table else None
         prev_v = scaled(m, prev_raw, prev_days_for_table)
         delta = pct_change(cur_v, prev_v)
+
+        yoy_raw = yoy_agg_for_table[m] if yoy_agg_for_table else None
+        yoy_v = scaled(m, yoy_raw, yoy_days_for_table)
+        yoy_delta = pct_change(cur_v, yoy_v)
+
         rows.append({
             "지표": m,
             prev_col_name: format_value(m, prev_v) if prev_v is not None else "-",
             cur_label: format_value(m, cur_v),
             f"{immediate_label}(%)": format_delta_text(delta),
+            yoy_col_name: format_value(m, yoy_v) if yoy_v is not None else "-",
+            "전년비(%)": format_delta_text(yoy_delta),
         })
     summary_df = pd.DataFrame(rows)
 
     st.dataframe(
-        summary_df.style.map(delta_cell_style, subset=[f"{immediate_label}(%)"]),
+        summary_df.style.map(delta_cell_style, subset=[f"{immediate_label}(%)", "전년비(%)"]),
         use_container_width=True, hide_index=True, height=460,
     )
 
