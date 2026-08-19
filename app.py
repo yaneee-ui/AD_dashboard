@@ -455,6 +455,11 @@ else:
         title=f"카테고리별 실적 — {cattxn_cur_label}{cattxn_cat_suffix}{cattxn_txn_suffix}",
         sub=f"조회단위: {unit}  ·  표시방식: {cattxn_mode}  ·  집계기간: {cattxn_start_ts.date()} ~ {cattxn_end_ts.date()} ({cattxn_cur_days}일)",
     )
+    st.caption(
+        f"ℹ️ 이 데이터는 2일 전 실적까지 반영됩니다 (최신일자: {CATTXN_MAX_DATE}). "
+        f"01·02페이지의 일일리포트[태블로]는 1일 전 실적까지 반영됩니다 (최신일자: {MAX_DATE}) — "
+        f"두 페이지의 '오늘' 기준이 하루 차이날 수 있습니다."
+    )
 
     cattxn_mask = (cattxn_df["date"] >= cattxn_start_ts) & (cattxn_df["date"] <= cattxn_end_ts)
     cattxn_view = cattxn_df.loc[cattxn_mask]
@@ -612,21 +617,31 @@ else:
     st.dataframe(cattxn_breakdown_display, use_container_width=True, hide_index=True)
     st.caption("※ 거래유형 필터와 무관하게 정상/이월/입점 구성을 항상 보여줍니다.")
 
-    # ── 실적 추이 (EP 대시보드 스타일: 채널/지표 선택 + 임의 기간 + 전년 비교선 토글) ──
+    # ── 실적 추이 (EP 대시보드 스타일: 채널/지표/거래유형 선택 + 임의 기간 + 전년 비교선 토글) ──
     render_section_title("실적 추이")
 
-    c1, c2 = st.columns([2, 3])
+    trend_channel_options = CATTXN_CHANNEL_OPTIONS + ["쇼핑검색광고 vs EP채널 (흐름 비교)"]
+
+    c1, c2, c6 = st.columns([2.5, 3, 2.5])
     with c1:
-        trend_channel = st.radio("채널", CATTXN_CHANNEL_OPTIONS, horizontal=True, key="cattxn_trend_channel")
+        trend_channel = st.radio("채널", trend_channel_options, horizontal=True, key="cattxn_trend_channel")
     with c2:
         trend_metric = st.radio("지표", CATTXN_METRIC_OPTIONS, horizontal=True, key="cattxn_trend_metric")
+    with c6:
+        trend_txn_type = st.radio("거래유형", CATTXN_TXN_TYPE_OPTIONS, horizontal=True, key="cattxn_trend_txn")
+
+    is_compare_mode = trend_channel == "쇼핑검색광고 vs EP채널 (흐름 비교)"
 
     default_trend_start = max(CATTXN_MAX_DATE - timedelta(days=29), CATTXN_MIN_DATE)
 
     def _reset_trend_range():
         st.session_state["cattxn_trend_range"] = (default_trend_start, CATTXN_MAX_DATE)
 
-    c3, c4, c5 = st.columns([3, 1, 1.3])
+    if is_compare_mode:
+        c3, c4 = st.columns([3, 1])
+        show_yoy_line = False
+    else:
+        c3, c4, c5 = st.columns([3, 1, 1.3])
     with c3:
         trend_range = st.date_input(
             "기간", value=(default_trend_start, CATTXN_MAX_DATE),
@@ -635,9 +650,10 @@ else:
     with c4:
         st.markdown("<div style='margin-top:1.8rem'></div>", unsafe_allow_html=True)
         st.button("🔄 최근 30일", key="cattxn_trend_recent", on_click=_reset_trend_range)
-    with c5:
-        st.markdown("<div style='margin-top:1.8rem'></div>", unsafe_allow_html=True)
-        show_yoy_line = st.checkbox("전년 비교선 표시", value=True, key="cattxn_trend_yoy")
+    if not is_compare_mode:
+        with c5:
+            st.markdown("<div style='margin-top:1.8rem'></div>", unsafe_allow_html=True)
+            show_yoy_line = st.checkbox("전년 비교선 표시", value=True, key="cattxn_trend_yoy")
 
     if isinstance(trend_range, tuple) and len(trend_range) == 2:
         t_start, t_end = trend_range
@@ -646,9 +662,38 @@ else:
 
     if t_start > t_end:
         st.error("시작일이 종료일보다 늦을 수 없습니다.")
+    elif is_compare_mode:
+        # 쇼핑검색광고 vs EP채널: 같은 기간 두 채널을 나란히 (전년비 없이, 흐름 비교 목적)
+        t_dates, ad_vals, _ = cattxn_daily_series(
+            cattxn_df, "쇼핑검색광고", trend_metric, trend_txn_type, cattxn_category_filter, t_start, t_end
+        )
+        _, ep_vals, _ = cattxn_daily_series(
+            cattxn_df, "EP채널", trend_metric, trend_txn_type, cattxn_category_filter, t_start, t_end
+        )
+        fig_trend = go.Figure()
+        fig_trend.add_trace(go.Scatter(
+            x=t_dates, y=ad_vals, mode="lines+markers", name="쇼핑검색광고",
+            line=dict(width=2, color="#2563EB"),
+        ))
+        fig_trend.add_trace(go.Scatter(
+            x=t_dates, y=ep_vals, mode="lines+markers", name="EP채널",
+            line=dict(width=2, color="#94A3B8"), yaxis="y2",
+        ))
+        fig_trend.update_layout(
+            height=440, margin=dict(t=20, b=20, l=10, r=60),
+            yaxis=dict(title=f"쇼핑검색광고 {trend_metric}"),
+            yaxis2=dict(title=f"EP채널 {trend_metric}", overlaying="y", side="right"),
+            xaxis_title=None, hovermode="x unified",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        )
+        st.plotly_chart(fig_trend, use_container_width=True)
+        st.caption(
+            f"📅 기간: {t_start} ~ {t_end}  ·  두 채널의 규모 차이가 커서 좌/우 보조축으로 나눠 "
+            f"흐름(패턴)이 비슷하게 움직이는지 비교합니다. 절대값은 위 KPI 카드/테이블을 참고하세요."
+        )
     else:
         t_dates, t_cur, t_prev = cattxn_daily_series(
-            cattxn_df, trend_channel, trend_metric, cattxn_txn_filter, cattxn_category_filter, t_start, t_end
+            cattxn_df, trend_channel, trend_metric, trend_txn_type, cattxn_category_filter, t_start, t_end
         )
         fig_trend = go.Figure()
         fig_trend.add_trace(go.Scatter(
