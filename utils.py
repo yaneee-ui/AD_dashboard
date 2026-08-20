@@ -733,3 +733,93 @@ def cattxn_daily_series(df: pd.DataFrame, channel: str, metric: str, txn_type: s
     prev_vals = _metric_series(prev_daily)
 
     return date_range, cur_vals.tolist(), prev_vals.tolist()
+
+
+def cattxn_period_buckets(df: pd.DataFrame, unit: str):
+    """'실적 추이' 차트용 주별/월별 버킷 생성 (오래된 순으로 정렬).
+    주별: 라벨 'M월 W주차' (해당 월 안에서 몇 번째 주 월요일인지로 카운트)
+    월별: 2026년 데이터만, 라벨 'YYYY-MM'
+    반환: [(label, [dates...]), ...]
+    """
+    if unit == "주별":
+        d = df[df["연도"] == 2026].copy()
+        d["_wk"] = d["date"] - pd.to_timedelta(d["date"].dt.weekday, unit="D")
+        weeks = sorted(d["_wk"].unique())
+        month_counts = {}
+        buckets = []
+        for wk in weeks:
+            wk_ts = pd.Timestamp(wk)
+            key = (wk_ts.year, wk_ts.month)
+            month_counts[key] = month_counts.get(key, 0) + 1
+            label = f"{wk_ts.month}월 {month_counts[key]}주차"
+            dates = sorted(d.loc[d["_wk"] == wk, "date"].unique())
+            buckets.append((label, dates))
+        return buckets
+
+    # 월별: 2026년만 (레퍼런스 EP 대시보드와 동일하게 올해 범위로 표시)
+    d = df[df["연도"] == 2026].copy()
+    d["_ym"] = d["date"].dt.to_period("M")
+    buckets = []
+    for ym, g in sorted(d.groupby("_ym"), key=lambda x: x[0]):
+        label = f"{ym.year}-{ym.month:02d}"
+        dates = sorted(g["date"].unique())
+        buckets.append((label, dates))
+    return buckets
+
+
+def cattxn_bucket_series(df: pd.DataFrame, buckets, channel: str, metric: str, txn_type: str, category: str):
+    """cattxn_period_buckets() 결과를 받아 (labels, 올해값, 전년동요일값) 반환.
+    전년 비교는 버킷을 구성하는 각 날짜를 364일 시프트해서 재집계 — 요일 정렬 유지."""
+    prefix = "ad" if channel == "쇼핑검색광고" else "ep"
+    rev_col, cnt_col = f"{prefix}_거래액", f"{prefix}_주문고객수"
+    scope = _cattxn_scope(df, txn_type, category)
+
+    def _metric(rev, cnt):
+        if metric == "거래액":
+            return rev
+        if metric == "주문고객수":
+            return cnt
+        return (rev / cnt) if cnt else None
+
+    labels, cur_vals, prev_vals = [], [], []
+    for label, dates in buckets:
+        cur_sub = scope[scope["date"].isin(dates)]
+        cur_rev, cur_cnt = cur_sub[rev_col].sum(), cur_sub[cnt_col].sum()
+
+        prev_dates = [pd.Timestamp(d) - pd.Timedelta(days=364) for d in dates]
+        prev_sub = scope[scope["date"].isin(prev_dates)]
+        prev_rev, prev_cnt = prev_sub[rev_col].sum(), prev_sub[cnt_col].sum()
+
+        labels.append(label)
+        cur_vals.append(_metric(cur_rev, cur_cnt))
+        prev_vals.append(_metric(prev_rev, prev_cnt) if not prev_sub.empty else None)
+
+    return labels, cur_vals, prev_vals
+
+
+def cattxn_flow_matrix(df: pd.DataFrame, buckets, channel: str, txn_type: str = "전체", top_n: int = 7):
+    """카테고리별 거래액 흐름(누적영역 차트)용: 버킷 x 카테고리 매트릭스를 만들고,
+    거래액 상위 top_n개 카테고리만 개별로 두고 나머지는 '기타'로 묶는다.
+    반환: (labels, category_order, values_dict) — values_dict[카테고리] = [버킷별 거래액 리스트]
+    """
+    prefix = "ad" if channel == "쇼핑검색광고" else "ep"
+    rev_col = f"{prefix}_거래액"
+    scope = df if txn_type == "전체" else df[df["txn_type"] == txn_type]
+
+    labels = [b[0] for b in buckets]
+    matrix = {}
+    for label, dates in buckets:
+        sub = scope[scope["date"].isin(dates)]
+        matrix[label] = sub.groupby("category")[rev_col].sum()
+
+    all_cats = sorted(set().union(*[m.index for m in matrix.values()])) if matrix else []
+    totals = pd.Series({c: sum(matrix[l].get(c, 0) for l in labels) for c in all_cats})
+    top_cats = totals.sort_values(ascending=False).head(top_n).index.tolist()
+    other_cats = [c for c in all_cats if c not in top_cats]
+
+    values_dict = {c: [matrix[l].get(c, 0) for l in labels] for c in top_cats}
+    if other_cats:
+        values_dict["기타"] = [sum(matrix[l].get(c, 0) for c in other_cats) for l in labels]
+
+    category_order = top_cats + (["기타"] if other_cats else [])
+    return labels, category_order, values_dict
