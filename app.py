@@ -12,6 +12,7 @@ from utils import (
     get_comparison_periods, build_ref_options, days_in_period,
     load_cattxn_data, aggregate_cattxn, aggregate_cattxn_by,
     cattxn_txn_type_breakdown, cattxn_daily_series,
+    cattxn_period_buckets, cattxn_bucket_series, cattxn_flow_matrix,
     CATTXN_TXN_TYPE_OPTIONS, CATTXN_CHANNEL_OPTIONS, CATTXN_METRIC_OPTIONS,
 )
 from styles import (
@@ -230,19 +231,6 @@ if menu == "쇼핑검색광고 실적":
         st.plotly_chart(fig, use_container_width=True)
         yoy_basis = "정확히 12개월 전 같은 달(마감 실적 기준)" if unit == "월마감" else "전년 동요일비(364일=52주 전, 요일 정렬)"
         st.caption(f"📅 전년비 비교 기준: {yoy_basis}")
-
-    # ── 데이터 테이블 & 다운로드 ──
-    render_section_title(f"{unit} 원본 데이터 · {cur_label}")
-    display_cols = ["date"] + ALL_METRICS
-    display_df = view[display_cols].sort_values("date", ascending=False)
-    st.dataframe(display_df, use_container_width=True, height=350)
-
-    st.download_button(
-        "📥 Excel 다운로드",
-        data=to_excel_bytes(display_df),
-        file_name=f"쇼핑검색광고_실적_{start_ts.date()}_{end_ts.date()}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
 
 
 # ════════════════════════════════════════════════════════════════
@@ -604,6 +592,57 @@ else:
         key="dl_cattxn_rank",
     )
 
+    # ── 카테고리별 거래액 흐름 (누적영역 차트, 조회단위에 맞춰 자동 전환) ──
+    render_section_title("카테고리별 거래액 흐름")
+    fc1, fc2 = st.columns([2, 2])
+    with fc1:
+        flow_channel = st.radio("채널", CATTXN_CHANNEL_OPTIONS, horizontal=True, key="cattxn_flow_channel")
+    with fc2:
+        flow_mode = st.radio("표시", ["절대값", "비중(%)"], horizontal=True, key="cattxn_flow_mode")
+
+    if unit == "일별":
+        flow_range = pd.date_range(max(CATTXN_MAX_DATE - timedelta(days=29), CATTXN_MIN_DATE), CATTXN_MAX_DATE)
+        flow_buckets = [(d.strftime("%m-%d"), [d]) for d in flow_range]
+        flow_period_note = f"최근 {len(flow_buckets)}일"
+    elif unit == "주별":
+        all_weeks_flow = cattxn_period_buckets(cattxn_df, "주별")
+        flow_buckets = all_weeks_flow[-12:]
+        flow_period_note = f"{flow_buckets[0][0]} ~ {flow_buckets[-1][0]}" if flow_buckets else ""
+    else:
+        flow_buckets = cattxn_period_buckets(cattxn_df, "월별")
+        flow_period_note = "2026년 전체"
+
+    if not flow_buckets:
+        st.info("표시할 데이터가 없습니다.")
+    else:
+        f_labels, f_cats, f_values = cattxn_flow_matrix(cattxn_df, flow_buckets, flow_channel, cattxn_txn_filter)
+
+        if flow_mode == "비중(%)":
+            totals_per_bucket = [sum(f_values[c][i] for c in f_cats) for i in range(len(f_labels))]
+            display_values = {
+                c: [(v / totals_per_bucket[i] * 100) if totals_per_bucket[i] else 0 for i, v in enumerate(f_values[c])]
+                for c in f_cats
+            }
+            y_title = "비중 (%)"
+        else:
+            display_values = f_values
+            y_title = f"거래액 ({flow_channel})"
+
+        palette = ["#2563EB", "#0EA5E9", "#22C55E", "#F59E0B", "#EF4444", "#8B5CF6", "#EC4899", "#94A3B8"]
+        fig_flow = go.Figure()
+        for i, c in enumerate(f_cats):
+            fig_flow.add_trace(go.Scatter(
+                x=f_labels, y=display_values[c], mode="lines", name=c,
+                stackgroup="one", line=dict(width=0.5, color=palette[i % len(palette)]),
+            ))
+        fig_flow.update_layout(
+            height=460, margin=dict(t=20, b=20, l=10, r=10),
+            xaxis=dict(type="category", title=None), yaxis_title=y_title,
+            hovermode="x unified",
+        )
+        st.plotly_chart(fig_flow, use_container_width=True)
+        st.caption(f"📅 {flow_period_note}  ·  거래액 상위 7개 카테고리는 개별로, 나머지는 '기타'로 묶어 표시합니다.")
+
     # ── 거래유형별 구성 (정상/이월/입점) ──
     render_section_title(f"거래유형별 구성 · {cattxn_cur_label}{cattxn_cat_suffix}")
     cattxn_breakdown = cattxn_txn_type_breakdown(cattxn_view, cattxn_category_filter)
@@ -617,7 +656,7 @@ else:
     st.dataframe(cattxn_breakdown_display, use_container_width=True, hide_index=True)
     st.caption("※ 거래유형 필터와 무관하게 정상/이월/입점 구성을 항상 보여줍니다.")
 
-    # ── 실적 추이 (EP 대시보드 스타일: 채널/지표/거래유형 선택 + 임의 기간 + 전년 비교선 토글) ──
+    # ── 실적 추이 (EP 대시보드 스타일: 조회단위에 따라 일/주/월 포맷 전환) ──
     render_section_title("실적 추이")
 
     trend_channel_options = CATTXN_CHANNEL_OPTIONS + ["쇼핑검색광고 vs EP채널 (흐름 비교)"]
@@ -632,100 +671,161 @@ else:
 
     is_compare_mode = trend_channel == "쇼핑검색광고 vs EP채널 (흐름 비교)"
 
-    default_trend_start = max(CATTXN_MAX_DATE - timedelta(days=29), CATTXN_MIN_DATE)
+    def _render_single_trend(x_vals, cur_vals, prev_vals, channel_label, metric_label,
+                             show_yoy, x_categorical, prev_label="전년 동요일"):
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=x_vals, y=cur_vals, mode="lines+markers", name="26년",
+                                  line=dict(width=2, color="#2563EB")))
+        if show_yoy:
+            fig.add_trace(go.Scatter(x=x_vals, y=prev_vals, mode="lines+markers", name=prev_label,
+                                      line=dict(width=2, color="#93C5FD")))
+        layout = dict(height=440, margin=dict(t=20, b=20, l=10, r=10),
+                      yaxis_title=f"{channel_label} {metric_label}", xaxis_title=None, hovermode="x unified")
+        if x_categorical:
+            layout["xaxis"] = dict(type="category")
+        fig.update_layout(**layout)
+        st.plotly_chart(fig, use_container_width=True)
 
-    def _reset_trend_range():
-        st.session_state["cattxn_trend_range"] = (default_trend_start, CATTXN_MAX_DATE)
-
-    if is_compare_mode:
-        c3, c4 = st.columns([3, 1])
-        show_yoy_line = False
-    else:
-        c3, c4, c5 = st.columns([3, 1, 1.3])
-    with c3:
-        trend_range = st.date_input(
-            "기간", value=(default_trend_start, CATTXN_MAX_DATE),
-            min_value=CATTXN_MIN_DATE, max_value=CATTXN_MAX_DATE, key="cattxn_trend_range",
-        )
-    with c4:
-        st.markdown("<div style='margin-top:1.8rem'></div>", unsafe_allow_html=True)
-        st.button("🔄 최근 30일", key="cattxn_trend_recent", on_click=_reset_trend_range)
-    if not is_compare_mode:
-        with c5:
-            st.markdown("<div style='margin-top:1.8rem'></div>", unsafe_allow_html=True)
-            show_yoy_line = st.checkbox("전년 비교선 표시", value=True, key="cattxn_trend_yoy")
-
-    if isinstance(trend_range, tuple) and len(trend_range) == 2:
-        t_start, t_end = trend_range
-    else:
-        t_start = t_end = trend_range[0] if isinstance(trend_range, tuple) else trend_range
-
-    if t_start > t_end:
-        st.error("시작일이 종료일보다 늦을 수 없습니다.")
-    elif is_compare_mode:
-        # 쇼핑검색광고 vs EP채널: 같은 기간 두 채널을 나란히 (전년비 없이, 흐름 비교 목적)
-        t_dates, ad_vals, _ = cattxn_daily_series(
-            cattxn_df, "쇼핑검색광고", trend_metric, trend_txn_type, cattxn_category_filter, t_start, t_end
-        )
-        _, ep_vals, _ = cattxn_daily_series(
-            cattxn_df, "EP채널", trend_metric, trend_txn_type, cattxn_category_filter, t_start, t_end
-        )
-        fig_trend = go.Figure()
-        fig_trend.add_trace(go.Scatter(
-            x=t_dates, y=ad_vals, mode="lines+markers", name="쇼핑검색광고",
-            line=dict(width=2, color="#2563EB"),
-        ))
-        fig_trend.add_trace(go.Scatter(
-            x=t_dates, y=ep_vals, mode="lines+markers", name="EP채널",
-            line=dict(width=2, color="#94A3B8"), yaxis="y2",
-        ))
-        fig_trend.update_layout(
+    def _render_compare_trend(x_vals, ad_vals, ep_vals, metric_label, x_categorical):
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=x_vals, y=ad_vals, mode="lines+markers", name="쇼핑검색광고",
+                                  line=dict(width=2, color="#2563EB")))
+        fig.add_trace(go.Scatter(x=x_vals, y=ep_vals, mode="lines+markers", name="EP채널",
+                                  line=dict(width=2, color="#94A3B8"), yaxis="y2"))
+        layout = dict(
             height=440, margin=dict(t=20, b=20, l=10, r=60),
-            yaxis=dict(title=f"쇼핑검색광고 {trend_metric}"),
-            yaxis2=dict(title=f"EP채널 {trend_metric}", overlaying="y", side="right"),
+            yaxis=dict(title=f"쇼핑검색광고 {metric_label}"),
+            yaxis2=dict(title=f"EP채널 {metric_label}", overlaying="y", side="right"),
             xaxis_title=None, hovermode="x unified",
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
         )
-        st.plotly_chart(fig_trend, use_container_width=True)
-        st.caption(
-            f"📅 기간: {t_start} ~ {t_end}  ·  두 채널의 규모 차이가 커서 좌/우 보조축으로 나눠 "
-            f"흐름(패턴)이 비슷하게 움직이는지 비교합니다. 절대값은 위 KPI 카드/테이블을 참고하세요."
-        )
-    else:
-        t_dates, t_cur, t_prev = cattxn_daily_series(
-            cattxn_df, trend_channel, trend_metric, trend_txn_type, cattxn_category_filter, t_start, t_end
-        )
-        fig_trend = go.Figure()
-        fig_trend.add_trace(go.Scatter(
-            x=t_dates, y=t_cur, mode="lines+markers", name="26년",
-            line=dict(width=2, color="#2563EB"),
-        ))
-        if show_yoy_line:
-            fig_trend.add_trace(go.Scatter(
-                x=t_dates, y=t_prev, mode="lines+markers", name="전년 동요일",
-                line=dict(width=2, color="#93C5FD"),
-            ))
-        fig_trend.update_layout(
-            height=440, margin=dict(t=20, b=20, l=10, r=10),
-            yaxis_title=f"{trend_channel} {trend_metric}", xaxis_title=None,
-            hovermode="x unified",
-        )
-        st.plotly_chart(fig_trend, use_container_width=True)
-        st.caption(f"📅 기간: {t_start} ~ {t_end}" + ("  ·  전년 비교선: 364일(52주) 전 동요일 매칭" if show_yoy_line else ""))
+        if x_categorical:
+            layout["xaxis"] = dict(type="category")
+        fig.update_layout(**layout)
+        st.plotly_chart(fig, use_container_width=True)
 
-    # ── 원본 데이터 테이블 & 다운로드 ──
-    render_section_title(f"{unit} 원본 데이터 · {cattxn_cur_label}{cattxn_cat_suffix}{cattxn_txn_suffix}")
-    cattxn_display_cols = ["date", "txn_type", "category", "ad_거래액", "ad_주문고객수", "ep_거래액", "ep_주문고객수"]
-    cattxn_view_scope = cattxn_view if cattxn_category_filter == "전체" else cattxn_view[cattxn_view["category"] == cattxn_category_filter]
-    cattxn_view_scope = cattxn_view_scope if cattxn_txn_filter == "전체" else cattxn_view_scope[cattxn_view_scope["txn_type"] == cattxn_txn_filter]
-    cattxn_display_df = cattxn_view_scope[cattxn_display_cols].sort_values(
-        ["date", "category", "txn_type"], ascending=[False, True, True]
-    )
-    st.dataframe(cattxn_display_df, use_container_width=True, height=350)
-    st.download_button(
-        "📥 Excel 다운로드",
-        data=to_excel_bytes(cattxn_display_df),
-        file_name=f"카테고리별_원본데이터_{cattxn_start_ts.date()}_{cattxn_end_ts.date()}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        key="dl_cattxn_raw",
-    )
+    if unit == "일별":
+        # ── 일별: 날짜 범위 피커 ──
+        default_trend_start = max(CATTXN_MAX_DATE - timedelta(days=29), CATTXN_MIN_DATE)
+
+        def _reset_trend_range():
+            st.session_state["cattxn_trend_range"] = (default_trend_start, CATTXN_MAX_DATE)
+
+        if is_compare_mode:
+            c3, c4 = st.columns([3, 1])
+            show_yoy_line = False
+        else:
+            c3, c4, c5 = st.columns([3, 1, 1.3])
+        with c3:
+            trend_range = st.date_input(
+                "기간", value=(default_trend_start, CATTXN_MAX_DATE),
+                min_value=CATTXN_MIN_DATE, max_value=CATTXN_MAX_DATE, key="cattxn_trend_range",
+            )
+        with c4:
+            st.markdown("<div style='margin-top:1.8rem'></div>", unsafe_allow_html=True)
+            st.button("🔄 최근으로", key="cattxn_trend_recent", on_click=_reset_trend_range)
+        if not is_compare_mode:
+            with c5:
+                st.markdown("<div style='margin-top:1.8rem'></div>", unsafe_allow_html=True)
+                show_yoy_line = st.checkbox("전년 비교선 표시", value=True, key="cattxn_trend_yoy")
+
+        if isinstance(trend_range, tuple) and len(trend_range) == 2:
+            t_start, t_end = trend_range
+        else:
+            t_start = t_end = trend_range[0] if isinstance(trend_range, tuple) else trend_range
+
+        if t_start > t_end:
+            st.error("시작일이 종료일보다 늦을 수 없습니다.")
+        elif is_compare_mode:
+            t_dates, ad_vals, _ = cattxn_daily_series(
+                cattxn_df, "쇼핑검색광고", trend_metric, trend_txn_type, cattxn_category_filter, t_start, t_end
+            )
+            _, ep_vals, _ = cattxn_daily_series(
+                cattxn_df, "EP채널", trend_metric, trend_txn_type, cattxn_category_filter, t_start, t_end
+            )
+            _render_compare_trend(t_dates, ad_vals, ep_vals, trend_metric, x_categorical=False)
+            st.caption(f"📅 기간: {t_start} ~ {t_end}  ·  두 채널의 규모 차이가 커서 좌/우 보조축으로 나눠 "
+                      f"흐름(패턴)이 비슷하게 움직이는지 비교합니다.")
+        else:
+            t_dates, t_cur, t_prev = cattxn_daily_series(
+                cattxn_df, trend_channel, trend_metric, trend_txn_type, cattxn_category_filter, t_start, t_end
+            )
+            _render_single_trend(t_dates, t_cur, t_prev, trend_channel, trend_metric, show_yoy_line, x_categorical=False)
+            st.caption(f"📅 기간: {t_start} ~ {t_end}" + ("  ·  전년 비교선: 364일(52주) 전 동요일 매칭" if show_yoy_line else ""))
+
+    elif unit == "주별":
+        # ── 주별: 'M월 W주차' 슬라이더 ──
+        all_weeks = cattxn_period_buckets(cattxn_df, "주별")
+        week_labels = [b[0] for b in all_weeks]
+        default_n = min(12, len(week_labels))
+        default_week_range = (week_labels[-default_n], week_labels[-1])
+
+        def _reset_week_range():
+            st.session_state["cattxn_trend_week_range"] = default_week_range
+
+        if is_compare_mode:
+            c3, c4 = st.columns([4, 1])
+            show_yoy_line = False
+        else:
+            c3, c4, c5 = st.columns([4, 1, 1.3])
+        with c3:
+            st.caption("주차 범위")
+            week_range = st.select_slider(
+                "주차 범위", options=week_labels, value=default_week_range,
+                key="cattxn_trend_week_range", label_visibility="collapsed",
+            )
+        with c4:
+            st.button("🔄 최근으로", key="cattxn_trend_week_recent", on_click=_reset_week_range)
+        if not is_compare_mode:
+            with c5:
+                show_yoy_line = st.checkbox("전년 비교선 표시", value=True, key="cattxn_trend_week_yoy")
+
+        start_idx, end_idx = week_labels.index(week_range[0]), week_labels.index(week_range[1])
+        if start_idx > end_idx:
+            st.error("시작 주차가 종료 주차보다 늦을 수 없습니다.")
+        else:
+            sel_buckets = all_weeks[start_idx:end_idx + 1]
+            if is_compare_mode:
+                labels, ad_vals, _ = cattxn_bucket_series(
+                    cattxn_df, sel_buckets, "쇼핑검색광고", trend_metric, trend_txn_type, cattxn_category_filter
+                )
+                _, ep_vals, _ = cattxn_bucket_series(
+                    cattxn_df, sel_buckets, "EP채널", trend_metric, trend_txn_type, cattxn_category_filter
+                )
+                _render_compare_trend(labels, ad_vals, ep_vals, trend_metric, x_categorical=True)
+            else:
+                labels, cur_vals, prev_vals = cattxn_bucket_series(
+                    cattxn_df, sel_buckets, trend_channel, trend_metric, trend_txn_type, cattxn_category_filter
+                )
+                _render_single_trend(labels, cur_vals, prev_vals, trend_channel, trend_metric, show_yoy_line,
+                                     x_categorical=True, prev_label="전년 동일주차")
+            st.caption(f"📅 주차: {week_range[0]} ~ {week_range[1]}"
+                      + ("  ·  전년 비교선: 동일 주차(364일 전) 매칭" if not is_compare_mode and show_yoy_line else ""))
+
+    else:  # 월별 / 월마감
+        # ── 월별: 선택 없이 2026년 전체 표시 (레퍼런스와 동일) ──
+        all_months = cattxn_period_buckets(cattxn_df, "월별")
+
+        if is_compare_mode:
+            show_yoy_line = False
+        else:
+            show_yoy_line = st.checkbox("전년 비교선 표시", value=True, key="cattxn_trend_month_yoy")
+
+        if not all_months:
+            st.info("2026년 데이터가 없습니다.")
+        elif is_compare_mode:
+            labels, ad_vals, _ = cattxn_bucket_series(
+                cattxn_df, all_months, "쇼핑검색광고", trend_metric, trend_txn_type, cattxn_category_filter
+            )
+            _, ep_vals, _ = cattxn_bucket_series(
+                cattxn_df, all_months, "EP채널", trend_metric, trend_txn_type, cattxn_category_filter
+            )
+            _render_compare_trend(labels, ad_vals, ep_vals, trend_metric, x_categorical=True)
+            st.caption("📅 2026년 전체  ·  두 채널의 규모 차이가 커서 좌/우 보조축으로 나눠 흐름을 비교합니다.")
+        else:
+            labels, cur_vals, prev_vals = cattxn_bucket_series(
+                cattxn_df, all_months, trend_channel, trend_metric, trend_txn_type, cattxn_category_filter
+            )
+            _render_single_trend(labels, cur_vals, prev_vals, trend_channel, trend_metric, show_yoy_line,
+                                 x_categorical=True, prev_label="전년 동월(동요일 기준)")
+            st.caption("📅 2026년 전체" + ("  ·  전년 비교선: 동월 동요일(364일 전) 매칭" if show_yoy_line else ""))
