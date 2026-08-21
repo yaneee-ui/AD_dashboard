@@ -65,7 +65,7 @@ def inject_css():
 
     .kpi-grid {{
         display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
         gap: 14px;
         margin-bottom: 8px;
     }}
@@ -74,6 +74,7 @@ def inject_css():
         border: 1px solid #E5E9F0;
         border-radius: 12px;
         padding: 16px 18px;
+        min-width: 0;
     }}
     .kpi-label {{
         color: #64748B;
@@ -97,14 +98,18 @@ def inject_css():
         display: flex;
         justify-content: space-between;
         align-items: baseline;
+        gap: 6px;
         font-size: 0.8rem;
         line-height: 1.5;
     }}
     .kpi-delta-label {{
         color: #64748B;
+        white-space: nowrap;
+        flex-shrink: 0;
     }}
     .kpi-delta-value {{
         font-weight: 600;
+        white-space: nowrap;
     }}
     .kpi-delta-value.up {{
         color: {UP_COLOR};
@@ -120,6 +125,7 @@ def inject_css():
         color: #94A3B8;
         font-weight: 400;
         margin-left: 3px;
+        white-space: nowrap;
     }}
     .kpi-footnote {{
         color: #94A3B8;
