@@ -20,9 +20,11 @@ _CANDIDATE_PATHS = [
 ]
 DATA_PATH = next((p for p in _CANDIDATE_PATHS if os.path.exists(p)), _CANDIDATE_PATHS[0])
 
-# ── ③ 카테고리별 정상/이월/입점 (태블로 원본, 01·02와 동일 소스) — 03페이지 기준 데이터 ──
+# ── ③ 카테고리·브랜드별 정상/이월/입점 (태블로 원본, 01·02와 동일 소스) — 03페이지 기준 데이터 ──
 _CATTXN_CANDIDATE_PATHS = [
-    os.path.join(BASE_DIR, "data", "category_txn_daily.csv"),
+    os.path.join(BASE_DIR, "data", "category_brand_txn_daily.csv"),
+    os.path.join(BASE_DIR, "category_brand_txn_daily.csv"),
+    os.path.join(BASE_DIR, "data", "category_txn_daily.csv"),  # 브랜드 없던 구버전 (하위호환)
     os.path.join(BASE_DIR, "category_txn_daily.csv"),
 ]
 CATTXN_DATA_PATH = next(
@@ -155,7 +157,7 @@ def aggregate_by(df: pd.DataFrame, group_col: str) -> pd.DataFrame:
 def format_value(metric: str, value: float) -> str:
     if pd.isna(value):
         return "-"
-    if metric == "ROAS":
+    if metric in ("ROAS", "ROAS(총)"):
         return f"{value * 100:,.0f}%"
     if metric in PERCENT_METRICS:
         return f"{value * 100:,.2f}%"
@@ -609,7 +611,7 @@ def linear_trend(x: pd.Series, y: pd.Series):
 
 
 # ════════════════════════════════════════════════════════════════
-# 카테고리별 정상/이월/입점 실적 (태블로 원본, 01·02와 동일 소스) — 03페이지
+# 카테고리·브랜드별 정상/이월/입점 실적 (태블로 원본, 01·02와 동일 소스) — 03페이지
 # ════════════════════════════════════════════════════════════════
 CATTXN_TXN_TYPE_OPTIONS = ["전체", "정상", "이월", "입점"]
 CATTXN_CHANNEL_OPTIONS = ["쇼핑검색광고", "EP채널"]
@@ -620,25 +622,29 @@ CATTXN_METRIC_OPTIONS = ["거래액", "주문고객수", "객단가"]
 def load_cattxn_data():
     if not os.path.exists(CATTXN_DATA_PATH):
         st.error(
-            f"카테고리별 정상/이월/입점 데이터 파일을 찾을 수 없습니다.\n\n"
+            f"카테고리·브랜드별 정상/이월/입점 데이터 파일을 찾을 수 없습니다.\n\n"
             f"다음 경로를 확인했습니다:\n"
             + "\n".join(f"- `{p}`" for p in _CATTXN_CANDIDATE_PATHS)
-            + f"\n\nGitHub 리포지토리에 `category_txn_daily.csv`가 실제로 커밋되어 있는지 확인해주세요."
+            + f"\n\nGitHub 리포지토리에 `category_brand_txn_daily.csv`가 실제로 커밋되어 있는지 확인해주세요."
         )
         st.stop()
     df = pd.read_csv(CATTXN_DATA_PATH, parse_dates=["date"], encoding="utf-8-sig")
     for c in ["ad_거래액", "ad_주문고객수", "ep_거래액", "ep_주문고객수"]:
         df[c] = df[c].fillna(0)
+    if "brand" not in df.columns:
+        df["brand"] = "전체"  # 구버전(브랜드 없는) 파일 하위호환
     df["연도"] = df["date"].dt.year
     return df
 
 
-def _cattxn_scope(df: pd.DataFrame, txn_type: str = "전체", category: str = "전체") -> pd.DataFrame:
+def _cattxn_scope(df: pd.DataFrame, txn_type: str = "전체", category: str = "전체", brand: str = "전체") -> pd.DataFrame:
     scope = df
     if txn_type != "전체":
         scope = scope[scope["txn_type"] == txn_type]
     if category != "전체":
         scope = scope[scope["category"] == category]
+    if brand != "전체":
+        scope = scope[scope["brand"] == brand]
     return scope
 
 
@@ -659,16 +665,20 @@ def _cattxn_derive(sums: dict) -> dict:
     return out
 
 
-def aggregate_cattxn(df: pd.DataFrame, txn_type: str = "전체", category: str = "전체") -> dict:
-    """선택한 거래유형/카테고리 기준으로 채널별 거래액/주문고객수 합산 + 객단가 파생."""
-    scope = _cattxn_scope(df, txn_type, category)
+def aggregate_cattxn(df: pd.DataFrame, txn_type: str = "전체", category: str = "전체", brand: str = "전체") -> dict:
+    """선택한 거래유형/카테고리/브랜드 기준으로 채널별 거래액/주문고객수 합산 + 객단가 파생."""
+    scope = _cattxn_scope(df, txn_type, category, brand)
     sums = {c: scope[c].sum() for c in ["ad_거래액", "ad_주문고객수", "ep_거래액", "ep_주문고객수"]}
     return _cattxn_derive(sums)
 
 
-def aggregate_cattxn_by(df: pd.DataFrame, group_col: str = "category", txn_type: str = "전체") -> pd.DataFrame:
-    """카테고리별로 채널별 거래액/주문고객수 합산 + 객단가 파생한 DataFrame 반환."""
-    scope = _cattxn_scope(df, txn_type)
+def aggregate_cattxn_by(df: pd.DataFrame, group_col: str = "category", txn_type: str = "전체",
+                        category: str = "전체", brand: str = "전체") -> pd.DataFrame:
+    """카테고리 또는 브랜드별로 채널별 거래액/주문고객수 합산 + 객단가 파생한 DataFrame 반환.
+    group_col='category'일 때는 category 필터를 적용하지 않는 게 자연스럽고(전체 카테고리 랭킹),
+    group_col='brand'일 때는 category로 범위를 좁힌 뒤 그 안에서 브랜드 랭킹을 볼 수 있다."""
+    scope_category = "전체" if group_col == "category" else category
+    scope = _cattxn_scope(df, txn_type, scope_category, brand if group_col != "brand" else "전체")
     grouped = scope.groupby(group_col)[["ad_거래액", "ad_주문고객수", "ep_거래액", "ep_주문고객수"]].sum()
     grouped["쇼핑검색광고_거래액"] = grouped["ad_거래액"]
     grouped["쇼핑검색광고_주문고객수"] = grouped["ad_주문고객수"]
@@ -683,9 +693,9 @@ def aggregate_cattxn_by(df: pd.DataFrame, group_col: str = "category", txn_type:
     return grouped.reset_index()
 
 
-def cattxn_txn_type_breakdown(df: pd.DataFrame, category: str = "전체") -> pd.DataFrame:
-    """선택된 카테고리 범위에 대해 정상/이월/입점 유형별 광고·EP 거래액/주문고객수 구성을 반환."""
-    scope = df if category == "전체" else df[df["category"] == category]
+def cattxn_txn_type_breakdown(df: pd.DataFrame, category: str = "전체", brand: str = "전체") -> pd.DataFrame:
+    """선택된 카테고리/브랜드 범위에 대해 정상/이월/입점 유형별 광고·EP 거래액/주문고객수 구성을 반환."""
+    scope = _cattxn_scope(df, "전체", category, brand)
     rows = []
     for t in ["정상", "이월", "입점"]:
         sub = scope[scope["txn_type"] == t]
@@ -700,7 +710,7 @@ def cattxn_txn_type_breakdown(df: pd.DataFrame, category: str = "전체") -> pd.
 
 
 def cattxn_daily_series(df: pd.DataFrame, channel: str, metric: str, txn_type: str,
-                        category: str, start, end):
+                        category: str, start, end, brand: str = "전체"):
     """EP 대시보드 스타일 '실적 추이' 차트용: 임의 날짜범위(조회단위 버킷과 무관)의
     일별 시계열 + 전년 동요일(364일 전) 비교 시계열을 함께 반환.
     channel: '쇼핑검색광고' | 'EP채널'  /  metric: '거래액' | '주문고객수' | '객단가'
@@ -709,7 +719,7 @@ def cattxn_daily_series(df: pd.DataFrame, channel: str, metric: str, txn_type: s
     prefix = "ad" if channel == "쇼핑검색광고" else "ep"
     rev_col, cnt_col = f"{prefix}_거래액", f"{prefix}_주문고객수"
 
-    scope = _cattxn_scope(df, txn_type, category)
+    scope = _cattxn_scope(df, txn_type, category, brand)
     daily = scope.groupby("date")[[rev_col, cnt_col]].sum()
 
     def _metric_series(sub: pd.DataFrame):
@@ -767,12 +777,13 @@ def cattxn_period_buckets(df: pd.DataFrame, unit: str):
     return buckets
 
 
-def cattxn_bucket_series(df: pd.DataFrame, buckets, channel: str, metric: str, txn_type: str, category: str):
+def cattxn_bucket_series(df: pd.DataFrame, buckets, channel: str, metric: str, txn_type: str, category: str,
+                         brand: str = "전체"):
     """cattxn_period_buckets() 결과를 받아 (labels, 올해값, 전년동요일값) 반환.
     전년 비교는 버킷을 구성하는 각 날짜를 364일 시프트해서 재집계 — 요일 정렬 유지."""
     prefix = "ad" if channel == "쇼핑검색광고" else "ep"
     rev_col, cnt_col = f"{prefix}_거래액", f"{prefix}_주문고객수"
-    scope = _cattxn_scope(df, txn_type, category)
+    scope = _cattxn_scope(df, txn_type, category, brand)
 
     def _metric(rev, cnt):
         if metric == "거래액":
@@ -797,29 +808,32 @@ def cattxn_bucket_series(df: pd.DataFrame, buckets, channel: str, metric: str, t
     return labels, cur_vals, prev_vals
 
 
-def cattxn_flow_matrix(df: pd.DataFrame, buckets, channel: str, txn_type: str = "전체", top_n: int = 7):
-    """카테고리별 거래액 흐름(누적영역 차트)용: 버킷 x 카테고리 매트릭스를 만들고,
-    거래액 상위 top_n개 카테고리만 개별로 두고 나머지는 '기타'로 묶는다.
+def cattxn_flow_matrix(df: pd.DataFrame, buckets, channel: str, txn_type: str = "전체", top_n: int = 7,
+                       group_by: str = "category", category: str = "전체", brand: str = "전체"):
+    """카테고리별(또는 브랜드별) 거래액 흐름(누적영역 차트)용: 버킷 x 그룹 매트릭스를 만들고,
+    거래액 상위 top_n개만 개별로 두고 나머지는 '기타'로 묶는다.
+    group_by='brand'이면 category로 범위를 좁힌 뒤 그 안에서 브랜드별로 나눌 수 있다.
     반환: (labels, category_order, values_dict) — values_dict[카테고리] = [버킷별 거래액 리스트]
     """
     prefix = "ad" if channel == "쇼핑검색광고" else "ep"
     rev_col = f"{prefix}_거래액"
-    scope = df if txn_type == "전체" else df[df["txn_type"] == txn_type]
+    scope_category = category if group_by == "brand" else "전체"
+    scope = _cattxn_scope(df, txn_type, scope_category, brand if group_by != "brand" else "전체")
 
     labels = [b[0] for b in buckets]
     matrix = {}
     for label, dates in buckets:
         sub = scope[scope["date"].isin(dates)]
-        matrix[label] = sub.groupby("category")[rev_col].sum()
+        matrix[label] = sub.groupby(group_by)[rev_col].sum()
 
-    all_cats = sorted(set().union(*[m.index for m in matrix.values()])) if matrix else []
-    totals = pd.Series({c: sum(matrix[l].get(c, 0) for l in labels) for c in all_cats})
-    top_cats = totals.sort_values(ascending=False).head(top_n).index.tolist()
-    other_cats = [c for c in all_cats if c not in top_cats]
+    all_groups = sorted(set().union(*[m.index for m in matrix.values()])) if matrix else []
+    totals = pd.Series({g: sum(matrix[l].get(g, 0) for l in labels) for g in all_groups})
+    top_groups = totals.sort_values(ascending=False).head(top_n).index.tolist()
+    other_groups = [g for g in all_groups if g not in top_groups]
 
-    values_dict = {c: [matrix[l].get(c, 0) for l in labels] for c in top_cats}
-    if other_cats:
-        values_dict["기타"] = [sum(matrix[l].get(c, 0) for c in other_cats) for l in labels]
+    values_dict = {g: [matrix[l].get(g, 0) for l in labels] for g in top_groups}
+    if other_groups:
+        values_dict["기타"] = [sum(matrix[l].get(g, 0) for g in other_groups) for l in labels]
 
-    category_order = top_cats + (["기타"] if other_cats else [])
-    return labels, category_order, values_dict
+    group_order = top_groups + (["기타"] if other_groups else [])
+    return labels, group_order, values_dict
