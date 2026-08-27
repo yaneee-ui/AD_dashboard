@@ -146,6 +146,27 @@ def inject_css():
         padding-left: 8px;
         margin: 22px 0 10px 0;
     }}
+
+    /* 상단 필터 영역 고정 (스크롤해도 항상 보이도록) */
+    div.st-key-page1_filters, div.st-key-page3_filters {{
+        position: fixed !important;
+        top: 3.7rem;
+        left: 22rem;
+        right: 5rem;
+        width: auto !important;
+        z-index: 999;
+        background: {PAGE_BG};
+        padding: 10px 14px 8px 14px;
+        border-bottom: 1px solid #E5E9F0;
+        border-radius: 0 0 8px 8px;
+        box-shadow: 0 2px 6px rgba(15, 23, 42, 0.06);
+    }}
+    div.st-key-page1_filters + div {{
+        margin-top: 96px;
+    }}
+    div.st-key-page3_filters + div {{
+        margin-top: 172px;
+    }}
     </style>
     """), unsafe_allow_html=True)
 
@@ -189,6 +210,80 @@ def render_kpi_cards(cards: list):
         )
     parts.append("</div>")
     st.markdown("".join(parts), unsafe_allow_html=True)
+
+
+def render_custom_funnel(stages: list, values: list, deltas: list = None, sub_labels: list = None,
+                         colors: list = None):
+    """단계별 값이 크게 차이나도(예: 노출 vs 구매 1000배) 전 단계가 다 보이도록,
+    폭을 실제 값 비율이 아니라 '보기 좋은' 고정 테이퍼로 그리는 커스텀 SVG 퍼널.
+    stages: ["노출","클릭","방문(UV)","구매"]
+    values: [1399895, 19605, 12479, 154]
+    deltas: 각 단계 밑에 표시할 '직전 대비' 문자열 리스트 (없으면 생략)
+    sub_labels: 각 단계 값 위에 작게 붙일 라벨(예: "기간 합계") 리스트 (없으면 생략)
+    colors: 단계별 색 hex 리스트 (기본 파랑→하늘→주황→초록 진행)
+    """
+    if colors is None:
+        colors = ["#2563EB", "#0EA5E9", "#F59E0B", "#22C55E", "#8B5CF6", "#EC4899"]
+    n = len(stages)
+    width, height = 300, 280
+    cx = width / 2
+    top_margin = 8
+    usable_h = height - 2 * top_margin
+    seg_h = usable_h / n
+    max_hw, min_hw = 135, 22
+    half_widths = [max_hw - (max_hw - min_hw) * (i / n) for i in range(n + 1)]
+
+    svg_parts = []
+    for i in range(n):
+        y0 = top_margin + seg_h * i
+        y1 = top_margin + seg_h * (i + 1)
+        hw0, hw1 = half_widths[i], half_widths[i + 1]
+        points = f"{cx-hw0:.1f},{y0:.1f} {cx+hw0:.1f},{y0:.1f} {cx+hw1:.1f},{y1:.1f} {cx-hw1:.1f},{y1:.1f}"
+        color = colors[i % len(colors)]
+        svg_parts.append(f'<polygon points="{points}" fill="{color}" opacity="0.94" />')
+        label_y = (y0 + y1) / 2
+        svg_parts.append(
+            f'<text x="{cx:.1f}" y="{label_y:.1f}" text-anchor="middle" dominant-baseline="middle" '
+            f'fill="white" font-size="14" font-weight="700">{stages[i]}</text>'
+        )
+    svg = (
+        f'<svg viewBox="0 0 {width} {height}" style="width:100%; max-width:300px; height:auto; display:block;">'
+        + "".join(svg_parts) + '</svg>'
+    )
+
+    stat_blocks = []
+    for i, (label, val) in enumerate(zip(stages, values)):
+        color = colors[i % len(colors)]
+        sub_html = (
+            f'<div style="color:#94A3B8; font-size:0.72rem; margin-top:1px;">{sub_labels[i]}</div>'
+            if sub_labels and i < len(sub_labels) and sub_labels[i] else ""
+        )
+        delta_html = (
+            f'<div style="color:#64748B; font-size:0.78rem; margin-top:3px;">{deltas[i]}</div>'
+            if deltas and i < len(deltas) and deltas[i] else ""
+        )
+        val_str = val if isinstance(val, str) else f"{val:,.0f}"
+        stat_blocks.append(
+            '<div style="display:flex; align-items:flex-start; gap:10px; padding:11px 0; '
+            'border-bottom:1px solid #F1F5F9;">'
+            f'<div style="width:10px; height:10px; border-radius:50%; background:{color}; '
+            'margin-top:7px; flex-shrink:0;"></div>'
+            '<div>'
+            f'<div style="color:#64748B; font-size:0.82rem; font-weight:600;">{label}</div>'
+            f'{sub_html}'
+            f'<div style="color:#0F172A; font-size:1.35rem; font-weight:700; margin-top:2px;">{val_str}</div>'
+            f'{delta_html}'
+            '</div></div>'
+        )
+
+    html = (
+        '<div style="display:flex; gap:26px; align-items:center; flex-wrap:wrap; '
+        f'background:{CARD_BG}; border:1px solid #E5E9F0; border-radius:12px; padding:20px;">'
+        f'<div style="flex-shrink:0; width:280px;">{svg}</div>'
+        f'<div style="flex:1; min-width:200px;">{"".join(stat_blocks)}</div>'
+        '</div>'
+    )
+    st.markdown(html, unsafe_allow_html=True)
 
 
 def render_page_header(eyebrow: str, title: str, sub: str):
