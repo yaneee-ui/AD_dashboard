@@ -14,6 +14,7 @@ from utils import (
     cattxn_txn_type_breakdown, cattxn_daily_series,
     cattxn_period_buckets, cattxn_bucket_series, cattxn_flow_matrix, cattxn_group_trend_table,
     cattxn_weekly_changes, category_lag_correlation, category_lag_scatter_data, linear_trend,
+    cattxn_share_series, ad_cost_vs_sa_ep_weekly, classify_comovement,
     CATTXN_TXN_TYPE_OPTIONS, CATTXN_CHANNEL_OPTIONS, CATTXN_METRIC_OPTIONS,
 )
 from styles import (
@@ -235,6 +236,69 @@ if menu == "쇼핑검색광고 실적":
     st.dataframe(
         summary_df.style.map(delta_cell_style, subset=[f"{immediate_label}(%)", "전년비(%)"]),
         use_container_width=True, hide_index=True, height=460,
+    )
+
+    # ── 실적 퍼널 (노출 → 클릭 → 방문 → 구매) ──
+    render_section_title(f"실적 퍼널 (노출 → 클릭 → 방문 → 구매) · {mode}")
+    st.caption("※ 노출은 다른 단계보다 훨씬 커서 퍼널로 그리면 아래 단계가 안 보입니다. 1단계는 숫자로, 2단계는 퍼널로 나눠서 보여드립니다.")
+    show_yoy_funnel = st.checkbox("전년 동기 비교선 표시", value=True, key="funnel_yoy")
+
+    funnel_stages = ["노출수", "클릭수", "UV", "결제고객수"]
+    funnel_labels = ["노출", "클릭", "방문(UV)", "구매"]
+    funnel_cur_vals = [scaled(m, agg[m], cur_days) for m in funnel_stages]
+    funnel_yoy_vals = None
+    if show_yoy_funnel and yoy_agg_for_table:
+        funnel_yoy_vals = [scaled(m, yoy_agg_for_table[m], yoy_days_for_table) for m in funnel_stages]
+
+    fc1, fc2 = st.columns(2)
+    with fc1:
+        st.markdown("**1단계 · 노출 → 클릭** (CTR)")
+        st.caption("노출과 클릭은 규모 차이가 70배 이상이라 퍼널로 그리면 클릭이 안 보여서, 숫자로 비교합니다.")
+        ctr_cur = funnel_cur_vals[1] / funnel_cur_vals[0] * 100 if funnel_cur_vals[0] else None
+        m1, m2, m3 = st.columns(3)
+        m1.metric("노출", f"{funnel_cur_vals[0]:,.0f}")
+        m2.metric("CTR", f"{ctr_cur:.2f}%" if ctr_cur is not None else "-")
+        m3.metric("클릭", f"{funnel_cur_vals[1]:,.0f}")
+        if funnel_yoy_vals:
+            ctr_yoy = funnel_yoy_vals[1] / funnel_yoy_vals[0] * 100 if funnel_yoy_vals[0] else None
+            st.caption(
+                f"전년 · {period_label(yoy_start, yoy_end, unit)} — "
+                f"노출 {funnel_yoy_vals[0]:,.0f} · CTR {ctr_yoy:.2f}% · 클릭 {funnel_yoy_vals[1]:,.0f}"
+                if ctr_yoy is not None else "전년 데이터 없음"
+            )
+    with fc2:
+        st.markdown("**2단계 · 클릭 → 방문 → 구매** (UV/클릭, CR)")
+        fig_funnel2 = go.Figure()
+        fig_funnel2.add_trace(go.Funnel(
+            name=f"올해 · {cur_label}", y=funnel_labels[1:], x=funnel_cur_vals[1:],
+            textinfo="value+percent initial+percent previous", marker=dict(color="#2563EB"),
+        ))
+        if funnel_yoy_vals:
+            fig_funnel2.add_trace(go.Funnel(
+                name=f"전년 · {period_label(yoy_start, yoy_end, unit)}", y=funnel_labels[1:], x=funnel_yoy_vals[1:],
+                textinfo="value+percent initial", marker=dict(color="#93C5FD"),
+            ))
+        fig_funnel2.update_layout(height=320, margin=dict(t=10, b=10, l=10, r=10))
+        st.plotly_chart(fig_funnel2, use_container_width=True)
+
+    funnel_table_rows = []
+    prev_val = None
+    base_val = funnel_cur_vals[0] if funnel_cur_vals else None
+    for flabel, fval in zip(funnel_labels, funnel_cur_vals):
+        step_rate = (fval / prev_val * 100) if prev_val else None
+        total_rate = (fval / base_val * 100) if base_val else None
+        funnel_table_rows.append({
+            "단계": flabel,
+            "값": f"{fval:,.0f}",
+            "이전 단계 대비": f"{step_rate:.1f}%" if step_rate is not None else "-",
+            "노출 대비": f"{total_rate:.2f}%" if total_rate is not None else "-",
+        })
+        prev_val = fval
+    st.dataframe(pd.DataFrame(funnel_table_rows), hide_index=True, use_container_width=True)
+    st.caption(
+        f"💡 '이전 단계 대비'는 CTR(클릭/노출) → UV/클릭 → CR(구매/UV) 순서와 같습니다. "
+        f"참고: 객단가 {format_value('객단가', agg['객단가'])} · ROAS {format_value('ROAS', agg['ROAS'])} "
+        f"(퍼널 단계에는 포함하지 않고 참고용으로만 표시)"
     )
 
     # ── 추이 차트: 2026년 기준 + 전년비 비교선 (조회단위별 집계) ──
@@ -902,6 +966,46 @@ else:
                                      x_categorical=True, prev_label="전년 동월(동요일 기준)")
                 st.caption("📅 2026년 전체" + ("  ·  전년 비교선: 동월 동요일(364일 전) 매칭" if show_yoy_line else ""))
 
+        # ── SA/EP 거래액 비중 추이 (최근 12주) ──
+        render_section_title("SA/EP 거래액 비중 추이")
+        share_weeks = cattxn_period_buckets(cattxn_df, "주별")[-12:]
+        share_labels, sa_share, ep_share = cattxn_share_series(
+            cattxn_df, share_weeks, cattxn_txn_filter, cattxn_category_filter, cattxn_brand_filter
+        )
+        fig_share = go.Figure()
+        fig_share.add_trace(go.Scatter(x=share_labels, y=sa_share, mode="lines+markers", name="SA(쇼핑검색광고) 비중",
+                                       line=dict(width=2, color="#2563EB"), stackgroup="one"))
+        fig_share.add_trace(go.Scatter(x=share_labels, y=ep_share, mode="lines+markers", name="EP채널 비중",
+                                       line=dict(width=2, color="#0D9488"), stackgroup="one"))
+        fig_share.update_layout(
+            height=380, margin=dict(t=20, b=20, l=10, r=10),
+            xaxis=dict(type="category", title=None), yaxis=dict(title="비중 (%)", range=[0, 100]),
+            hovermode="x unified",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        )
+        st.plotly_chart(fig_share, use_container_width=True)
+        st.caption(f"📅 최근 12주 ({share_labels[0]} ~ {share_labels[-1]})  ·  SA와 EP를 합쳐 100%로 보고 비중 변화를 봅니다. "
+                  f"SA 비중이 늘고 있다면 광고 의존도가 커지고 있다는 뜻이고, 줄고 있다면 EP가 상대적으로 더 크고 있다는 뜻입니다.")
+
+        # ── 광고비 증가가 EP까지 키우는가 (전체 파이 검증) ──
+        render_section_title("광고비 증가가 EP까지 키우는가 (전체 채널 기준)")
+        ad_vs_total = ad_cost_vs_sa_ep_weekly(df, cattxn_df, share_weeks, cattxn_txn_filter)
+        ad_vs_total_display = pd.DataFrame({
+            "주차": ad_vs_total["주차"],
+            "광고비(일평균)": ad_vs_total["광고비"].apply(lambda v: f"{v:,.0f}" if pd.notna(v) else "-"),
+            "SA 거래액(일평균)": ad_vs_total["SA_거래액"].apply(lambda v: f"{v:,.0f}"),
+            "EP 거래액(일평균)": ad_vs_total["EP_거래액"].apply(lambda v: f"{v:,.0f}"),
+            "광고비 증감률": ad_vs_total["광고비_증감률"].apply(lambda v: f"{v:+.1f}%" if pd.notna(v) else "-"),
+            "SA 증감률": ad_vs_total["SA_거래액_증감률"].apply(lambda v: f"{v:+.1f}%" if pd.notna(v) else "-"),
+            "EP 증감률": ad_vs_total["EP_거래액_증감률"].apply(lambda v: f"{v:+.1f}%" if pd.notna(v) else "-"),
+        })
+        st.dataframe(ad_vs_total_display, use_container_width=True, hide_index=True)
+        st.caption(
+            "💡 광고비가 늘어난 주에 SA뿐 아니라 EP 증감률도 같이 플러스면 '광고가 전체 수요를 키운' 것이고, "
+            "SA는 늘고 EP는 그대로거나 줄면 '광고가 SA 안에서만 도는(EP를 못 키우는)' 신호일 수 있습니다. "
+            "광고비는 카테고리 구분 없는 전체 채널 기준(01페이지와 동일 소스)입니다."
+        )
+
     # ══════════════════════════════════════════════════════════
     # 탭 1.5: EP 연관성 분석 (시너지 카테고리 찾기)
     # ══════════════════════════════════════════════════════════
@@ -940,6 +1044,29 @@ else:
         })
         st.dataframe(syn_corr_display, use_container_width=True, hide_index=True,
                     height=min(35 * (len(syn_corr_display) + 1) + 3, 460))
+
+        render_section_title(f"{syn_group_label}별 SA↔EP 동행 분석 (최근 완결 주 기준)")
+        latest_moves = syn_weekly.sort_values("_wk").groupby("category").tail(1)[
+            ["category", "광고_증감률", "EP_증감률"]
+        ].reset_index(drop=True)
+        latest_moves["분류"] = latest_moves.apply(
+            lambda r: classify_comovement(r["광고_증감률"], r["EP_증감률"]), axis=1
+        )
+        latest_moves = latest_moves.sort_values("광고_증감률", ascending=False)
+
+        comove_display = pd.DataFrame({
+            syn_group_label: latest_moves["category"],
+            "SA 매출 증감": latest_moves["광고_증감률"].apply(lambda v: f"{v:+.1f}%" if pd.notna(v) else "-"),
+            "EP 매출 증감": latest_moves["EP_증감률"].apply(lambda v: f"{v:+.1f}%" if pd.notna(v) else "-"),
+            "분류": latest_moves["분류"],
+        })
+        st.dataframe(comove_display, use_container_width=True, hide_index=True,
+                    height=min(35 * (len(comove_display) + 1) + 3, 460))
+        st.caption(
+            "💡 🟢 동반상승(SA·EP 같이 오름, 시너지) · 🔵 SA단독 성장(SA만 오르고 EP는 그대로) · "
+            "🔴 광고잠식 의심(SA는 늘었는데 EP는 줄어듦) · ⚪ 동반하락 · ⚫ 변화 미미(±5%p 이내) · 🟡 혼조. "
+            "직전 주 대비 증감률, 가장 최근 완결 주 기준입니다."
+        )
 
         render_section_title(f"{syn_group_label}별 산점도 (광고 증감률 vs EP 증감률)")
         syn_valid = syn_corr[(syn_corr["best_corr"].notna()) & (syn_corr["best_n"] >= 8)]
@@ -1023,25 +1150,28 @@ else:
             trend_table = cattxn_group_trend_table(
                 cattxn_df, flow_buckets, flow_channel, cattxn_txn_filter,
                 group_by=flow_group_by, category=cattxn_category_filter, brand=cattxn_brand_filter,
+                mode=cattxn_mode,
             )
+            latest_col_label = "최근 일평균 거래액" if cattxn_mode == "일평균" else "최근 거래액"
             trend_display = pd.DataFrame({
                 flow_group_label: trend_table["group"],
                 "추이": trend_table["trend"],
-                "최근 거래액": trend_table["latest"],
-                "직전 대비": trend_table["delta_pct"] / 100,
+                latest_col_label: trend_table["latest"],
+                "직전 대비": trend_table["delta_pct"],
             })
             st.dataframe(
                 trend_display,
                 column_config={
                     flow_group_label: st.column_config.TextColumn(flow_group_label, width="small"),
                     "추이": st.column_config.LineChartColumn("추이", width="medium", y_min=0),
-                    "최근 거래액": st.column_config.NumberColumn("최근 거래액", format="%d"),
+                    latest_col_label: st.column_config.NumberColumn(latest_col_label, format="%d"),
                     "직전 대비": st.column_config.NumberColumn("직전 대비", format="%.1f%%"),
                 },
                 use_container_width=True, hide_index=True,
                 height=min(35 * (len(trend_display) + 1) + 3, 560),
             )
-            st.caption(f"📅 {flow_period_note}  ·  거래액이 큰 순서로 정렬했습니다. '추이'는 위 기간의 버킷별 거래액 흐름입니다.")
+            st.caption(f"📅 {flow_period_note}  ·  {'일평균' if cattxn_mode == '일평균' else '누계'} 기준, 거래액이 큰 순서로 정렬했습니다. "
+                      f"마지막 구간이 아직 끝나지 않은 부분기간이어도 일평균으로 맞춰서 공정하게 비교됩니다.")
 
         render_section_title(f"카테고리별 비교(스냅샷) · {cattxn_cur_label} ({cattxn_mode}{cattxn_txn_suffix})")
         cattxn_rank_metric = st.radio("비교 지표", ["거래액", "객단가"], horizontal=True, key="cattxn_rank_metric")
