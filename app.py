@@ -19,7 +19,7 @@ from utils import (
 )
 from styles import (
     inject_css, render_kpi_cards, render_page_header, render_section_title,
-    pct_change, format_delta_text, delta_cell_style,
+    pct_change, format_delta_text, delta_cell_style, render_custom_funnel,
 )
 
 st.set_page_config(page_title="쇼핑검색광고 실적 대시보드", layout="wide")
@@ -240,46 +240,23 @@ if menu == "쇼핑검색광고 실적":
 
     # ── 실적 퍼널 (노출 → 클릭 → 방문 → 구매) ──
     render_section_title(f"실적 퍼널 (노출 → 클릭 → 방문 → 구매) · {mode}")
-    st.caption("※ 노출은 다른 단계보다 훨씬 커서 퍼널로 그리면 아래 단계가 안 보입니다. 1단계는 숫자로, 2단계는 퍼널로 나눠서 보여드립니다.")
-    show_yoy_funnel = st.checkbox("전년 동기 비교선 표시", value=True, key="funnel_yoy")
 
     funnel_stages = ["노출수", "클릭수", "UV", "결제고객수"]
     funnel_labels = ["노출", "클릭", "방문(UV)", "구매"]
     funnel_cur_vals = [scaled(m, agg[m], cur_days) for m in funnel_stages]
-    funnel_yoy_vals = None
-    if show_yoy_funnel and yoy_agg_for_table:
-        funnel_yoy_vals = [scaled(m, yoy_agg_for_table[m], yoy_days_for_table) for m in funnel_stages]
 
-    fc1, fc2 = st.columns(2)
-    with fc1:
-        st.markdown("**1단계 · 노출 → 클릭** (CTR)")
-        st.caption("노출과 클릭은 규모 차이가 70배 이상이라 퍼널로 그리면 클릭이 안 보여서, 숫자로 비교합니다.")
-        ctr_cur = funnel_cur_vals[1] / funnel_cur_vals[0] * 100 if funnel_cur_vals[0] else None
-        m1, m2, m3 = st.columns(3)
-        m1.metric("노출", f"{funnel_cur_vals[0]:,.0f}")
-        m2.metric("CTR", f"{ctr_cur:.2f}%" if ctr_cur is not None else "-")
-        m3.metric("클릭", f"{funnel_cur_vals[1]:,.0f}")
-        if funnel_yoy_vals:
-            ctr_yoy = funnel_yoy_vals[1] / funnel_yoy_vals[0] * 100 if funnel_yoy_vals[0] else None
-            st.caption(
-                f"전년 · {period_label(yoy_start, yoy_end, unit)} — "
-                f"노출 {funnel_yoy_vals[0]:,.0f} · CTR {ctr_yoy:.2f}% · 클릭 {funnel_yoy_vals[1]:,.0f}"
-                if ctr_yoy is not None else "전년 데이터 없음"
-            )
-    with fc2:
-        st.markdown("**2단계 · 클릭 → 방문 → 구매** (UV/클릭, CR)")
-        fig_funnel2 = go.Figure()
-        fig_funnel2.add_trace(go.Funnel(
-            name=f"올해 · {cur_label}", y=funnel_labels[1:], x=funnel_cur_vals[1:],
-            textinfo="value+percent initial+percent previous", marker=dict(color="#2563EB"),
-        ))
-        if funnel_yoy_vals:
-            fig_funnel2.add_trace(go.Funnel(
-                name=f"전년 · {period_label(yoy_start, yoy_end, unit)}", y=funnel_labels[1:], x=funnel_yoy_vals[1:],
-                textinfo="value+percent initial", marker=dict(color="#93C5FD"),
-            ))
-        fig_funnel2.update_layout(height=320, margin=dict(t=10, b=10, l=10, r=10))
-        st.plotly_chart(fig_funnel2, use_container_width=True)
+    funnel_deltas = []
+    for m in funnel_stages:
+        d = deltas_for(m)
+        d_label, d_pct, _ = d[0]
+        funnel_deltas.append(f"{d_label} {format_delta_text(d_pct)}" if d_pct is not None else f"{d_label} -")
+
+    render_custom_funnel(
+        funnel_labels, funnel_cur_vals, deltas=funnel_deltas,
+        sub_labels=[f"{cur_label} · {mode}"] * 4,
+        colors=["#2563EB", "#0EA5E9", "#F59E0B", "#22C55E"],
+    )
+    st.caption("💡 도형 폭은 값 비율이 아니라 보기 좋게 고정한 형태입니다 — 정확한 크기는 옆 숫자를 보세요.")
 
     funnel_table_rows = []
     prev_val = None
