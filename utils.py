@@ -840,21 +840,33 @@ def cattxn_flow_matrix(df: pd.DataFrame, buckets, channel: str, txn_type: str = 
 
 
 def cattxn_group_trend_table(df: pd.DataFrame, buckets, channel: str, txn_type: str = "전체",
-                             group_by: str = "category", category: str = "전체", brand: str = "전체") -> pd.DataFrame:
+                             group_by: str = "category", category: str = "전체", brand: str = "전체",
+                             mode: str = "일평균") -> pd.DataFrame:
     """카테고리별(또는 브랜드별) 거래액 추이를 스파크라인 표용으로 정리.
     반환 컬럼: group(카테고리/브랜드명), trend(버킷별 거래액 리스트), latest(최근 버킷 값),
-    prev(직전 버킷 값), delta_pct(증감률)."""
+    prev(직전 버킷 값), delta_pct(증감률).
+
+    mode='일평균'이면 버킷별 합계를 해당 버킷의 실제 일수로 나눈다 — 특히 마지막 버킷이
+    아직 끝나지 않은 부분주(예: 7일 중 3일치)일 때, 이걸 그대로 이전 완결주(7일)와 비교하면
+    실제로는 안 줄었는데도 큰 폭으로 하락한 것처럼 보이는 착시가 생긴다. 일평균으로 맞추면
+    부분 기간이어도 공정하게 비교된다."""
     prefix = "ad" if channel == "쇼핑검색광고" else "ep"
     rev_col = f"{prefix}_거래액"
     scope_category = category if group_by == "brand" else "전체"
     scope_brand = brand if group_by != "brand" else "전체"
     scope = _cattxn_scope(df, txn_type, scope_category, scope_brand)
 
+    bucket_days = [max(len(dates), 1) for _, dates in buckets]
+
     groups = sorted(scope[group_by].unique())
     rows = []
     for g in groups:
         g_scope = scope[scope[group_by] == g]
-        vals = [g_scope[g_scope["date"].isin(dates)][rev_col].sum() for _, dates in buckets]
+        raw_vals = [g_scope[g_scope["date"].isin(dates)][rev_col].sum() for _, dates in buckets]
+        if mode == "일평균":
+            vals = [v / d for v, d in zip(raw_vals, bucket_days)]
+        else:
+            vals = raw_vals
         latest = vals[-1] if vals else 0
         prev = vals[-2] if len(vals) >= 2 else None
         delta_pct = ((latest - prev) / prev * 100) if prev else None
@@ -866,10 +878,11 @@ def cattxn_group_trend_table(df: pd.DataFrame, buckets, channel: str, txn_type: 
 
 def cattxn_weekly_changes(df: pd.DataFrame, group_by: str = "category", txn_type: str = "전체",
                           category: str = "전체", brand: str = "전체") -> pd.DataFrame:
-    """카테고리(또는 브랜드)별 주간(월요일 시작) 광고_거래액/EP_거래액 합계와 전주 대비 증감률(%).
+    """카테고리(또는 브랜드)별 주간(월요일 시작) 광고_거래액/EP_거래액 일평균과 전주 대비 증감률(%).
     EP 연관성(시차 상관관계) 분석용 — 전체 기간(2025~) 사용해 표본을 최대한 확보한다.
     카테고리별 실제 광고비 원본이 없어, 광고_거래액을 '얼마나 밀었는지'의 대리지표로 사용.
-    group_by='brand'이면 category로 범위를 좁힌 뒤 그 안에서 브랜드별로 분석할 수 있다."""
+    group_by='brand'이면 category로 범위를 좁힌 뒤 그 안에서 브랜드별로 분석할 수 있다.
+    마지막 주(아직 끝나지 않은 부분주)가 있어도 일평균으로 맞춰서 공정하게 비교한다."""
     import numpy as np
     scope_category = category if group_by == "brand" else "전체"
     scope_brand = brand if group_by != "brand" else "전체"
@@ -877,7 +890,13 @@ def cattxn_weekly_changes(df: pd.DataFrame, group_by: str = "category", txn_type
 
     d = scope.copy()
     d["_wk"] = d["date"] - pd.to_timedelta(d["date"].dt.weekday, unit="D")
-    weekly = d.groupby([group_by, "_wk"])[["ad_거래액", "ep_거래액"]].sum().reset_index()
+    grouped = d.groupby([group_by, "_wk"])
+    weekly = grouped[["ad_거래액", "ep_거래액"]].sum().reset_index()
+    day_counts = grouped["date"].nunique().reset_index(name="_days")
+    weekly = weekly.merge(day_counts, on=[group_by, "_wk"])
+    weekly["ad_거래액"] = weekly["ad_거래액"] / weekly["_days"]
+    weekly["ep_거래액"] = weekly["ep_거래액"] / weekly["_days"]
+    weekly = weekly.drop(columns="_days")
     weekly = weekly.rename(columns={group_by: "category", "ad_거래액": "광고_거래액", "ep_거래액": "EP_거래액"})
     weekly = weekly.sort_values(["category", "_wk"]).reset_index(drop=True)
     weekly["광고_증감률"] = weekly.groupby("category")["광고_거래액"].pct_change() * 100
@@ -886,3 +905,60 @@ def cattxn_weekly_changes(df: pd.DataFrame, group_by: str = "category", txn_type
         [np.inf, -np.inf], np.nan
     )
     return weekly
+
+
+def cattxn_share_series(df: pd.DataFrame, buckets, txn_type: str = "전체",
+                        category: str = "전체", brand: str = "전체"):
+    """버킷별 SA(쇼핑검색광고)/EP채널 거래액 비중(%) 추이. 둘의 합을 100%로 본다.
+    반환: (labels, sa_share_list, ep_share_list)"""
+    scope = _cattxn_scope(df, txn_type, category, brand)
+    labels, sa_share, ep_share = [], [], []
+    for label, dates in buckets:
+        sub = scope[scope["date"].isin(dates)]
+        sa = sub["ad_거래액"].sum()
+        ep = sub["ep_거래액"].sum()
+        total = sa + ep
+        labels.append(label)
+        sa_share.append(sa / total * 100 if total else None)
+        ep_share.append(ep / total * 100 if total else None)
+    return labels, sa_share, ep_share
+
+
+def ad_cost_vs_sa_ep_weekly(main_df: pd.DataFrame, cattxn_df: pd.DataFrame, weeks, txn_type: str = "전체"):
+    """주차별 광고비(전체채널, 태블로 소스) vs SA·EP 거래액(전체 카테고리) 비교.
+    '광고 확대가 SA뿐 아니라 EP까지 같이 키우는지(전체 파이를 키우는지)' 검증용.
+    마지막 주차가 아직 끝나지 않은 부분주여도, 그리고 광고비 원본(main_df)이 cattxn_df보다
+    커버 기간이 짧아도(데이터 소스별 반영 지연 차이) 각각 실제 있는 일수로 나눠 공정하게 비교한다.
+    반환 컬럼: 주차, 광고비, SA_거래액, EP_거래액, 광고비_증감률, SA_증감률, EP_증감률 (전부 일평균 기준)"""
+    scope = cattxn_df if txn_type == "전체" else cattxn_df[cattxn_df["txn_type"] == txn_type]
+    rows = []
+    for label, dates in weeks:
+        n_days = max(len(dates), 1)
+        ad_view = main_df[main_df["date"].isin(dates)]
+        n_ad_days = ad_view["date"].nunique()
+        ad_cost = (ad_view["광고비"].sum() / n_ad_days) if n_ad_days else None
+        sub = scope[scope["date"].isin(dates)]
+        sa = sub["ad_거래액"].sum() / n_days
+        ep = sub["ep_거래액"].sum() / n_days
+        rows.append({"주차": label, "광고비": ad_cost, "SA_거래액": sa, "EP_거래액": ep})
+    result = pd.DataFrame(rows)
+    for col in ["광고비", "SA_거래액", "EP_거래액"]:
+        result[f"{col}_증감률"] = result[col].pct_change() * 100
+    return result
+
+
+def classify_comovement(sa_pct, ep_pct, threshold: float = 5.0):
+    """SA/EP 증감률 조합으로 동행 패턴을 분류. threshold 이하는 '변화 미미'로 취급."""
+    if sa_pct is None or ep_pct is None or pd.isna(sa_pct) or pd.isna(ep_pct):
+        return "-"
+    if sa_pct > threshold and ep_pct > threshold:
+        return "🟢 동반상승"
+    if sa_pct > threshold and ep_pct < -threshold:
+        return "🔴 광고잠식 의심"
+    if sa_pct > threshold and abs(ep_pct) <= threshold:
+        return "🔵 SA단독 성장"
+    if sa_pct < -threshold and ep_pct < -threshold:
+        return "⚪ 동반하락"
+    if abs(sa_pct) <= threshold and abs(ep_pct) <= threshold:
+        return "⚫ 변화 미미"
+    return "🟡 혼조"
