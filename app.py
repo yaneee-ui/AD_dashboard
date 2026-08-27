@@ -12,7 +12,8 @@ from utils import (
     get_comparison_periods, build_ref_options, days_in_period,
     load_cattxn_data, aggregate_cattxn, aggregate_cattxn_by,
     cattxn_txn_type_breakdown, cattxn_daily_series,
-    cattxn_period_buckets, cattxn_bucket_series, cattxn_flow_matrix,
+    cattxn_period_buckets, cattxn_bucket_series, cattxn_flow_matrix, cattxn_group_trend_table,
+    cattxn_weekly_changes, category_lag_correlation, category_lag_scatter_data, linear_trend,
     CATTXN_TXN_TYPE_OPTIONS, CATTXN_CHANNEL_OPTIONS, CATTXN_METRIC_OPTIONS,
 )
 from styles import (
@@ -683,8 +684,8 @@ else:
     # ══════════════════════════════════════════════════════════
     # 탭으로 분리: 흐름 비교를 맨 앞에 (가장 많이 찾는 뷰)
     # ══════════════════════════════════════════════════════════
-    tab_flow, tab_cat, tab_brand, tab_txn = st.tabs([
-        "📈 채널 흐름 비교", "📦 카테고리별 상세", "🏷️ 브랜드별 상세", "🔀 거래유형 구성",
+    tab_flow, tab_syn, tab_cat, tab_brand, tab_txn = st.tabs([
+        "📈 채널 흐름 비교", "🔗 EP 연관성 분석", "📦 카테고리별 상세", "🏷️ 브랜드별 상세", "🔀 거래유형 구성",
     ])
 
     def _normalize_series(vals):
@@ -902,67 +903,145 @@ else:
                 st.caption("📅 2026년 전체" + ("  ·  전년 비교선: 동월 동요일(364일 전) 매칭" if show_yoy_line else ""))
 
     # ══════════════════════════════════════════════════════════
+    # 탭 1.5: EP 연관성 분석 (시너지 카테고리 찾기)
+    # ══════════════════════════════════════════════════════════
+    with tab_syn:
+        st.markdown(
+            '<div class="kpi-footnote">※ 카테고리별 실제 광고비 원본이 없어, 쇼핑검색광고 거래액 증감률을 '
+            '"얼마나 밀었는지"의 대리지표로 사용합니다. 상관관계는 인과관계를 증명하지 않으며, '
+            '계절성 등 다른 요인이 같이 작용할 수 있습니다. 전체 기간(2025년~) 주간 데이터를 사용합니다.</div>',
+            unsafe_allow_html=True,
+        )
+
+        syn_group_label = st.radio("분석 단위", ["카테고리", "브랜드"], horizontal=True, key="syn_group")
+        syn_group_by = "category" if syn_group_label == "카테고리" else "brand"
+
+        if syn_group_by == "brand" and cattxn_category_filter == "전체":
+            st.info("브랜드 단위 분석은 카테고리를 하나 선택하면(상단 필터) 그 안에서 브랜드별로 비교합니다. "
+                   "지금은 카테고리가 '전체'라 전체 브랜드를 대상으로 분석합니다.")
+
+        syn_weekly = cattxn_weekly_changes(
+            cattxn_df, group_by=syn_group_by, txn_type=cattxn_txn_filter,
+            category=cattxn_category_filter, brand=cattxn_brand_filter,
+        )
+        syn_corr = category_lag_correlation(syn_weekly, max_lag=2, min_samples=4)
+
+        render_section_title(f"{syn_group_label}별 시차 상관관계 랭킹")
+        st.caption("lag0=같은 주, lag1=1주 후, lag2=2주 후 EP 반응. '최고 시점'은 절댓값 기준 가장 강한 상관관계가 나타난 시차입니다.")
+
+        syn_corr_display = pd.DataFrame({
+            syn_group_label: syn_corr["category"],
+            "lag0(동주)": syn_corr["lag0"].apply(lambda v: f"{v:.2f}" if pd.notna(v) else "-"),
+            "lag1(1주후)": syn_corr["lag1"].apply(lambda v: f"{v:.2f}" if pd.notna(v) else "-"),
+            "lag2(2주후)": syn_corr["lag2"].apply(lambda v: f"{v:.2f}" if pd.notna(v) else "-"),
+            "최고 시점": syn_corr["best_lag"].apply(lambda v: "동주" if v == 0 else f"{v}주 후"),
+            "최고 상관계수": syn_corr["best_corr"].apply(lambda v: f"{v:.2f}" if pd.notna(v) else "-"),
+            "표본수(주)": syn_corr["best_n"],
+        })
+        st.dataframe(syn_corr_display, use_container_width=True, hide_index=True,
+                    height=min(35 * (len(syn_corr_display) + 1) + 3, 460))
+
+        render_section_title(f"{syn_group_label}별 산점도 (광고 증감률 vs EP 증감률)")
+        syn_valid = syn_corr[(syn_corr["best_corr"].notna()) & (syn_corr["best_n"] >= 8)]
+        syn_valid_items = syn_valid["category"].tolist()
+
+        if not syn_valid_items:
+            st.info("상관관계를 계산할 수 있는 표본(주 8개 이상)이 부족합니다.")
+        else:
+            sc1, sc2 = st.columns([2, 2])
+            with sc1:
+                syn_pick = st.selectbox(syn_group_label, syn_valid_items, index=0, key="syn_pick")
+            default_syn_lag = int(syn_corr.loc[syn_corr["category"] == syn_pick, "best_lag"].iloc[0])
+            with sc2:
+                syn_lag = st.radio(
+                    "시차(lag)", [0, 1, 2], index=default_syn_lag, horizontal=True,
+                    format_func=lambda v: "동주" if v == 0 else f"{v}주 후", key="syn_lag",
+                )
+
+            syn_scatter = category_lag_scatter_data(syn_weekly, syn_pick, syn_lag)
+
+            if len(syn_scatter) < 3:
+                st.info("산점도를 그리기엔 표본이 부족합니다.")
+            else:
+                syn_r = syn_scatter["광고_증감률"].corr(syn_scatter["EP_증감률"])
+                syn_slope, syn_intercept = linear_trend(syn_scatter["광고_증감률"], syn_scatter["EP_증감률"])
+
+                fig_syn = go.Figure()
+                fig_syn.add_trace(go.Scatter(
+                    x=syn_scatter["광고_증감률"], y=syn_scatter["EP_증감률"],
+                    mode="markers", name="주간 데이터",
+                    marker=dict(color="#2563EB", size=8, opacity=0.7),
+                ))
+                if syn_slope is not None:
+                    x_range = [syn_scatter["광고_증감률"].min(), syn_scatter["광고_증감률"].max()]
+                    y_range = [syn_slope * x + syn_intercept for x in x_range]
+                    fig_syn.add_trace(go.Scatter(
+                        x=x_range, y=y_range, mode="lines", name="추세선",
+                        line=dict(color="#94A3B8", dash="dash"),
+                    ))
+                fig_syn.update_layout(
+                    height=440, margin=dict(t=20, b=20, l=10, r=10),
+                    xaxis_title="쇼핑검색광고 거래액 증감률 (%, 전주비)",
+                    yaxis_title=f"EP 거래액 증감률 (%, {'동주' if syn_lag == 0 else f'{syn_lag}주 후'})",
+                    hovermode="closest",
+                )
+                st.plotly_chart(fig_syn, use_container_width=True)
+                st.caption(
+                    f"상관계수 r = {syn_r:.2f} · 표본 {len(syn_scatter)}개 주 · {syn_pick}, "
+                    f"{'동주' if syn_lag == 0 else f'{syn_lag}주 후'} 기준 — "
+                    f"r이 클수록(0.5 이상) 광고 확대가 EP 반응과 같이 움직이는(시너지) 경향이 강합니다."
+                )
+
+    # ══════════════════════════════════════════════════════════
     # 탭 2: 카테고리별 상세
     # ══════════════════════════════════════════════════════════
     with tab_cat:
-        render_section_title("카테고리·브랜드별 거래액 흐름")
-        fc0, fc1, fc2 = st.columns([2, 2, 2])
+        render_section_title("카테고리·브랜드별 거래액 추이")
+        fc0, fc1 = st.columns([2, 2])
         with fc0:
             flow_group_label = st.radio("그룹 기준", ["카테고리", "브랜드"], horizontal=True, key="cattxn_flow_group")
         with fc1:
             flow_channel = st.radio("채널", CATTXN_CHANNEL_OPTIONS, horizontal=True, key="cattxn_flow_channel")
-        with fc2:
-            flow_mode = st.radio("표시", ["절대값", "비중(%)"], horizontal=True, key="cattxn_flow_mode")
 
         flow_group_by = "category" if flow_group_label == "카테고리" else "brand"
-        flow_group_unit = "카테고리" if flow_group_by == "category" else "브랜드"
 
         if unit == "일별":
             flow_range = pd.date_range(max(CATTXN_MAX_DATE - timedelta(days=29), CATTXN_MIN_DATE), CATTXN_MAX_DATE)
             flow_buckets = [(d.strftime("%m-%d"), [d]) for d in flow_range]
-            flow_period_note = f"최근 {len(flow_buckets)}일"
+            flow_period_note = f"최근 {len(flow_buckets)}일 · 일별"
         elif unit == "주별":
             all_weeks_flow = cattxn_period_buckets(cattxn_df, "주별")
             flow_buckets = all_weeks_flow[-12:]
             flow_period_note = f"{flow_buckets[0][0]} ~ {flow_buckets[-1][0]}" if flow_buckets else ""
         else:
             flow_buckets = cattxn_period_buckets(cattxn_df, "월별")
-            flow_period_note = "2026년 전체"
+            flow_period_note = "2026년 전체 · 월별"
 
         if not flow_buckets:
             st.info("표시할 데이터가 없습니다.")
         else:
-            f_labels, f_cats, f_values = cattxn_flow_matrix(
+            trend_table = cattxn_group_trend_table(
                 cattxn_df, flow_buckets, flow_channel, cattxn_txn_filter,
                 group_by=flow_group_by, category=cattxn_category_filter, brand=cattxn_brand_filter,
             )
-
-            if flow_mode == "비중(%)":
-                totals_per_bucket = [sum(f_values[c][i] for c in f_cats) for i in range(len(f_labels))]
-                display_values = {
-                    c: [(v / totals_per_bucket[i] * 100) if totals_per_bucket[i] else 0 for i, v in enumerate(f_values[c])]
-                    for c in f_cats
-                }
-                y_title = "비중 (%)"
-            else:
-                display_values = f_values
-                y_title = f"거래액 ({flow_channel})"
-
-            palette = ["#2563EB", "#0EA5E9", "#22C55E", "#F59E0B", "#EF4444", "#8B5CF6", "#EC4899", "#94A3B8"]
-            fig_flow = go.Figure()
-            for i, c in enumerate(f_cats):
-                fig_flow.add_trace(go.Scatter(
-                    x=f_labels, y=display_values[c], mode="lines", name=c,
-                    stackgroup="one", line=dict(width=0.5, color=palette[i % len(palette)]),
-                ))
-            fig_flow.update_layout(
-                height=460, margin=dict(t=20, b=20, l=10, r=10),
-                xaxis=dict(type="category", title=None), yaxis_title=y_title,
-                hovermode="x unified",
+            trend_display = pd.DataFrame({
+                flow_group_label: trend_table["group"],
+                "추이": trend_table["trend"],
+                "최근 거래액": trend_table["latest"],
+                "직전 대비": trend_table["delta_pct"] / 100,
+            })
+            st.dataframe(
+                trend_display,
+                column_config={
+                    flow_group_label: st.column_config.TextColumn(flow_group_label, width="small"),
+                    "추이": st.column_config.LineChartColumn("추이", width="medium", y_min=0),
+                    "최근 거래액": st.column_config.NumberColumn("최근 거래액", format="%d"),
+                    "직전 대비": st.column_config.NumberColumn("직전 대비", format="%.1f%%"),
+                },
+                use_container_width=True, hide_index=True,
+                height=min(35 * (len(trend_display) + 1) + 3, 560),
             )
-            st.plotly_chart(fig_flow, use_container_width=True)
-            st.caption(f"📅 {flow_period_note}  ·  거래액 상위 7개 {flow_group_unit}는 개별로, 나머지는 '기타'로 묶어 표시합니다."
-                      + (f" (카테고리 = {cattxn_category_filter} 범위 안에서 브랜드 비교)" if flow_group_by == "brand" and cattxn_category_filter != "전체" else ""))
+            st.caption(f"📅 {flow_period_note}  ·  거래액이 큰 순서로 정렬했습니다. '추이'는 위 기간의 버킷별 거래액 흐름입니다.")
 
         render_section_title(f"카테고리별 비교(스냅샷) · {cattxn_cur_label} ({cattxn_mode}{cattxn_txn_suffix})")
         cattxn_rank_metric = st.radio("비교 지표", ["거래액", "객단가"], horizontal=True, key="cattxn_rank_metric")
