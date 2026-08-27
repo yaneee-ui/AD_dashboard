@@ -837,3 +837,52 @@ def cattxn_flow_matrix(df: pd.DataFrame, buckets, channel: str, txn_type: str = 
 
     group_order = top_groups + (["기타"] if other_groups else [])
     return labels, group_order, values_dict
+
+
+def cattxn_group_trend_table(df: pd.DataFrame, buckets, channel: str, txn_type: str = "전체",
+                             group_by: str = "category", category: str = "전체", brand: str = "전체") -> pd.DataFrame:
+    """카테고리별(또는 브랜드별) 거래액 추이를 스파크라인 표용으로 정리.
+    반환 컬럼: group(카테고리/브랜드명), trend(버킷별 거래액 리스트), latest(최근 버킷 값),
+    prev(직전 버킷 값), delta_pct(증감률)."""
+    prefix = "ad" if channel == "쇼핑검색광고" else "ep"
+    rev_col = f"{prefix}_거래액"
+    scope_category = category if group_by == "brand" else "전체"
+    scope_brand = brand if group_by != "brand" else "전체"
+    scope = _cattxn_scope(df, txn_type, scope_category, scope_brand)
+
+    groups = sorted(scope[group_by].unique())
+    rows = []
+    for g in groups:
+        g_scope = scope[scope[group_by] == g]
+        vals = [g_scope[g_scope["date"].isin(dates)][rev_col].sum() for _, dates in buckets]
+        latest = vals[-1] if vals else 0
+        prev = vals[-2] if len(vals) >= 2 else None
+        delta_pct = ((latest - prev) / prev * 100) if prev else None
+        rows.append({"group": g, "trend": vals, "latest": latest, "prev": prev, "delta_pct": delta_pct})
+
+    result = pd.DataFrame(rows)
+    return result.sort_values("latest", ascending=False).reset_index(drop=True)
+
+
+def cattxn_weekly_changes(df: pd.DataFrame, group_by: str = "category", txn_type: str = "전체",
+                          category: str = "전체", brand: str = "전체") -> pd.DataFrame:
+    """카테고리(또는 브랜드)별 주간(월요일 시작) 광고_거래액/EP_거래액 합계와 전주 대비 증감률(%).
+    EP 연관성(시차 상관관계) 분석용 — 전체 기간(2025~) 사용해 표본을 최대한 확보한다.
+    카테고리별 실제 광고비 원본이 없어, 광고_거래액을 '얼마나 밀었는지'의 대리지표로 사용.
+    group_by='brand'이면 category로 범위를 좁힌 뒤 그 안에서 브랜드별로 분석할 수 있다."""
+    import numpy as np
+    scope_category = category if group_by == "brand" else "전체"
+    scope_brand = brand if group_by != "brand" else "전체"
+    scope = _cattxn_scope(df, txn_type, scope_category, scope_brand)
+
+    d = scope.copy()
+    d["_wk"] = d["date"] - pd.to_timedelta(d["date"].dt.weekday, unit="D")
+    weekly = d.groupby([group_by, "_wk"])[["ad_거래액", "ep_거래액"]].sum().reset_index()
+    weekly = weekly.rename(columns={group_by: "category", "ad_거래액": "광고_거래액", "ep_거래액": "EP_거래액"})
+    weekly = weekly.sort_values(["category", "_wk"]).reset_index(drop=True)
+    weekly["광고_증감률"] = weekly.groupby("category")["광고_거래액"].pct_change() * 100
+    weekly["EP_증감률"] = weekly.groupby("category")["EP_거래액"].pct_change() * 100
+    weekly[["광고_증감률", "EP_증감률"]] = weekly[["광고_증감률", "EP_증감률"]].replace(
+        [np.inf, -np.inf], np.nan
+    )
+    return weekly
