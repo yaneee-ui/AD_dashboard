@@ -1,7 +1,8 @@
-# 데이터 파일 — 코드만 버전관리, 데이터는 로컬 전용
-*.csv
+# 대시보드가 실제로 읽는 소형 데이터 CSV는 배포(Streamlit Cloud 등)를 위해 커밋한다.
+# 원본 raw 엑셀(수백MB)과 상품군 리포트 CSV(124MB, GitHub 100MB 파일당 제한 초과)만 제외.
 *.xlsx
 *.xls
+ad_product_category_daily.csv
 
 # Python
 __pycache__/
