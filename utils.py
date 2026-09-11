@@ -41,6 +41,14 @@ AD_REPORT_DATA_PATH = next(
     (p for p in _AD_REPORT_CANDIDATE_PATHS if os.path.exists(p)), _AD_REPORT_CANDIDATE_PATHS[0]
 )
 
+_AD_PRODUCT_CANDIDATE_PATHS = [
+    os.path.join(BASE_DIR, "data", "ad_product_category_daily.csv"),
+    os.path.join(BASE_DIR, "ad_product_category_daily.csv"),
+]
+AD_PRODUCT_DATA_PATH = next(
+    (p for p in _AD_PRODUCT_CANDIDATE_PATHS if os.path.exists(p)), _AD_PRODUCT_CANDIDATE_PATHS[0]
+)
+
 _CATEGORY_CANDIDATE_PATHS = [
     os.path.join(BASE_DIR, "data", "category_daily.csv"),
     os.path.join(BASE_DIR, "category_daily.csv"),
@@ -169,7 +177,7 @@ def format_value(metric: str, value: float) -> str:
 
 
 def yoy_same_weekday_dates(target_dates: pd.Series) -> pd.Series:
-    """전년 동일 요일 매칭을 위해 364일(52주) 전 날짜를 반환."""
+    """전년 동요일 매칭을 위해 364일(52주) 전 날짜를 반환."""
     return target_dates - pd.Timedelta(days=364)
 
 
@@ -324,6 +332,47 @@ def bucket_yoy_series(df: pd.DataFrame, buckets, metric: str, mode: str = "누�
         cur_vals.append(cur_val)
         prev_vals.append(prev_val)
     return labels, cur_vals, prev_vals
+
+
+def recent_metric_buckets(df: pd.DataFrame, unit: str, n: int = 12):
+    """보조 지표 스파크라인용: 연도 제한 없이 전체 기간에서 조회단위 기준 최근 n개 구간을
+    [(label, [dates...]), ...] 형태로 반환한다 (오래된 순 정렬)."""
+    d = df.copy()
+    if unit == "일별":
+        dates_sorted = sorted(d["date"].unique())[-n:]
+        return [(pd.Timestamp(dt).strftime("%m-%d"), [dt]) for dt in dates_sorted]
+    if unit == "주별":
+        d["_wk"] = d["date"] - pd.to_timedelta(d["date"].dt.weekday, unit="D")
+        weeks = sorted(d["_wk"].unique())[-n:]
+        return [
+            (pd.Timestamp(wk).strftime("%m/%d") + "주", sorted(d.loc[d["_wk"] == wk, "date"].tolist()))
+            for wk in weeks
+        ]
+    # 월별 / 월마감
+    d["_ym"] = d["date"].dt.to_period("M")
+    yms = sorted(d["_ym"].unique())[-n:]
+    return [(str(ym), sorted(d.loc[d["_ym"] == ym, "date"].tolist())) for ym in yms]
+
+
+def metric_sparkline_table(df: pd.DataFrame, buckets, metrics: list, mode: str = "일평균") -> pd.DataFrame:
+    """지표별로 buckets 구간에 걸친 값 리스트(추이)와 최근값·직전 대비 증감률을 정리한 표.
+    base metric은 mode='일평균'일 때 구간 일수로 나누고, 비율 지표는 그대로 둔다
+    (합산이 아니라 aggregate()로 매 구간 재계산하므로 항상 정확하다)."""
+    bucket_days = [max(len(dates), 1) for _, dates in buckets]
+    rows = []
+    for m in metrics:
+        vals = []
+        for (_, dates), n_days in zip(buckets, bucket_days):
+            sub = df[df["date"].isin(dates)]
+            v = aggregate(sub)[m] if not sub.empty else 0
+            if mode == "일평균" and m in BASE_METRICS and n_days:
+                v = v / n_days
+            vals.append(v)
+        latest = vals[-1] if vals else None
+        prev = vals[-2] if len(vals) >= 2 else None
+        delta_pct = ((latest - prev) / abs(prev) * 100) if prev else None
+        rows.append({"지표": m, "추이": vals, "최근값": latest, "직전 대비": delta_pct})
+    return pd.DataFrame(rows)
 
 
 # ── 카드용 비교기간 (전일/전주/전월/전년비) ─────────────────────────
@@ -808,6 +857,58 @@ def cattxn_bucket_series(df: pd.DataFrame, buckets, channel: str, metric: str, t
     return labels, cur_vals, prev_vals
 
 
+def category_revenue_forecast(cattxn_df: pd.DataFrame, categories: list, channel: str, txn_type: str = "전체",
+                              days_actual: int = 30, days_forecast: int = 14, trend_days: int = 14) -> dict:
+    """카테고리별 최근 days_actual일 실제 일별 거래액 + 최근 trend_days일 기울기로 만든
+    단순 선형추세 예측(days_forecast일치)과 잔차 기반 불확실성 밴드를 반환한다.
+    엄밀한 통계 예측이 아니라 "최근 추세가 이어지면"이라는 대략적 방향성 참고용이다.
+    channel: '전체'(SA+EP 합산) | '쇼핑검색광고' | 'EP채널'
+    반환: {category: {actual_dates, actual_vals, forecast_dates, forecast_vals, band_upper, band_lower}}"""
+    import numpy as np
+
+    max_date = cattxn_df["date"].max()
+    actual_start = max_date - pd.Timedelta(days=days_actual - 1)
+    scope = cattxn_df if txn_type == "전체" else cattxn_df[cattxn_df["txn_type"] == txn_type]
+
+    def _rev(sub: pd.DataFrame) -> pd.Series:
+        if channel == "쇼핑검색광고":
+            return sub["ad_거래액"]
+        if channel == "EP채널":
+            return sub["ep_거래액"]
+        return sub["ad_거래액"] + sub["ep_거래액"]
+
+    date_range = pd.date_range(actual_start, max_date, freq="D")
+    result = {}
+    for cat in categories:
+        cat_scope = scope[scope["category"] == cat].copy()
+        cat_scope["_rev"] = _rev(cat_scope)
+        daily = cat_scope.groupby("date")["_rev"].sum().reindex(date_range, fill_value=0)
+
+        trend_window = daily.iloc[-trend_days:]
+        x = np.arange(len(trend_window))
+        slope, intercept = linear_trend(pd.Series(x), pd.Series(trend_window.values))
+
+        forecast_dates = list(pd.date_range(max_date + pd.Timedelta(days=1), periods=days_forecast, freq="D"))
+        forecast_vals, band_upper, band_lower = [], [], []
+        if slope is not None:
+            resid = trend_window.values - (slope * x + intercept)
+            resid_std = float(np.std(resid)) if len(resid) > 1 else 0.0
+            last_x = len(trend_window) - 1
+            for i in range(1, days_forecast + 1):
+                fv = max(slope * (last_x + i) + intercept, 0)
+                band = resid_std * (1 + 0.12 * i)
+                forecast_vals.append(fv)
+                band_upper.append(fv + band)
+                band_lower.append(max(fv - band, 0))
+
+        result[cat] = {
+            "actual_dates": list(daily.index), "actual_vals": daily.tolist(),
+            "forecast_dates": forecast_dates, "forecast_vals": forecast_vals,
+            "band_upper": band_upper, "band_lower": band_lower,
+        }
+    return result
+
+
 def cattxn_flow_matrix(df: pd.DataFrame, buckets, channel: str, txn_type: str = "전체", top_n: int = 7,
                        group_by: str = "category", category: str = "전체", brand: str = "전체"):
     """카테고리별(또는 브랜드별) 거래액 흐름(누적영역 차트)용: 버킷 x 그룹 매트릭스를 만들고,
@@ -925,26 +1026,190 @@ def cattxn_share_series(df: pd.DataFrame, buckets, txn_type: str = "전체",
 
 
 def ad_cost_vs_sa_ep_weekly(main_df: pd.DataFrame, cattxn_df: pd.DataFrame, weeks, txn_type: str = "전체"):
-    """주차별 광고비(전체채널, 태블로 소스) vs SA·EP 거래액(전체 카테고리) 비교.
-    '광고 확대가 SA뿐 아니라 EP까지 같이 키우는지(전체 파이를 키우는지)' 검증용.
-    마지막 주차가 아직 끝나지 않은 부분주여도, 그리고 광고비 원본(main_df)이 cattxn_df보다
-    커버 기간이 짧아도(데이터 소스별 반영 지연 차이) 각각 실제 있는 일수로 나눠 공정하게 비교한다.
-    반환 컬럼: 주차, 광고비, SA_거래액, EP_거래액, 광고비_증감률, SA_증감률, EP_증감률 (전부 일평균 기준)"""
+    """구간별(일/주/월 등 buckets 형태 무관) 광고비·ROAS(전체채널, 태블로 소스) vs SA·EP 거래액
+    (전체 카테고리) 비교. '광고 확대가 SA뿐 아니라 EP까지 같이 키우는지(전체 파이를 키우는지)'
+    검증용. 마지막 구간이 아직 끝나지 않은 부분기간이어도, 그리고 광고비 원본(main_df)이
+    cattxn_df보다 커버 기간이 짧아도(데이터 소스별 반영 지연 차이) 각각 실제 있는 일수로
+    나눠 공정하게 비교한다.
+    반환 컬럼: 주차, 광고비, ROAS, SA_거래액, EP_거래액, 광고비_증감률, SA_증감률, EP_증감률
+    (광고비·SA_거래액·EP_거래액은 일평균, ROAS는 해당 구간 재계산 값)"""
     scope = cattxn_df if txn_type == "전체" else cattxn_df[cattxn_df["txn_type"] == txn_type]
     rows = []
     for label, dates in weeks:
         n_days = max(len(dates), 1)
         ad_view = main_df[main_df["date"].isin(dates)]
         n_ad_days = ad_view["date"].nunique()
-        ad_cost = (ad_view["광고비"].sum() / n_ad_days) if n_ad_days else None
+        ad_agg = aggregate(ad_view) if not ad_view.empty else None
+        ad_cost = (ad_agg["광고비"] / n_ad_days) if ad_agg and n_ad_days else None
+        roas = ad_agg["ROAS"] if ad_agg else None
         sub = scope[scope["date"].isin(dates)]
         sa = sub["ad_거래액"].sum() / n_days
         ep = sub["ep_거래액"].sum() / n_days
-        rows.append({"주차": label, "광고비": ad_cost, "SA_거래액": sa, "EP_거래액": ep})
+        rows.append({"주차": label, "광고비": ad_cost, "ROAS": roas, "SA_거래액": sa, "EP_거래액": ep})
     result = pd.DataFrame(rows)
     for col in ["광고비", "SA_거래액", "EP_거래액"]:
         result[f"{col}_증감률"] = result[col].pct_change() * 100
     return result
+
+
+def flow_overview_buckets(cattxn_df: pd.DataFrame, unit: str, n_recent: int = 12):
+    """SA×EP 통합 흐름 섹션용 버킷. 조회단위(unit)에 맞춰 [(label, [dates...]), ...]를 반환한다.
+    일별=최근 n_recent일, 주별=최근 n_recent주, 월별/월마감=2026년 전체 월."""
+    max_date = pd.Timestamp(cattxn_df["date"].max())
+    if unit == "일별":
+        min_date = pd.Timestamp(cattxn_df["date"].min())
+        start = max(max_date - pd.Timedelta(days=n_recent - 1), min_date)
+        rng = pd.date_range(start, max_date, freq="D")
+        return [(d.strftime("%m-%d"), [d]) for d in rng]
+    if unit == "주별":
+        return cattxn_period_buckets(cattxn_df, "주별")[-n_recent:]
+    return cattxn_period_buckets(cattxn_df, "월별")
+
+
+# ════════════════════════════════════════════════════════════════
+# 쇼핑검색광고 리포트(NBOS 매칭, 대카테고리/중카테고리/브랜드 단위) — 상품군 효율
+# build_ad_product_daily.py로 원본(상품 단위)을 미리 집계한 CSV를 읽는다.
+# ROAS는 반드시 "판매액"(NBOS 매칭 실매출) 기준으로만 계산한다 — 원본의 "전환매출액"은
+# 광고 플랫폼 자체 귀속(간접전환 포함) 기준이라 실매출과 크게 괴리될 수 있어 애초에
+# 집계 단계에서 제외했다.
+# ════════════════════════════════════════════════════════════════
+AD_PRODUCT_OWN_OPTIONS = ["전체", "자사", "입점"]
+AD_PRODUCT_BASE_METRICS = ["노출수", "클릭수", "광고비", "구매수량", "판매액"]
+
+
+@st.cache_data
+def load_ad_product_data():
+    if not os.path.exists(AD_PRODUCT_DATA_PATH):
+        return None
+    df = pd.read_csv(AD_PRODUCT_DATA_PATH, parse_dates=["date"], encoding="utf-8-sig")
+    df["연도"] = df["date"].dt.year
+    return df
+
+
+def _ad_product_scope(df: pd.DataFrame, own: str = "전체", large_cat: str = "전체",
+                      mid_cat: str = "전체", brand: str = "전체") -> pd.DataFrame:
+    scope = df
+    if own != "전체":
+        scope = scope[scope["자사/입점"] == own]
+    if large_cat != "전체":
+        scope = scope[scope["대카테고리"] == large_cat]
+    if mid_cat != "전체":
+        scope = scope[scope["중카테고리"] == mid_cat]
+    if brand != "전체":
+        scope = scope[scope["브랜드명"] == brand]
+    return scope
+
+
+def _ad_product_derive(sums: dict) -> dict:
+    sums["ROAS"] = (sums["판매액"] / sums["광고비"]) if sums["광고비"] else 0
+    sums["CTR"] = (sums["클릭수"] / sums["노출수"]) if sums["노출수"] else 0
+    sums["CVR"] = (sums["구매수량"] / sums["클릭수"]) if sums["클릭수"] else 0
+    sums["객단가"] = (sums["판매액"] / sums["구매수량"]) if sums["구매수량"] else 0
+    return sums
+
+
+def aggregate_ad_product(df: pd.DataFrame, own: str = "전체", large_cat: str = "전체",
+                         mid_cat: str = "전체", brand: str = "전체") -> dict:
+    scope = _ad_product_scope(df, own, large_cat, mid_cat, brand)
+    sums = {c: scope[c].sum() for c in AD_PRODUCT_BASE_METRICS}
+    return _ad_product_derive(sums)
+
+
+def aggregate_ad_product_by(df: pd.DataFrame, group_col: str, own: str = "전체",
+                            large_cat: str = "전체", mid_cat: str = "전체") -> pd.DataFrame:
+    """group_col(대카테고리/중카테고리/브랜드명) 기준으로 집계 + ROAS·CTR·CVR 재계산.
+    group_col='중카테고리'/'브랜드명'일 때는 large_cat(/mid_cat)으로 범위를 좁힌 뒤
+    그 안에서 순위를 매기는 용도로 쓴다."""
+    scope = _ad_product_scope(df, own, large_cat, mid_cat)
+    grouped = scope.groupby(group_col)[AD_PRODUCT_BASE_METRICS].sum().reset_index()
+    grouped["ROAS"] = grouped.apply(lambda r: (r["판매액"] / r["광고비"]) if r["광고비"] else 0, axis=1)
+    grouped["CTR"] = grouped.apply(lambda r: (r["클릭수"] / r["노출수"]) if r["노출수"] else 0, axis=1)
+    grouped["CVR"] = grouped.apply(lambda r: (r["구매수량"] / r["클릭수"]) if r["클릭수"] else 0, axis=1)
+    return grouped
+
+
+def _pct_change_simple(cur, prev):
+    if cur is None or prev is None or pd.isna(cur) or pd.isna(prev) or prev == 0:
+        return None
+    return (cur - prev) / abs(prev) * 100
+
+
+def ad_product_group_compare(df: pd.DataFrame, group_col: str, cur_start, cur_end, prev_start, prev_end,
+                             own: str = "전체", large_cat: str = "전체", mid_cat: str = "전체") -> pd.DataFrame:
+    """group_col(대카테고리/중카테고리/브랜드명) 기준으로 현재기간 vs 비교기간의
+    판매액/광고비/ROAS/CTR/CVR을 나란히 계산하고, 판매액·ROAS·CVR 증감률(%)을 덧붙인다.
+    카테고리별 액션(광고비 증액/점검) 판단을 위한 랭킹 표에 쓴다."""
+    scope = _ad_product_scope(df, own, large_cat, mid_cat)
+    cur = scope[(scope["date"] >= pd.Timestamp(cur_start)) & (scope["date"] <= pd.Timestamp(cur_end))]
+    prev = scope[(scope["date"] >= pd.Timestamp(prev_start)) & (scope["date"] <= pd.Timestamp(prev_end))]
+
+    def _agg_by(sub: pd.DataFrame) -> pd.DataFrame:
+        g = sub.groupby(group_col)[AD_PRODUCT_BASE_METRICS].sum()
+        g["ROAS"] = g.apply(lambda r: (r["판매액"] / r["광고비"]) if r["광고비"] else 0, axis=1)
+        g["CTR"] = g.apply(lambda r: (r["클릭수"] / r["노출수"]) if r["노출수"] else 0, axis=1)
+        g["CVR"] = g.apply(lambda r: (r["구매수량"] / r["클릭수"]) if r["클릭수"] else 0, axis=1)
+        g["객단가"] = g.apply(lambda r: (r["판매액"] / r["구매수량"]) if r["구매수량"] else 0, axis=1)
+        return g
+
+    cur_g = _agg_by(cur)
+    prev_g = _agg_by(prev)
+    all_groups = sorted(set(cur_g.index) | set(prev_g.index))
+
+    rows = []
+    for g in all_groups:
+        c = cur_g.loc[g] if g in cur_g.index else None
+        p = prev_g.loc[g] if g in prev_g.index else None
+        row = {group_col: g}
+        for metric in AD_PRODUCT_BASE_METRICS + ["ROAS", "CTR", "CVR", "객단가"]:
+            row[metric] = c[metric] if c is not None else 0
+        row["판매액_증감"] = _pct_change_simple(c["판매액"] if c is not None else None,
+                                              p["판매액"] if p is not None else None)
+        row["판매액_증감액"] = (c["판매액"] if c is not None else 0) - (p["판매액"] if p is not None else 0)
+        row["판매액_전기"] = p["판매액"] if p is not None else 0
+        row["ROAS_증감"] = _pct_change_simple(c["ROAS"] if c is not None else None,
+                                             p["ROAS"] if p is not None else None)
+        row["ROAS_전기"] = p["ROAS"] if p is not None else 0
+        row["CVR_증감"] = _pct_change_simple(c["CVR"] if c is not None else None,
+                                            p["CVR"] if p is not None else None)
+        row["CVR_전기"] = p["CVR"] if p is not None else 0
+        row["성과"] = classify_ad_product_performance(row["판매액_증감"], row["ROAS_증감"], row["구매수량"])
+        rows.append(row)
+
+    if not rows:
+        # 해당 기간·필터 조합에 데이터가 전혀 없으면 rows=[]가 되는데, pd.DataFrame([])는
+        # 컬럼이 아예 없는(0x0) 프레임이 돼서 이후 .sort_values("판매액_증감", ...) 등에서
+        # KeyError가 난다 — 빈 데이터라도 항상 같은 컬럼 스키마를 갖도록 명시한다.
+        cols = [group_col] + AD_PRODUCT_BASE_METRICS + [
+            "ROAS", "CTR", "CVR", "객단가", "판매액_증감", "판매액_증감액", "판매액_전기",
+            "ROAS_증감", "ROAS_전기", "CVR_증감", "CVR_전기", "성과",
+        ]
+        return pd.DataFrame(columns=cols)
+    return pd.DataFrame(rows)
+
+
+def classify_ad_product_performance(sale_pct, roas_pct, cur_purchases: float = None,
+                                    min_purchases: int = 1, threshold: float = 5.0):
+    """판매액 증감 x ROAS 증감 조합으로 카테고리/브랜드 성과를 분류.
+    threshold(%p) 이내는 '변화 미미'로 취급. 04페이지 랭킹표에서 액션 우선순위를
+    한눈에 보기 위한 배지.
+    cur_purchases(이번 기간 구매수량)가 min_purchases 미만이면 등락률이 아무리 커도
+    "🟢 우수"/"🔴 부진"으로 분류하지 않는다 — 예: 지난주 1건→이번주 2건처럼 표본이 극히
+    작을 때 +100%처럼 과장된 등락률만 보고 우수/부진으로 잘못 판단하는 걸 막기 위함."""
+    if sale_pct is None or roas_pct is None or pd.isna(sale_pct) or pd.isna(roas_pct):
+        return "-"
+    if cur_purchases is not None and cur_purchases < min_purchases:
+        return "⚪ 표본 부족(구매 거의 없음)"
+    if sale_pct > threshold and roas_pct > threshold:
+        return "🟢 우수(증액 검토)"
+    if sale_pct > threshold and roas_pct < -threshold:
+        return "🟡 물량↑효율↓(점검 필요)"
+    if sale_pct < -threshold and roas_pct > threshold:
+        return "🔵 효율 개선(회복 여지)"
+    if sale_pct < -threshold and roas_pct < -threshold:
+        return "🔴 부진(축소·재검토)"
+    if abs(sale_pct) <= threshold and abs(roas_pct) <= threshold:
+        return "⚫ 변화 미미"
+    return "⚪ 혼조"
 
 
 def classify_comovement(sa_pct, ep_pct, threshold: float = 5.0):

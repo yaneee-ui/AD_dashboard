@@ -14,16 +14,19 @@ from utils import (
     cattxn_txn_type_breakdown, cattxn_daily_series,
     cattxn_period_buckets, cattxn_bucket_series, cattxn_flow_matrix, cattxn_group_trend_table,
     cattxn_weekly_changes, category_lag_correlation, category_lag_scatter_data, linear_trend,
-    cattxn_share_series, ad_cost_vs_sa_ep_weekly, classify_comovement,
+    cattxn_share_series, ad_cost_vs_sa_ep_weekly, classify_comovement, flow_overview_buckets,
+    recent_metric_buckets, metric_sparkline_table, category_revenue_forecast,
+    load_ad_product_data, aggregate_ad_product, ad_product_group_compare,
+    AD_PRODUCT_OWN_OPTIONS, AD_PRODUCT_BASE_METRICS,
     CATTXN_TXN_TYPE_OPTIONS, CATTXN_CHANNEL_OPTIONS, CATTXN_METRIC_OPTIONS,
 )
 from styles import (
     inject_css, render_kpi_cards, render_page_header, render_section_title,
-    pct_change, format_delta_text, delta_cell_style, render_custom_funnel,
+    pct_change, format_delta_text, delta_cell_style, render_custom_funnel, render_insight_box,
+    render_trend_card_header, render_trend_summary_boxes, render_colored_caption,
 )
 
 st.set_page_config(page_title="쇼핑검색광고 실적 대시보드", layout="wide")
-inject_css()
 
 # ── 쇼핑검색광고 / EP채널 구분 색상 (03페이지 테이블 공통) ──
 AD_COL_COLOR = "#2563EB"   # 쇼핑검색광고 = 파랑
@@ -59,29 +62,50 @@ CATTXN_MIN_DATE, CATTXN_MAX_DATE = cattxn_df["date"].min().date(), cattxn_df["da
 CATTXN_CATEGORY_LIST = sorted(cattxn_df["category"].unique())
 CATTXN_BRAND_LIST = sorted(cattxn_df["brand"].unique())
 
-ALL_METRICS = ["노출수", "클릭수", "UV", "광고비"] + list(RATIO_DEFS.keys()) + [
+# ── 쇼핑검색광고 리포트(NBOS 매칭, 대/중카테고리·브랜드 단위) — 있으면만 로드, 없어도 나머지 페이지는 정상 동작 ──
+ad_product_df = load_ad_product_data()
+if ad_product_df is not None:
+    AD_PRODUCT_MIN_DATE, AD_PRODUCT_MAX_DATE = ad_product_df["date"].min().date(), ad_product_df["date"].max().date()
+    AD_PRODUCT_LARGE_CAT_LIST = sorted(ad_product_df["대카테고리"].unique())
+
+# 01페이지 '지표 선택' 알약 중 가장 자주 보는 핵심 9개 — 맨 앞에 배치하고 별도 색으로 강조한다.
+CORE_METRICS = ["노출수", "클릭수", "CTR", "UV", "광고비", "거래액", "ROAS", "CR", "객단가"]
+_all_metrics_raw = ["노출수", "클릭수", "UV", "광고비"] + list(RATIO_DEFS.keys()) + [
     "거래액", "거래액(총)", "결제고객수", "결제고객수(총)",
     "가입수", "첫구매수", "첫구매거래액", "신규고객수", "신규거래액",
 ]
+ALL_METRICS = CORE_METRICS + [m for m in _all_metrics_raw if m not in CORE_METRICS]
 ALL_METRICS = list(dict.fromkeys(ALL_METRICS))  # 중복 제거, 순서 유지
+
+# 02페이지(전년비교) 지표 탭에서 쓰는 축소 지표셋 — ALL_METRICS(26개)는 탭으로 늘어놓기엔 너무 많아
+# 핵심 10개만 알약 탭으로 노출한다. 그 외 지표는 01페이지 '지표 선택' 드롭다운에서 볼 수 있다.
+WIDE_YOY_METRICS = ["거래액", "광고비", "ROAS", "CTR", "CPC", "UV", "결제고객수", "CR", "객단가", "순결제비중"]
 
 # ── 사이드바 메뉴 ──────────────────────────────────────────────────
 st.sidebar.markdown("### 🛍️ 쇼핑검색광고 · 네이버")
-menu = st.sidebar.radio(
-    "메뉴",
-    ["📋 01. 쇼핑검색광고 실적", "📈 02. 전년비교", "📊 03. 카테고리별 실적"],
-    label_visibility="collapsed",
-)
+_menu_options = ["📋 01. 쇼핑검색광고 실적", "📈 02. 전년비교", "📊 03. 카테고리별 실적"]
+if ad_product_df is not None:
+    _menu_options.append("🎯 04. 상품군 효율(광고 리포트)")
+menu = st.sidebar.radio("메뉴", _menu_options, label_visibility="collapsed")
 if "01" in menu:
     menu = "쇼핑검색광고 실적"
 elif "02" in menu:
     menu = "전년비교"
-else:
+elif "03" in menu:
     menu = "카테고리별 실적"
+else:
+    menu = "상품군 효율"
 st.sidebar.markdown("---")
 unit = st.sidebar.radio("조회단위", UNIT_OPTIONS, horizontal=True)
 st.sidebar.markdown("---")
 st.sidebar.caption(f"데이터 기간\n\n{MIN_DATE} ~ {MAX_DATE}")
+st.sidebar.markdown("---")
+pin_filters = st.sidebar.checkbox(
+    "📌 상단 필터 고정", value=True, key="pin_filters",
+    help="켜두면 스크롤해도 상단 필터가 항상 보입니다. 끄면 필터가 본문과 같이 스크롤되어 "
+         "화면을 가리지 않습니다.",
+)
+inject_css(pin_filters)
 
 
 def to_excel_bytes(data: pd.DataFrame) -> bytes:
@@ -91,23 +115,146 @@ def to_excel_bytes(data: pd.DataFrame) -> bytes:
     return buf.getvalue()
 
 
+MILLION_SCALE_METRICS = {"거래액", "광고비", "거래액(총)", "신규거래액", "첫구매거래액", "윈백거래액", "전환매출액", "판매액"}
+
+
+def _to_million(vals):
+    """차트에 꽂기 전에 원 단위 리스트를 백만원 단위로 나눈다 (Plotly 축 눈금의 기본 'M' 표기 대신
+    ticksuffix='백만'을 쓰려면 데이터 자체를 미리 백만 단위로 스케일해둬야 한다)."""
+    return [v / 1_000_000 if v is not None else None for v in vals]
+
+
+def _money_axis(title: str = None, is_million: bool = True) -> dict:
+    """금액(원) 축 설정 — is_million=True면 백만원 단위로 이미 스케일된 데이터를 전제로
+    ticksuffix='백만'을 붙인다. Plotly 기본 SI접두어('20M' 등) 대신 '20.0백만'으로 보이게 한다."""
+    d = dict(title=title)
+    if is_million:
+        d.update(tickformat=",.1f", ticksuffix="백만")
+    return d
+
+
+def _period_start(d, unit: str):
+    ts = pd.Timestamp(d)
+    if unit == "주별":
+        return (ts - pd.Timedelta(days=ts.weekday())).date()
+    if unit in ("월별", "월마감"):
+        return ts.replace(day=1).date()
+    return ts.date()
+
+
+def _ensure_default_date(key, value, min_v=None, max_v=None):
+    """date_input에 value=와 key= 세션스테이트를 동시에 주면 Streamlit이 경고를 낸다 — 대신
+    최초 1회(또는 범위를 벗어났을 때)만 session_state를 미리 채워두고, 위젯 호출에는 value=를
+    빼서 그 경고를 피한다."""
+    cur = st.session_state.get(key)
+    if cur is None or (min_v is not None and cur < min_v) or (max_v is not None and cur > max_v):
+        st.session_state[key] = value
+
+
+def _ensure_valid_select(key, options):
+    """selectbox도 마찬가지 — index=와 key=를 같이 쓰면 경고가 나고, 조회단위를 바꿔 옵션
+    목록 자체가 달라지면 이전 선택값이 새 목록에 없을 수도 있다. 둘 다 여기서 방어한다."""
+    if st.session_state.get(key) not in options:
+        st.session_state[key] = options[0]
+
+
+def _quick_date_apply(unit, min_date, max_date, date_key, select_key, target_date):
+    """버튼 on_click 콜백 — 스크립트 재실행 '직전'에 실행되므로 위젯이 이미 그려진 뒤에
+    session_state를 건드려 StreamlitWidgetAlreadyInstantiatedError가 나는 걸 피할 수 있다."""
+    target_date = max(min(target_date, max_date), min_date)
+    if unit == "일별":
+        st.session_state[date_key] = target_date
+    else:
+        opts = build_ref_options(unit, min_date, max_date)
+        target_period = _period_start(target_date, unit)
+        match = next((lbl for lbl, d in opts if _period_start(d, unit) == target_period), None)
+        if match:
+            st.session_state[select_key] = match
+
+
+def render_quick_date_buttons(unit: str, min_date, max_date, date_key: str, select_key: str):
+    """기준일자 위젯 옆에 오늘/어제 · 금주/전주 · 이번달/지난달 빠른 이동 버튼을 그린다.
+    date_key는 일별일 때 쓰는 st.date_input의 key, select_key는 주/월/월마감일 때 쓰는
+    st.selectbox의 key — 버튼을 누르면 해당 위젯의 session_state를 직접 갱신하고 rerun한다."""
+    max_ts = pd.Timestamp(max_date)
+    if unit == "일별":
+        # 데이터가 D-1(또는 D-2) 반영이라 max_date 자체가 이미 "어제" 실적이라, 버튼 이름을
+        # "오늘/어제"가 아니라 "전일(최신 반영일)/전전일"로 — 실제 오늘 데이터가 있다는 오해를 막는다.
+        pairs = [("전일", max_date), ("전전일", (max_ts - pd.Timedelta(days=1)).date())]
+    elif unit == "주별":
+        pairs = [("금주", max_date), ("전주", (max_ts - pd.Timedelta(days=7)).date())]
+    elif unit == "월별":
+        this_month = max_ts.replace(day=1)
+        last_month = (this_month - pd.Timedelta(days=1)).replace(day=1)
+        pairs = [("이번달", this_month.date()), ("지난달", last_month.date())]
+    else:  # 월마감 — 이미 마감된 달만 다루므로 "이번달" 대신 최근 두 마감월을 제공
+        last_closed = (max_ts.replace(day=1) - pd.Timedelta(days=1)).replace(day=1)
+        prev_closed = (last_closed - pd.Timedelta(days=1)).replace(day=1)
+        pairs = [("지난달", last_closed.date()), ("전전달", prev_closed.date())]
+
+    btn_cols = st.columns(len(pairs))
+    for col, (label, target_date) in zip(btn_cols, pairs):
+        with col:
+            st.button(
+                label, key=f"{date_key}__{label}_btn", use_container_width=True,
+                on_click=_quick_date_apply,
+                args=(unit, min_date, max_date, date_key, select_key, target_date),
+            )
+
+
+def _hex_to_rgba(hex_color: str, alpha: float) -> str:
+    h = hex_color.lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return f"rgba({r},{g},{b},{alpha})"
+
+
+def _trend_xaxis(x_vals, is_daily: bool, tickformat: str = "%m/%d") -> dict:
+    """추이 차트 x축 설정. 일별/주별(버킷 수가 많은 단위)은 실제 날짜축 + 기간 필터 버튼으로
+    바꿔, 기본으로는 최근 90일만 보여주고 필요하면 버튼으로 기간을 바꿔 볼 수 있게 한다.
+    월 단위는 버킷 수가 적어(최대 12개) 기존 카테고리축 그대로가 더 낫다."""
+    if not is_daily:
+        return dict(type="category", title=None)
+    max_x = x_vals[-1]
+    default_start = max(x_vals[0], max_x - pd.Timedelta(days=89))
+    return dict(
+        type="date", title=None, tickformat=tickformat,
+        range=[default_start, max_x],
+        rangeselector=dict(
+            buttons=[
+                dict(count=7, label="1주", step="day", stepmode="backward"),
+                dict(count=1, label="1개월", step="month", stepmode="backward"),
+                dict(count=3, label="3개월", step="month", stepmode="backward"),
+                dict(count=6, label="6개월", step="month", stepmode="backward"),
+                dict(step="all", label="전체"),
+            ],
+            x=0, y=1.15, xanchor="left", yanchor="bottom",
+            font=dict(size=11),
+            bgcolor="#F1F5F9", activecolor="#BFDBFE",
+        ),
+    )
+
+
 # ════════════════════════════════════════════════════════════════
 # PAGE 1: 쇼핑검색광고 실적
 # ════════════════════════════════════════════════════════════════
 if menu == "쇼핑검색광고 실적":
     # ── 기준일자: 조회단위에 맞춰 일/주/월 단위로 선택 ──
     with st.container(key="page1_filters"):
-        c_ref, c_mode = st.columns([2.5, 1.5])
+        c_ref, c_quick, c_mode = st.columns([2, 1.6, 1.3])
         with c_ref:
             if unit == "일별":
-                ref_date = st.date_input("기준일자", value=MAX_DATE,
-                                          min_value=MIN_DATE, max_value=MAX_DATE)
+                _ensure_default_date("page1_ref_date", MAX_DATE, MIN_DATE, MAX_DATE)
+                ref_date = st.date_input("기준일자", min_value=MIN_DATE, max_value=MAX_DATE, key="page1_ref_date")
             else:
                 ref_options = build_ref_options(unit, MIN_DATE, MAX_DATE)
                 label_to_date = dict(ref_options)
                 picker_label = "기준 주차" if unit == "주별" else "기준 월"
-                chosen = st.selectbox(picker_label, list(label_to_date.keys()), index=0)
+                _ensure_valid_select("page1_ref_select", list(label_to_date.keys()))
+                chosen = st.selectbox(picker_label, list(label_to_date.keys()), key="page1_ref_select")
                 ref_date = label_to_date[chosen]
+        with c_quick:
+            st.markdown("<div style='margin-top:1.8rem'></div>", unsafe_allow_html=True)
+            render_quick_date_buttons(unit, MIN_DATE, MAX_DATE, "page1_ref_date", "page1_ref_select")
         with c_mode:
             mode = st.radio("표시방식", ["누계", "일평균"], horizontal=True, index=1)
 
@@ -166,22 +313,93 @@ if menu == "쇼핑검색광고 실적":
             out.append((label, pct_change(cur_v, prev_v), prev_str))
         return out
 
-    # ── KPI 카드 ──
-    kpi_metrics = ["거래액", "광고비", "ROAS", "CR", "결제고객수", "UV", "거래액(총)", "ROAS(총)"]
-    kpi_label_map = {
-        "거래액": "순결제거래액",
-        "거래액(총)": "총결제거래액",
-        "ROAS(총)": "총결제ROAS",
-    }
-    cards = []
-    for m in kpi_metrics:
-        display_val = scaled(m, agg[m], cur_days)
-        base_label = kpi_label_map.get(m, m)
-        label_txt = base_label if m not in BASE_METRICS else f"{base_label} · {mode}"
-        value_str = format_kpi_value(m, display_val)
-        cards.append({"label": label_txt, "value": value_str, "deltas": deltas_for(m)})
+    # ── 가장 부진한 전환 구간 진단(퍼널용, 인사이트 박스에도 재사용): 물량이 아니라
+    # '전환율'(CTR/UV-클릭율/CR) 기준으로 판단. 전년비가 있으면 그걸 우선 쓰고(더 안정적인
+    # 시그널), 없으면 직전기간으로 대체한다.
+    funnel_labels = ["노출", "클릭", "방문(UV)", "구매"]
+    stage_rate_defs = [("CTR", 1), ("UV/클릭", 2), ("CR", 3)]  # (지표, funnel stage index)
+    yoy_agg_avail = comp_aggs.get("전년비")
+    rate_candidates = []
+    for metric, idx in stage_rate_defs:
+        cur_r = agg[metric]
+        if yoy_agg_avail is not None:
+            pct = pct_change(cur_r, yoy_agg_avail[metric])
+            basis = "전년비"
+        else:
+            pct = None
+            basis = None
+        if pct is None:
+            imm_label, imm_pct, _ = deltas_for(metric)[0]
+            pct, basis = imm_pct, imm_label
+        if pct is not None:
+            rate_candidates.append((idx, metric, pct, basis))
 
-    render_kpi_cards(cards)
+    weak_index, weak_note = None, None
+    if rate_candidates:
+        w_idx, w_metric, w_pct, w_basis = min(rate_candidates, key=lambda x: x[2])
+        if w_pct < 0:
+            weak_index = w_idx
+            weak_note = f"{w_metric} {w_basis} {format_delta_text(w_pct)}"
+
+    # ── KPI 카드: 메인(거래액·광고비·ROAS·EP채널) + 보조 지표 2단 구성 ──
+    def ep_revenue_raw(p_start, p_end):
+        """cattxn_df(카테고리 데이터, D-2 반영) 기준 EP채널 거래액 합계. 기간이 cattxn 데이터
+        범위를 벗어나면 클립해서 계산하고, 겹치는 데이터가 없으면 None."""
+        c_start = max(p_start, pd.Timestamp(CATTXN_MIN_DATE))
+        c_end = min(p_end, pd.Timestamp(CATTXN_MAX_DATE))
+        if c_start > c_end:
+            return None
+        ep_view = cattxn_df[(cattxn_df["date"] >= c_start) & (cattxn_df["date"] <= c_end)]
+        if ep_view.empty:
+            return None
+        return aggregate_cattxn(ep_view, "전체", "전체", "전체")["EP채널_거래액"]
+
+    def ep_deltas_for():
+        cur_raw = ep_revenue_raw(start_ts, end_ts)
+        cur_v = (cur_raw / cur_days) if (mode == "일평균" and cur_raw is not None and cur_days) else cur_raw
+        out = []
+        for label, (p_start, p_end) in comp_periods.items():
+            prev_raw = ep_revenue_raw(p_start, p_end)
+            days = comp_days[label]
+            prev_v = (prev_raw / days) if (mode == "일평균" and prev_raw is not None and days) else prev_raw
+            prev_str = format_million(prev_v) if prev_v is not None else None
+            out.append((label, pct_change(cur_v, prev_v), prev_str))
+        return cur_v, out
+
+    primary_metrics = ["거래액", "광고비", "ROAS"]
+    primary_label_map = {"거래액": "순결제거래액"}
+    primary_cards = []
+    for m in primary_metrics:
+        display_val = scaled(m, agg[m], cur_days)
+        base_label = primary_label_map.get(m, m)
+        label_txt = base_label if m not in BASE_METRICS else f"{base_label} · {mode}"
+        primary_cards.append({"label": label_txt, "value": format_kpi_value(m, display_val), "deltas": deltas_for(m)})
+
+    ep_cur_v, ep_deltas = ep_deltas_for()
+    primary_cards.append({
+        "label": f"EP채널 거래액 · {mode}",
+        "value": format_million(ep_cur_v) if ep_cur_v is not None else "-",
+        "deltas": ep_deltas,
+    })
+
+    render_kpi_cards(primary_cards, size="lg")
+    st.markdown(
+        '<div class="kpi-footnote">※ 광고비·거래액·ROAS는 쇼핑검색광고 핵심 지표이며, EP채널 거래액을 나란히 두어 '
+        '광고 흐름과 EP 흐름을 함께 볼 수 있게 했습니다. EP채널은 카테고리 데이터 기준(D-2 반영)이라 '
+        '나머지 01페이지 지표(D-1 반영)와 최신일자가 하루 다를 수 있습니다.</div>',
+        unsafe_allow_html=True,
+    )
+
+    secondary_metrics = ["CR", "결제고객수", "UV", "거래액(총)", "ROAS(총)"]
+    secondary_label_map = {"거래액(총)": "총결제거래액", "ROAS(총)": "총결제ROAS"}
+    secondary_cards = []
+    for m in secondary_metrics:
+        display_val = scaled(m, agg[m], cur_days)
+        base_label = secondary_label_map.get(m, m)
+        label_txt = base_label if m not in BASE_METRICS else f"{base_label} · {mode}"
+        secondary_cards.append({"label": label_txt, "value": format_kpi_value(m, display_val), "deltas": deltas_for(m)})
+
+    render_kpi_cards(secondary_cards, size="sm", tier_label="보조 지표")
     st.markdown(
         '<div class="kpi-footnote">※ 거래액·광고비·UV 등 수량·금액 지표는 선택한 '
         f'표시방식({mode}) 기준이며, ROAS·CR·CTR 등 비율지표는 합산이 아닌 재산정한 값입니다.</div>',
@@ -192,6 +410,40 @@ if menu == "쇼핑검색광고 실적":
         for label, (p_start, p_end) in comp_periods.items()
     ]
     st.caption("📅 비교대상 기간 — " + " · ".join(comp_period_strs))
+
+    # ── 핵심 요약 (규칙 기반 자동 인사이트) ──
+    insight_lines = []
+
+    main_moves = []
+    for m in ["거래액", "광고비", "ROAS"]:
+        lbl, pct, _ = deltas_for(m)[0]
+        if pct is not None:
+            main_moves.append((m, lbl, pct))
+    if main_moves:
+        m, lbl, pct = max(main_moves, key=lambda x: abs(x[2]))
+        insight_lines.append(f"메인 지표 중 **{m}**이 {lbl} {format_delta_text(pct)}로 가장 크게 움직였습니다.")
+
+    sa_imm_label, sa_imm_pct, _ = deltas_for("거래액")[0]
+    ep_imm_pct = ep_deltas[0][1] if ep_deltas else None
+    if sa_imm_pct is not None and ep_imm_pct is not None:
+        gap = ep_imm_pct - sa_imm_pct
+        if gap > 10:
+            insight_lines.append(
+                f"EP채널 거래액({format_delta_text(ep_imm_pct)})이 쇼핑검색광고 거래액({format_delta_text(sa_imm_pct)})보다 "
+                f"더 빠르게 늘고 있습니다 — 광고 확대 여지가 있는지 03페이지에서 확인해보세요."
+            )
+        elif gap < -10:
+            insight_lines.append(
+                f"쇼핑검색광고 거래액({format_delta_text(sa_imm_pct)})이 EP채널({format_delta_text(ep_imm_pct)})보다 "
+                f"더 빠르게 늘고 있습니다 — 광고 효과가 상대적으로 뚜렷합니다."
+            )
+
+    if weak_index is not None:
+        insight_lines.append(
+            f"퍼널에서는 **{funnel_labels[weak_index]}** 전환 구간이 가장 부진합니다 ({weak_note}) — 아래 실적 퍼널을 확인하세요."
+        )
+
+    render_insight_box(insight_lines)
 
     # ── 실적요약 (직전기간 대비 + 전년비) 테이블 ──
     immediate_label = next(iter(comp_periods.keys()))
@@ -238,25 +490,68 @@ if menu == "쇼핑검색광고 실적":
         use_container_width=True, hide_index=True, height=460,
     )
 
+    # ── 보조 지표 스냅샷 (최근 구간 추이) ──
+    render_section_title(f"보조 지표 스냅샷 · 최근 구간 추이 ({unit}, {mode})")
+    spark_metrics = ["노출수", "클릭수", "CTR", "CPC", "CPUV", "객단가", "순결제비중", "신규거래액", "가입수", "첫구매수"]
+    spark_buckets = recent_metric_buckets(df, unit, n=12)
+    spark_df = metric_sparkline_table(df, spark_buckets, spark_metrics, mode)
+    spark_display = pd.DataFrame({
+        "지표": spark_df["지표"],
+        "추이": spark_df["추이"],
+        "최근값": [format_value(m, v) for m, v in zip(spark_df["지표"], spark_df["최근값"])],
+        "직전 대비": spark_df["직전 대비"].apply(format_delta_text),
+    })
+    st.dataframe(
+        spark_display.style.map(delta_cell_style, subset=["직전 대비"]),
+        column_config={
+            "지표": st.column_config.TextColumn("지표", width="small"),
+            "추이": st.column_config.LineChartColumn("추이", width="medium"),
+            "최근값": st.column_config.TextColumn("최근값"),
+            "직전 대비": st.column_config.TextColumn("직전 대비"),
+        },
+        use_container_width=True, hide_index=True,
+        height=min(35 * (len(spark_display) + 1) + 3, 460),
+    )
+    st.caption(f"📅 최근 {len(spark_buckets)}개 구간({unit}) 기준 · {mode} — 메인 3지표(거래액·광고비·ROAS) 외에 "
+              f"놓치기 쉬운 지표들을 한눈에 훑어보기 위한 표입니다. 지표별 세부 흐름은 아래 '지표 선택' 차트에서 확인하세요.")
+
     # ── 실적 퍼널 (노출 → 클릭 → 방문 → 구매) ──
     render_section_title(f"실적 퍼널 (노출 → 클릭 → 방문 → 구매) · {mode}")
 
     funnel_stages = ["노출수", "클릭수", "UV", "결제고객수"]
-    funnel_labels = ["노출", "클릭", "방문(UV)", "구매"]
     funnel_cur_vals = [scaled(m, agg[m], cur_days) for m in funnel_stages]
 
     funnel_deltas = []
+    funnel_yoy_deltas = []
     for m in funnel_stages:
         d = deltas_for(m)
-        d_label, d_pct, _ = d[0]
-        funnel_deltas.append(f"{d_label} {format_delta_text(d_pct)}" if d_pct is not None else f"{d_label} -")
+        d_label, d_pct, d_prev = d[0]
+        funnel_deltas.append(
+            f"{d_label} {format_delta_text(d_pct)} ({d_prev})" if d_pct is not None and d_prev else
+            (f"{d_label} {format_delta_text(d_pct)}" if d_pct is not None else f"{d_label} -")
+        )
+        yoy_entry = next((x for x in d if x[0] == "전년비"), None)
+        yoy_pct = yoy_entry[1] if yoy_entry else None
+        yoy_prev = yoy_entry[2] if yoy_entry else None
+        funnel_yoy_deltas.append(
+            f"전년비 {format_delta_text(yoy_pct)} ({yoy_prev})" if yoy_pct is not None and yoy_prev else
+            (f"전년비 {format_delta_text(yoy_pct)}" if yoy_pct is not None else "전년비 -")
+        )
 
     render_custom_funnel(
-        funnel_labels, funnel_cur_vals, deltas=funnel_deltas,
+        funnel_labels, funnel_cur_vals, deltas=funnel_deltas, yoy_deltas=funnel_yoy_deltas,
         sub_labels=[f"{cur_label} · {mode}"] * 4,
         colors=["#2563EB", "#0EA5E9", "#F59E0B", "#22C55E"],
+        weak_index=weak_index, weak_note=weak_note,
     )
     st.caption("💡 도형 폭은 값 비율이 아니라 보기 좋게 고정한 형태입니다 — 정확한 크기는 옆 숫자를 보세요.")
+    st.caption(f"📅 전년비 기준: {'정확히 12개월 전 같은 달(마감 실적 기준)' if unit == '월마감' else '전년 동요일비(364일=52주 전, 요일 정렬)'}")
+    if weak_index is not None:
+        render_colored_caption(
+            f"🔻 **{funnel_labels[weak_index]} 전환 구간이 가장 부진합니다** — {weak_note}. "
+            "노출·클릭 등 물량이 아니라 단계별 전환율(CTR/UV·클릭율/CR) 기준 진단이라, "
+            "트래픽은 늘어도 이 구간만 새는 중일 수 있습니다."
+        )
 
     funnel_table_rows = []
     prev_val = None
@@ -278,10 +573,112 @@ if menu == "쇼핑검색광고 실적":
         f"(퍼널 단계에는 포함하지 않고 참고용으로만 표시)"
     )
 
+    # ── 카테고리별 거래액 비중 (쇼핑검색광고) — cattxn_df 기준, D-2 반영 ──
+    render_section_title(f"카테고리별 거래액 비중 (쇼핑검색광고) · {mode}")
+
+    cat_start = max(start_ts, pd.Timestamp(CATTXN_MIN_DATE))
+    cat_end = min(end_ts, pd.Timestamp(CATTXN_MAX_DATE))
+    if cat_start > cat_end:
+        st.info(f"이 기간에는 카테고리별 데이터가 아직 없습니다 (카테고리 데이터 최신일자: {CATTXN_MAX_DATE}).")
+    else:
+        cat_view = cattxn_df[(cattxn_df["date"] >= cat_start) & (cattxn_df["date"] <= cat_end)]
+        cat_rank = aggregate_cattxn_by(cat_view, group_col="category", txn_type="전체")
+        cat_rank = cat_rank[cat_rank["쇼핑검색광고_거래액"] > 0].sort_values(
+            "쇼핑검색광고_거래액", ascending=False
+        ).reset_index(drop=True)
+
+        if cat_rank.empty:
+            st.info("카테고리별 쇼핑검색광고 거래액 데이터가 없습니다.")
+        else:
+            cat_total = cat_rank["쇼핑검색광고_거래액"].sum()
+
+            # 비교기간(직전기간 + 전년비)도 cattxn 자체 날짜범위 안에서 별도 산출
+            cat_comp_periods = get_comparison_periods(ref_date, unit, CATTXN_MIN_DATE, CATTXN_MAX_DATE)
+            cat_immediate_label = next(iter(cat_comp_periods.keys()))
+
+            def _cat_period_series(period):
+                if period is None:
+                    return None
+                p_start = max(period[0], pd.Timestamp(CATTXN_MIN_DATE))
+                p_end = min(period[1], pd.Timestamp(CATTXN_MAX_DATE))
+                if p_start > p_end:
+                    return None
+                p_view = cattxn_df[(cattxn_df["date"] >= p_start) & (cattxn_df["date"] <= p_end)]
+                if p_view.empty:
+                    return None
+                return aggregate_cattxn_by(p_view, group_col="category", txn_type="전체").set_index("category")[
+                    "쇼핑검색광고_거래액"
+                ]
+
+            cat_yoy_series = _cat_period_series(cat_comp_periods.get("전년비"))
+            cat_imm_series = _cat_period_series(cat_comp_periods.get(cat_immediate_label))
+
+            CAT_TOP_N = 8
+            CAT_DONUT_COLORS = ["#1E40AF", "#2563EB", "#3B82F6", "#60A5FA", "#7DD3FC",
+                                 "#93C5FD", "#0EA5E9", "#0284C7", "#CBD5E1"]
+            top_rows = cat_rank.head(CAT_TOP_N)
+            rest_sum = cat_rank["쇼핑검색광고_거래액"].iloc[CAT_TOP_N:].sum()
+            rest_n = len(cat_rank) - CAT_TOP_N
+
+            donut_labels = top_rows["category"].tolist()
+            donut_values = top_rows["쇼핑검색광고_거래액"].tolist()
+            if rest_sum > 0:
+                donut_labels.append(f"기타 ({rest_n}개)")
+                donut_values.append(rest_sum)
+
+            col_donut, col_table = st.columns([1, 1.6])
+            with col_donut:
+                fig_cat_donut = go.Figure(go.Pie(
+                    labels=donut_labels, values=donut_values, hole=0.62,
+                    marker=dict(colors=CAT_DONUT_COLORS[:len(donut_labels)]),
+                    textinfo="none", sort=False,
+                ))
+                fig_cat_donut.update_layout(
+                    height=320, margin=dict(t=10, b=10, l=10, r=10),
+                    legend=dict(orientation="v", yanchor="middle", y=0.5, xanchor="left", x=1.02, font=dict(size=11)),
+                    annotations=[dict(
+                        text=f"총 거래액<br><b>{format_million(cat_total)}</b>",
+                        x=0.5, y=0.5, showarrow=False, font=dict(size=13),
+                    )],
+                )
+                st.plotly_chart(fig_cat_donut, use_container_width=True)
+
+            with col_table:
+                cat_table_rows = []
+                for _, r in cat_rank.iterrows():
+                    cname = r["category"]
+                    cur_v = r["쇼핑검색광고_거래액"]
+                    share = (cur_v / cat_total * 100) if cat_total else None
+                    yoy_pct = pct_change(cur_v, cat_yoy_series.loc[cname]) \
+                        if cat_yoy_series is not None and cname in cat_yoy_series.index else None
+                    imm_pct = pct_change(cur_v, cat_imm_series.loc[cname]) \
+                        if cat_imm_series is not None and cname in cat_imm_series.index else None
+                    cat_table_rows.append({
+                        "카테고리": cname,
+                        "거래액": format_million(cur_v),
+                        "비중": f"{share:.1f}%" if share is not None else "-",
+                        "전년동요일비": format_delta_text(yoy_pct),
+                        cat_immediate_label: format_delta_text(imm_pct),
+                    })
+                cat_table_df = pd.DataFrame(cat_table_rows)
+                st.dataframe(
+                    cat_table_df.style.map(delta_cell_style, subset=["전년동요일비", cat_immediate_label]),
+                    use_container_width=True, hide_index=True,
+                    height=min(35 * (len(cat_table_df) + 1) + 3, 360),
+                )
+            st.caption(
+                f"ℹ️ 카테고리 데이터는 태블로 원본과 별도 집계라 2일 전 실적까지 반영됩니다 (최신일자: {CATTXN_MAX_DATE}) "
+                f"· 집계기간: {cat_start.date()} ~ {cat_end.date()}"
+            )
+
     # ── 추이 차트: 2026년 기준 + 전년비 비교선 (조회단위별 집계) ──
     render_section_title(f"2026년 추이 (전년비 비교) · {mode}")
-    metric_choice = st.selectbox("지표 선택", ALL_METRICS,
-                                  index=ALL_METRICS.index("거래액"))
+    st.caption("지표 선택")
+    with st.container(key="pill_trend_metric"):
+        metric_choice = st.radio(
+            "지표 선택", ALL_METRICS, index=ALL_METRICS.index("거래액"),
+            horizontal=True, label_visibility="collapsed", key="trend_metric_choice",
+        )
 
     show_combo = False
     if metric_choice == "거래액":
@@ -294,53 +691,92 @@ if menu == "쇼핑검색광고 실적":
         labels, cur_vals, prev_vals = bucket_yoy_series(df, buckets, metric_choice, mode, unit)
         axis_metric_label = metric_choice if metric_choice not in BASE_METRICS else f"{metric_choice} ({mode})"
 
+        # ── 일별/주별은 버킷 수가 많아 카테고리축에 다 우겨넣으면 라벨이 겹쳐 읽기 어렵다.
+        # 실제 날짜(date)축으로 바꾸고 레인지슬라이더 + 기본 최근 90일(주별은 약 12주) 확대 뷰를
+        # 줘서, 평소엔 최근 구간만 깔끔하게 보고 필요하면 슬라이더를 끌어 전체 연도를 볼 수 있게 한다.
+        # 월별/월마감은 버킷 수가 적어(최대 12개) 기존 카테고리축 그대로가 더 낫다.
+        is_daily = (unit == "일별")
+        use_date_axis = unit in ("일별", "주별")
+        x_vals = [dates[0] for _, dates in buckets] if use_date_axis else labels
+        line_mode = "lines" if is_daily else "lines+markers"
+
+        show_ma = False
+        if is_daily:
+            show_ma = st.checkbox("7일 이동평균선 함께 보기 (일별 변동 완화)", value=False, key="trend_ma")
+
+        def _ma7(vals):
+            s = pd.Series(vals, dtype="float64")
+            return s.rolling(7, min_periods=3).mean().tolist()
+
         fig = go.Figure()
+        is_million_metric = metric_choice in MILLION_SCALE_METRICS
 
         if show_combo:
             _, ad_cost_vals, _ = bucket_yoy_series(df, buckets, "광고비", mode, unit)
             _, roas_vals, _ = bucket_yoy_series(df, buckets, "ROAS", mode, unit)
             roas_pct_vals = [round(v * 100, 1) if v is not None else None for v in roas_vals]
+            ad_cost_plot = _to_million(ad_cost_vals)
+            cur_plot, prev_plot = _to_million(cur_vals), _to_million(prev_vals)
 
             fig.add_trace(go.Bar(
-                x=labels, y=ad_cost_vals, name="광고비", yaxis="y2",
+                x=x_vals, y=ad_cost_plot, name="광고비", yaxis="y2",
                 marker_color="rgba(148,163,184,0.55)",
             ))
             fig.add_trace(go.Scatter(
-                x=labels, y=cur_vals, mode="lines+markers", name="거래액(올해)",
+                x=x_vals, y=cur_plot, mode=line_mode, name="거래액(올해)",
                 line=dict(width=2, color="#2563EB"),
                 customdata=roas_pct_vals,
-                hovertemplate="%{x}<br>거래액: %{y:,.0f}<br>ROAS: %{customdata}%<extra></extra>",
+                hovertemplate="%{x}<br>거래액: %{y:,.1f}백만<br>ROAS: %{customdata}%<extra></extra>",
             ))
             fig.add_trace(go.Scatter(
-                x=labels, y=prev_vals, mode="lines+markers", name="거래액(전년비)",
+                x=x_vals, y=prev_plot, mode=line_mode, name="거래액(전년비)",
                 line=dict(width=2, dash="dash", color="#93C5FD"), connectgaps=True,
             ))
+            if show_ma:
+                fig.add_trace(go.Scatter(
+                    x=x_vals, y=_ma7(cur_plot), mode="lines", name="거래액 7일 이동평균",
+                    line=dict(width=3, color="#F59E0B"),
+                ))
             fig.update_layout(
-                height=440, margin=dict(t=20, b=20, l=10, r=10),
-                xaxis=dict(type="category", title=None),
-                yaxis=dict(title=f"거래액 ({mode})"),
-                yaxis2=dict(title="광고비", overlaying="y", side="right", showgrid=False),
-                hovermode="x unified",
+                height=480 if is_daily else 440,
+                margin=dict(t=70 if use_date_axis else 20, b=20, l=10, r=10),
+                xaxis=_trend_xaxis(x_vals, use_date_axis, "%m/%d"),
+                yaxis=_money_axis(f"거래액 ({mode})"),
+                yaxis2=dict(**_money_axis("광고비"), overlaying="y", side="right", showgrid=False),
+                hovermode="closest",
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
             )
             st.plotly_chart(fig, use_container_width=True)
-            st.caption("📊 막대=광고비(우측 보조축) · 거래액 라인에 마우스를 올리면 해당 시점 ROAS%가 함께 표시됩니다.")
+            st.caption("📊 막대=광고비(우측 보조축) · 거래액 라인에 마우스를 올리면 해당 시점 ROAS%가 함께 표시됩니다."
+                      + (" 위쪽 버튼으로 기간(1주/1개월/3개월/6개월/전체)을 바꿔볼 수 있습니다." if use_date_axis else ""))
         else:
+            cur_plot = _to_million(cur_vals) if is_million_metric else cur_vals
+            prev_plot = _to_million(prev_vals) if is_million_metric else prev_vals
             fig.add_trace(go.Scatter(
-                x=labels, y=cur_vals, mode="lines+markers", name="2026년(올해)",
+                x=x_vals, y=cur_plot, mode=line_mode, name="2026년(올해)",
                 line=dict(width=2),
             ))
             fig.add_trace(go.Scatter(
-                x=labels, y=prev_vals, mode="lines+markers", name="전년비",
+                x=x_vals, y=prev_plot, mode=line_mode, name="전년비",
                 line=dict(width=2, dash="dash"), connectgaps=True,
             ))
+            if show_ma:
+                fig.add_trace(go.Scatter(
+                    x=x_vals, y=_ma7(cur_plot), mode="lines", name="7일 이동평균",
+                    line=dict(width=3, color="#F59E0B"),
+                ))
             fig.update_layout(
-                height=420, margin=dict(t=20, b=20, l=10, r=10),
-                yaxis_title=axis_metric_label, xaxis_title=None,
-                xaxis=dict(type="category"),
-                hovermode="x unified",
+                height=460 if is_daily else 420,
+                margin=dict(t=70 if use_date_axis else 20, b=20, l=10, r=10),
+                yaxis=_money_axis(axis_metric_label, is_million_metric),
+                xaxis_title=None,
+                xaxis=_trend_xaxis(x_vals, use_date_axis, "%m/%d"),
+                hovermode="closest",
             )
             st.plotly_chart(fig, use_container_width=True)
+            if use_date_axis:
+                default_window_note = "최근 90일" if is_daily else "최근 약 12주"
+                st.caption(f"💡 기본으로 {default_window_note}만 보여줍니다 — 위쪽 버튼으로 1주/1개월/3개월/6개월/전체 기간을 바로 바꿔볼 수 있습니다.")
 
         yoy_basis = "정확히 12개월 전 같은 달(마감 실적 기준)" if unit == "월마감" else "전년 동요일비(364일=52주 전, 요일 정렬)"
         st.caption(f"📅 전년비 비교 기준: {yoy_basis}")
@@ -353,31 +789,52 @@ elif menu == "전년비교":
     render_page_header(
         eyebrow="쇼핑검색광고 · 네이버",
         title="전년비교",
-        sub="일자별(전년 동일 요일) 및 월별 누적 기준으로 전년 대비 실적을 비교합니다.",
+        sub="일자별(전년 동요일) 및 월별 누적 기준으로 전년 대비 실적을 비교합니다.",
     )
-    tab1, tab2 = st.tabs(["일자별 YoY (전년 동일 요일)", "월별 누적 YoY"])
+    st.caption(
+        f"📅 전년비 비교는 전년 동요일(364일 전, 요일 정렬) 기준입니다 · "
+        f"데이터는 {MAX_DATE}까지 반영되어 있습니다 (그 이후 실적은 아직 집계 전)."
+    )
+    tab1, tab2 = st.tabs(["일자별 YoY (전년 동요일)", f"{unit} 종합 YoY"])
 
     # ── TAB 1: 일자별 YoY ──
     with tab1:
-        st.caption("선택한 기간을 기준으로, 전년 동일 요일(364일 전)과 비교합니다.")
+        with st.container(key="card_yoy1_filter"):
+            render_section_title("🔍 비교 구간 선택")
+            st.caption(f"조회단위({unit}) 기준으로 비교 구간을 고르면, 전년 동요일(364일 전)과 비교합니다.")
 
-        c1, c2 = st.columns(2)
-        with c1:
-            cur_start = st.date_input(
-                "비교 시작일", value=MAX_DATE - timedelta(days=6),
-                min_value=MIN_DATE + timedelta(days=364), max_value=MAX_DATE,
-                key="yoy_start",
-            )
-        with c2:
-            cur_end = st.date_input(
-                "비교 종료일", value=MAX_DATE,
-                min_value=MIN_DATE + timedelta(days=364), max_value=MAX_DATE,
-                key="yoy_end",
-            )
+            yoy1_min_date = MIN_DATE + timedelta(days=364)
+            if unit == "일별":
+                _ensure_default_date("yoy_start", max(yoy1_min_date, MAX_DATE - timedelta(days=29)),
+                                      yoy1_min_date, MAX_DATE)
+                _ensure_default_date("yoy_end", MAX_DATE, yoy1_min_date, MAX_DATE)
+                c1, c2 = st.columns(2)
+                with c1:
+                    cur_start = st.date_input(
+                        "비교 시작일", min_value=yoy1_min_date, max_value=MAX_DATE, key="yoy_start",
+                    )
+                with c2:
+                    cur_end = st.date_input(
+                        "비교 종료일", min_value=yoy1_min_date, max_value=MAX_DATE, key="yoy_end",
+                    )
+            else:
+                yoy1_options = build_ref_options(unit, MIN_DATE, MAX_DATE)
+                yoy1_label_to_date = dict(yoy1_options)
+                yoy1_labels = list(yoy1_label_to_date.keys())
+                picker_label = {"주별": "주차", "월별": "월", "월마감": "마감월"}[unit]
+                _ensure_valid_select("yoy_start_period", yoy1_labels)
+                _ensure_valid_select("yoy_end_period", yoy1_labels)
+                c1, c2 = st.columns(2)
+                with c1:
+                    yoy1_start_label = st.selectbox(f"비교 시작 {picker_label}", yoy1_labels, key="yoy_start_period")
+                with c2:
+                    yoy1_end_label = st.selectbox(f"비교 종료 {picker_label}", yoy1_labels, key="yoy_end_period")
+                cur_start = get_period_bounds(yoy1_label_to_date[yoy1_start_label], unit, MIN_DATE, MAX_DATE)[0].date()
+                cur_end = get_period_bounds(yoy1_label_to_date[yoy1_end_label], unit, MIN_DATE, MAX_DATE)[1].date()
 
-        if cur_start > cur_end:
-            st.error("시작일이 종료일보다 늦을 수 없습니다.")
-            st.stop()
+            if cur_start > cur_end:
+                st.error("시작 구간이 종료 구간보다 늦을 수 없습니다.")
+                st.stop()
 
         cur_range = pd.date_range(cur_start, cur_end, freq="D")
         prev_range = yoy_same_weekday_dates(pd.Series(cur_range))
@@ -386,157 +843,199 @@ elif menu == "전년비교":
         prev_view = df[df["date"].isin(prev_range)].copy()
 
         if prev_view.empty:
-            st.warning("전년 동일 요일에 해당하는 데이터가 없습니다. (데이터 시작일 이전)")
+            st.warning("전년 동요일에 해당하는 데이터가 없습니다. (데이터 시작일 이전)")
         else:
             cur_agg = aggregate(cur_view)
             prev_agg = aggregate(prev_view)
 
-            metric_choice2 = st.selectbox(
-                "지표 선택", ["UV", "거래액", "광고비", "ROAS", "CR", "CTR",
-                             "신규거래액", "첫구매수", "가입수"],
-                key="yoy_metric",
-            )
+            with st.container(key="card_yoy1_result"):
+                render_section_title("📊 지표 비교")
+                st.caption("지표 선택")
+                with st.container(key="pill_yoy_metric"):
+                    metric_choice2 = st.radio(
+                        "지표 선택", WIDE_YOY_METRICS, index=WIDE_YOY_METRICS.index("거래액"),
+                        horizontal=True, label_visibility="collapsed", key="yoy_metric",
+                    )
 
-            v_cur, v_prev = cur_agg[metric_choice2], prev_agg[metric_choice2]
-            delta_pct = pct_change(v_cur, v_prev)
+                v_cur, v_prev = cur_agg[metric_choice2], prev_agg[metric_choice2]
+                delta_pct = pct_change(v_cur, v_prev)
 
-            m1, m2, m3 = st.columns(3)
-            m1.metric(f"올해 ({cur_start} ~ {cur_end})", format_value(metric_choice2, v_cur))
-            m2.metric(f"전년 동일요일 ({prev_range.min().date()} ~ {prev_range.max().date()})",
-                      format_value(metric_choice2, v_prev))
-            m3.metric("증감률", format_delta_text(delta_pct))
+                render_kpi_cards([
+                    {
+                        "label": f"올해 ({cur_start} ~ {cur_end})",
+                        "value": format_value(metric_choice2, v_cur),
+                        "deltas": [("전년비", delta_pct, format_value(metric_choice2, v_prev))]
+                                  if delta_pct is not None else [],
+                    },
+                    {
+                        "label": f"전년 동요일 ({prev_range.min().date()} ~ {prev_range.max().date()})",
+                        "value": format_value(metric_choice2, v_prev),
+                        "deltas": [],
+                    },
+                ])
 
-            # 일자별 라인 비교 (순서상 매칭: n번째 날짜끼리)
-            cur_sorted = cur_view.sort_values("date").reset_index(drop=True)
-            prev_sorted = prev_view.sort_values("date").reset_index(drop=True)
-            n = min(len(cur_sorted), len(prev_sorted))
+                # 일자별 라인 비교 (순서상 매칭: n번째 날짜끼리)
+                cur_sorted = cur_view.sort_values("date").reset_index(drop=True)
+                prev_sorted = prev_view.sort_values("date").reset_index(drop=True)
+                n = min(len(cur_sorted), len(prev_sorted))
 
-            fig2 = go.Figure()
-            fig2.add_trace(go.Scatter(
-                x=cur_sorted["date"][:n], y=cur_sorted[metric_choice2][:n],
-                mode="lines+markers", name="올해",
-            ))
-            fig2.add_trace(go.Scatter(
-                x=cur_sorted["date"][:n], y=prev_sorted[metric_choice2][:n],
-                mode="lines+markers", name="전년(동일요일)",
-                line=dict(dash="dash"),
-            ))
-            fig2.update_layout(
-                height=420, margin=dict(t=20, b=20, l=10, r=10),
-                yaxis_title=metric_choice2, hovermode="x unified",
-            )
-            st.plotly_chart(fig2, use_container_width=True)
+                is_million2 = metric_choice2 in MILLION_SCALE_METRICS
+                fig2_cur = _to_million(cur_sorted[metric_choice2][:n]) if is_million2 else cur_sorted[metric_choice2][:n]
+                fig2_prev = _to_million(prev_sorted[metric_choice2][:n]) if is_million2 else prev_sorted[metric_choice2][:n]
 
-            compare_table = pd.DataFrame({
-                "날짜(올해)": cur_sorted["date"][:n].dt.date,
-                "올해": cur_sorted[metric_choice2][:n],
-                "날짜(전년)": prev_sorted["date"][:n].dt.date,
-                "전년": prev_sorted[metric_choice2][:n],
-            })
-            compare_table["증감률(%)"] = [
-                pct_change(c, p) for c, p in zip(compare_table["올해"], compare_table["전년"])
-            ]
-            compare_table["증감률(%)"] = compare_table["증감률(%)"].apply(format_delta_text)
-            st.dataframe(
-                compare_table.style.map(delta_cell_style, subset=["증감률(%)"]),
-                use_container_width=True, height=300,
-            )
-            st.download_button(
-                "📥 Excel 다운로드",
-                data=to_excel_bytes(compare_table),
-                file_name=f"일자별YoY_{cur_start}_{cur_end}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                key="dl_yoy_daily",
-            )
-
-    # ── TAB 2: 월별 누적 YoY ──
-    with tab2:
-        st.caption("월 단위로 올해와 전년 실적을 비교합니다. (겹치는 월만 표시)")
-
-        monthly = aggregate_by(df.assign(ym=df["date"].dt.to_period("M")), "ym")
-        monthly["연도"] = monthly["ym"].dt.year
-        monthly["월"] = monthly["ym"].dt.month
-
-        years = sorted(monthly["연도"].unique())
-        if len(years) < 2:
-            st.warning("비교할 연도 데이터가 충분하지 않습니다.")
-        else:
-            c1, c2 = st.columns(2)
-            with c1:
-                year_cur = st.selectbox("비교 연도", years[::-1], index=0)
-            with c2:
-                year_prev = st.selectbox("기준(전년) 연도", years[::-1],
-                                          index=min(1, len(years) - 1))
-
-            metric_choice3 = st.selectbox(
-                "지표 선택", ["UV", "거래액", "광고비", "ROAS", "CR", "CTR",
-                             "신규거래액", "첫구매수", "가입수"],
-                key="yoy_month_metric",
-            )
-
-            cur_m = monthly[monthly["연도"] == year_cur].set_index("월")
-            prev_m = monthly[monthly["연도"] == year_prev].set_index("월")
-            common_months = sorted(set(cur_m.index) & set(prev_m.index))
-
-            if not common_months:
-                st.warning("두 연도 간 겹치는 월이 없습니다.")
-            else:
-                bar_df = pd.DataFrame({
-                    "월": [f"{m}월" for m in common_months],
-                    f"{year_cur}": [cur_m.loc[m, metric_choice3] for m in common_months],
-                    f"{year_prev}": [prev_m.loc[m, metric_choice3] for m in common_months],
-                })
-                bar_df["YoY(%)"] = [
-                    pct_change(bar_df.loc[i, f"{year_cur}"], bar_df.loc[i, f"{year_prev}"])
-                    for i in bar_df.index
-                ]
-
-                fig3 = go.Figure()
-                fig3.add_trace(go.Bar(x=bar_df["월"], y=bar_df[f"{year_prev}"],
-                                       name=f"{year_prev}", marker_color="lightgray"))
-                fig3.add_trace(go.Bar(x=bar_df["월"], y=bar_df[f"{year_cur}"],
-                                       name=f"{year_cur}", marker_color="#4C78A8"))
-                fig3.update_layout(
-                    barmode="group", height=440,
-                    margin=dict(t=20, b=20, l=10, r=10),
-                    yaxis_title=metric_choice3, hovermode="x unified",
+                fig2 = go.Figure()
+                fig2.add_trace(go.Scatter(
+                    x=cur_sorted["date"][:n], y=fig2_cur,
+                    mode="lines+markers", name="26년",
+                    line=dict(width=2, color="#2563EB"),
+                ))
+                fig2.add_trace(go.Scatter(
+                    x=cur_sorted["date"][:n], y=fig2_prev,
+                    mode="lines+markers", name="전년 동요일",
+                    line=dict(width=2, color="#93C5FD"),
+                ))
+                xaxis2 = dict(type="date", tickformat="%m/%d")
+                if n <= 10:
+                    # 비교 구간이 짧으면(예: 주 초반만 마감된 주차) Plotly가 하루 미만 단위로
+                    # 눈금을 쪼개 "00:00, 06:00 ..." 처럼 표시하는 문제가 있어, 하루 단위로 고정한다.
+                    xaxis2["dtick"] = "D1"
+                fig2.update_layout(
+                    height=420, margin=dict(t=20, b=20, l=10, r=10),
+                    xaxis=xaxis2, yaxis=_money_axis(metric_choice2, is_million2), hovermode="closest",
                 )
-                st.plotly_chart(fig3, use_container_width=True)
+                st.plotly_chart(fig2, use_container_width=True)
 
-                display_bar_df = bar_df.copy()
-                display_bar_df["YoY(%)"] = display_bar_df["YoY(%)"].apply(format_delta_text)
+            with st.container(key="card_yoy1_table"):
+                render_section_title("📋 일자별 상세")
+                compare_table = pd.DataFrame({
+                    "날짜(올해)": cur_sorted["date"][:n].dt.date,
+                    "올해": cur_sorted[metric_choice2][:n],
+                    "날짜(전년)": prev_sorted["date"][:n].dt.date,
+                    "전년": prev_sorted[metric_choice2][:n],
+                })
+                compare_table["증감률(%)"] = [
+                    pct_change(c, p) for c, p in zip(compare_table["올해"], compare_table["전년"])
+                ]
+                compare_table["증감률(%)"] = compare_table["증감률(%)"].apply(format_delta_text)
                 st.dataframe(
-                    display_bar_df.style.format({f"{year_cur}": "{:,.1f}", f"{year_prev}": "{:,.1f}"})
-                                        .map(delta_cell_style, subset=["YoY(%)"]),
-                    use_container_width=True,
+                    compare_table.style.map(delta_cell_style, subset=["증감률(%)"]),
+                    use_container_width=True, height=300,
                 )
                 st.download_button(
                     "📥 Excel 다운로드",
-                    data=to_excel_bytes(bar_df),
-                    file_name=f"월별YoY_{year_cur}_vs_{year_prev}.xlsx",
+                    data=to_excel_bytes(compare_table),
+                    file_name=f"일자별YoY_{cur_start}_{cur_end}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="dl_yoy_month",
+                    key="dl_yoy_daily",
+                )
+
+    # ── TAB 2: 조회단위 종합 YoY (여러 지표를 한 표에서 전년 동요일비 비교) ──
+    with tab2:
+        st.caption(f"사이드바 조회단위({unit}) 기준으로 2026년 각 구간을 전년 동일 구간(요일 정렬)과 "
+                  "여러 지표를 한 번에 비교합니다.")
+        with st.container(key="pill_wide_mode"):
+            wide_mode = st.radio("표시방식", ["누계", "일평균"], horizontal=True, index=1, key="wide_yoy_mode")
+
+        wide_metrics = WIDE_YOY_METRICS
+        period_col = {"일별": "일자", "주별": "주차", "월별": "월", "월마감": "마감월"}[unit]
+
+        def _wide_fmt(metric, value):
+            if value is None or pd.isna(value):
+                return "-"
+            if metric == "ROAS":
+                return format_roas_percent(value)
+            return format_value(metric, value)
+
+        wide_buckets = build_2026_buckets(df, unit)
+        if not wide_buckets:
+            st.info("2026년 데이터가 없거나, 선택한 조회단위 기준으로 마감된 구간이 없습니다.")
+        else:
+            labels = [b[0] for b in wide_buckets]
+            start_dates = [b[1][0].date() for b in wide_buckets]
+            metric_series = {
+                m: bucket_yoy_series(df, wide_buckets, m, wide_mode, unit)[1:]  # (cur_vals, prev_vals)
+                for m in wide_metrics
+            }
+
+            wide_raw_rows = []
+            for i, (label, sdate) in enumerate(zip(labels, start_dates)):
+                row = {period_col: label, "시작일자": sdate}
+                for m in wide_metrics:
+                    cur_vals, prev_vals = metric_series[m]
+                    row[f"{m} · 전년"] = prev_vals[i]
+                    row[f"{m} · 올해"] = cur_vals[i]
+                    row[f"{m} · YoY%"] = pct_change(cur_vals[i], prev_vals[i])
+                wide_raw_rows.append(row)
+            wide_raw = pd.DataFrame(wide_raw_rows)
+
+            # ── 요약: YoY%만 한눈에 (상단) ──
+            with st.container(key="card_yoy2_summary"):
+                render_section_title("📊 YoY% 요약")
+                yoy_summary_cols = {period_col: wide_raw[period_col]}
+                yoy_only_names = []
+                for m in wide_metrics:
+                    col = f"{m} · YoY%"
+                    yoy_summary_cols[m] = wide_raw[col].apply(format_delta_text)
+                    yoy_only_names.append(m)
+                yoy_summary_display = pd.DataFrame(yoy_summary_cols)
+                st.dataframe(
+                    yoy_summary_display.style.map(delta_cell_style, subset=yoy_only_names),
+                    use_container_width=True, hide_index=True, height=320,
+                )
+
+            # ── 상세: 지표별 전년/올해 원값 + YoY% ──
+            with st.container(key="card_yoy2_detail"):
+                render_section_title("📋 상세 (지표별 전년·올해 원값 포함)")
+                display_cols = {period_col: wide_raw[period_col], "시작일자": wide_raw["시작일자"]}
+                yoy_col_names = []
+                for m in wide_metrics:
+                    display_cols[f"{m} · 전년"] = wide_raw[f"{m} · 전년"].apply(lambda v, mm=m: _wide_fmt(mm, v))
+                    display_cols[f"{m} · 올해"] = wide_raw[f"{m} · 올해"].apply(lambda v, mm=m: _wide_fmt(mm, v))
+                    yoy_col = f"{m} · YoY%"
+                    display_cols[yoy_col] = wide_raw[yoy_col].apply(format_delta_text)
+                    yoy_col_names.append(yoy_col)
+                wide_display = pd.DataFrame(display_cols)
+
+                st.dataframe(
+                    wide_display.style.map(delta_cell_style, subset=yoy_col_names),
+                    use_container_width=True, hide_index=True, height=560,
+                )
+                st.download_button(
+                    "📥 Excel 다운로드",
+                    data=to_excel_bytes(wide_raw),
+                    file_name=f"{unit}종합YoY_{start_dates[0]}_{start_dates[-1]}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="dl_yoy_wide",
+                )
+                wide_yoy_basis = "정확히 12개월 전 같은 달(마감 실적 기준)" if unit == "월마감" else "전년 동요일비(364일=52주 전, 요일 정렬)"
+                st.caption(
+                    f"📅 전년비 비교 기준: {wide_yoy_basis} · 비율지표(ROAS·CTR·CR·객단가·순결제비중)는 "
+                    "일자별 값을 평균내지 않고 분자/분모를 합산한 뒤 재계산한 값입니다."
                 )
 
 
 # ════════════════════════════════════════════════════════════════
 # PAGE 3: 카테고리별 실적 (정상/이월/입점, 쇼핑검색광고 vs EP채널)
 # ════════════════════════════════════════════════════════════════
-else:
+elif menu == "카테고리별 실적":
     with st.container(key="page3_filters"):
-        c_ref, c_mode = st.columns([2.5, 1.5])
+        c_ref, c_quick, c_mode = st.columns([2, 1.6, 1.3])
         with c_ref:
             if unit == "일별":
-                cattxn_ref_date = st.date_input("기준일자", value=CATTXN_MAX_DATE,
-                                                 min_value=CATTXN_MIN_DATE, max_value=CATTXN_MAX_DATE,
+                _ensure_default_date("cattxn_ref_date", CATTXN_MAX_DATE, CATTXN_MIN_DATE, CATTXN_MAX_DATE)
+                cattxn_ref_date = st.date_input("기준일자", min_value=CATTXN_MIN_DATE, max_value=CATTXN_MAX_DATE,
                                                  key="cattxn_ref_date")
             else:
                 cattxn_ref_options = build_ref_options(unit, CATTXN_MIN_DATE, CATTXN_MAX_DATE)
                 cattxn_label_to_date = dict(cattxn_ref_options)
                 picker_label = "기준 주차" if unit == "주별" else "기준 월"
+                _ensure_valid_select("cattxn_ref_select", list(cattxn_label_to_date.keys()))
                 cattxn_chosen = st.selectbox(picker_label, list(cattxn_label_to_date.keys()),
-                                              index=0, key="cattxn_ref_select")
+                                              key="cattxn_ref_select")
                 cattxn_ref_date = cattxn_label_to_date[cattxn_chosen]
+        with c_quick:
+            st.markdown("<div style='margin-top:1.8rem'></div>", unsafe_allow_html=True)
+            render_quick_date_buttons(unit, CATTXN_MIN_DATE, CATTXN_MAX_DATE, "cattxn_ref_date", "cattxn_ref_select")
         with c_mode:
             cattxn_mode = st.radio("표시방식", ["누계", "일평균"], horizontal=True, index=1, key="cattxn_mode")
 
@@ -681,6 +1180,49 @@ else:
     ]
     st.caption("📅 비교대상 기간 — " + " · ".join(cattxn_comp_strs))
 
+    # ── 핵심 요약 (규칙 기반 자동 인사이트) ──
+    page3_insight_lines = []
+
+    sa_lbl, sa_pct, _ = cattxn_deltas_for("쇼핑검색광고_거래액")[0]
+    ep_lbl, ep_pct, _ = cattxn_deltas_for("EP채널_거래액")[0]
+    if sa_pct is not None and ep_pct is not None:
+        gap = ep_pct - sa_pct
+        if gap > 10:
+            page3_insight_lines.append(
+                f"EP채널 거래액({format_delta_text(ep_pct)})이 쇼핑검색광고({format_delta_text(sa_pct)})보다 "
+                f"{sa_lbl} 기준 더 빠르게 늘고 있습니다."
+            )
+        elif gap < -10:
+            page3_insight_lines.append(
+                f"쇼핑검색광고 거래액({format_delta_text(sa_pct)})이 EP채널({format_delta_text(ep_pct)})보다 "
+                f"{sa_lbl} 기준 더 빠르게 늘고 있습니다."
+            )
+
+    roas_lbl, roas_pct, _ = total_ad_deltas_for("ROAS")[0]
+    if roas_pct is not None and abs(roas_pct) > 10:
+        direction = "개선" if roas_pct > 0 else "악화"
+        page3_insight_lines.append(
+            f"쇼핑검색광고 ROAS(전체채널)가 {roas_lbl} {format_delta_text(roas_pct)}로 {direction}됐습니다."
+        )
+
+    page3_weekly = cattxn_weekly_changes(
+        cattxn_df, group_by="category", txn_type=cattxn_txn_filter,
+        category=cattxn_category_filter, brand=cattxn_brand_filter,
+    )
+    page3_latest = page3_weekly.sort_values("_wk").groupby("category").tail(1)
+    page3_classes = page3_latest.apply(
+        lambda r: classify_comovement(r["광고_증감률"], r["EP_증감률"]), axis=1
+    )
+    good_n = int((page3_classes == "🟢 동반상승").sum())
+    bad_n = int((page3_classes == "🔴 광고잠식 의심").sum())
+    if good_n or bad_n:
+        page3_insight_lines.append(
+            f"최근 완결 주 기준 🟢 동반상승 카테고리 {good_n}개, 🔴 광고잠식 의심 카테고리 {bad_n}개 — "
+            "자세한 목록은 'EP 연관성 분석' 탭에서 확인하세요."
+        )
+
+    render_insight_box(page3_insight_lines)
+
     # ── 실적요약 (직전기간 · 전년비) ──
     cattxn_immediate_label = next(iter(cattxn_comp_periods.keys()))
     cattxn_prev_agg = cattxn_comp_aggs.get(cattxn_immediate_label)
@@ -737,14 +1279,18 @@ else:
 
     def _render_single_trend(x_vals, cur_vals, prev_vals, channel_label, metric_label,
                              show_yoy, x_categorical, prev_label="전년 동요일"):
+        is_money = metric_label == "거래액"
+        cur_plot = _to_million(cur_vals) if is_money else cur_vals
+        prev_plot = _to_million(prev_vals) if is_money else prev_vals
         fig = go.Figure()
-        fig.add_trace(go.Scatter(x=x_vals, y=cur_vals, mode="lines+markers", name="26년",
+        fig.add_trace(go.Scatter(x=x_vals, y=cur_plot, mode="lines+markers", name="26년",
                                   line=dict(width=2, color="#2563EB")))
         if show_yoy:
-            fig.add_trace(go.Scatter(x=x_vals, y=prev_vals, mode="lines+markers", name=prev_label,
+            fig.add_trace(go.Scatter(x=x_vals, y=prev_plot, mode="lines+markers", name=prev_label,
                                       line=dict(width=2, color="#93C5FD")))
         layout = dict(height=440, margin=dict(t=20, b=20, l=10, r=10),
-                      yaxis_title=f"{channel_label} {metric_label}", xaxis_title=None, hovermode="x unified")
+                      yaxis=_money_axis(f"{channel_label} {metric_label}", is_money),
+                      xaxis_title=None, hovermode="closest")
         if x_categorical:
             layout["xaxis"] = dict(type="category")
         fig.update_layout(**layout)
@@ -760,7 +1306,7 @@ else:
                                       line=dict(width=2, color="#0D9488")))
             layout = dict(
                 height=440, margin=dict(t=20, b=20, l=10, r=10),
-                yaxis_title="지수 (시작 시점=100)", xaxis_title=None, hovermode="x unified",
+                yaxis_title="지수 (시작 시점=100)", xaxis_title=None, hovermode="closest",
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
             )
             if x_categorical:
@@ -770,16 +1316,19 @@ else:
             st.caption("💡 두 채널을 시작 시점=100으로 지수화해서 같은 축에 겹쳐 그렸습니다 — "
                       "선이 비슷하게 움직이면 흐름이 유사한 것이고, 벌어지면 다르게 움직이는 것입니다.")
         else:
+            is_money = metric_label == "거래액"
+            ad_plot = _to_million(ad_vals) if is_money else ad_vals
+            ep_plot = _to_million(ep_vals) if is_money else ep_vals
             fig = go.Figure()
-            fig.add_trace(go.Scatter(x=x_vals, y=ad_vals, mode="lines+markers", name="쇼핑검색광고",
+            fig.add_trace(go.Scatter(x=x_vals, y=ad_plot, mode="lines+markers", name="쇼핑검색광고",
                                       line=dict(width=2, color="#2563EB")))
-            fig.add_trace(go.Scatter(x=x_vals, y=ep_vals, mode="lines+markers", name="EP채널",
+            fig.add_trace(go.Scatter(x=x_vals, y=ep_plot, mode="lines+markers", name="EP채널",
                                       line=dict(width=2, color="#94A3B8"), yaxis="y2"))
             layout = dict(
                 height=440, margin=dict(t=20, b=20, l=10, r=60),
-                yaxis=dict(title=f"쇼핑검색광고 {metric_label}"),
-                yaxis2=dict(title=f"EP채널 {metric_label}", overlaying="y", side="right"),
-                xaxis_title=None, hovermode="x unified",
+                yaxis=_money_axis(f"쇼핑검색광고 {metric_label}", is_money),
+                yaxis2=dict(**_money_axis(f"EP채널 {metric_label}", is_money), overlaying="y", side="right"),
+                xaxis_title=None, hovermode="closest",
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
             )
             if x_categorical:
@@ -943,11 +1492,11 @@ else:
                                      x_categorical=True, prev_label="전년 동월(동요일 기준)")
                 st.caption("📅 2026년 전체" + ("  ·  전년 비교선: 동월 동요일(364일 전) 매칭" if show_yoy_line else ""))
 
-        # ── SA/EP 거래액 비중 추이 (최근 12주) ──
-        render_section_title("SA/EP 거래액 비중 추이")
-        share_weeks = cattxn_period_buckets(cattxn_df, "주별")[-12:]
+        # ── SA/EP 거래액 비중 추이 (조회단위 기준 최근 구간) ──
+        render_section_title(f"SA/EP 거래액 비중 추이 · {unit}")
+        share_buckets = flow_overview_buckets(cattxn_df, unit)
         share_labels, sa_share, ep_share = cattxn_share_series(
-            cattxn_df, share_weeks, cattxn_txn_filter, cattxn_category_filter, cattxn_brand_filter
+            cattxn_df, share_buckets, cattxn_txn_filter, cattxn_category_filter, cattxn_brand_filter
         )
         fig_share = go.Figure()
         fig_share.add_trace(go.Scatter(x=share_labels, y=sa_share, mode="lines+markers", name="SA(쇼핑검색광고) 비중",
@@ -957,30 +1506,71 @@ else:
         fig_share.update_layout(
             height=380, margin=dict(t=20, b=20, l=10, r=10),
             xaxis=dict(type="category", title=None), yaxis=dict(title="비중 (%)", range=[0, 100]),
-            hovermode="x unified",
+            hovermode="closest",
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
         )
         st.plotly_chart(fig_share, use_container_width=True)
-        st.caption(f"📅 최근 12주 ({share_labels[0]} ~ {share_labels[-1]})  ·  SA와 EP를 합쳐 100%로 보고 비중 변화를 봅니다. "
+        st.caption(f"📅 {share_labels[0]} ~ {share_labels[-1]}  ·  SA와 EP를 합쳐 100%로 보고 비중 변화를 봅니다. "
                   f"SA 비중이 늘고 있다면 광고 의존도가 커지고 있다는 뜻이고, 줄고 있다면 EP가 상대적으로 더 크고 있다는 뜻입니다.")
 
-        # ── 광고비 증가가 EP까지 키우는가 (전체 파이 검증) ──
-        render_section_title("광고비 증가가 EP까지 키우는가 (전체 채널 기준)")
-        ad_vs_total = ad_cost_vs_sa_ep_weekly(df, cattxn_df, share_weeks, cattxn_txn_filter)
-        ad_vs_total_display = pd.DataFrame({
-            "주차": ad_vs_total["주차"],
-            "광고비(일평균)": ad_vs_total["광고비"].apply(lambda v: f"{v:,.0f}" if pd.notna(v) else "-"),
-            "SA 거래액(일평균)": ad_vs_total["SA_거래액"].apply(lambda v: f"{v:,.0f}"),
-            "EP 거래액(일평균)": ad_vs_total["EP_거래액"].apply(lambda v: f"{v:,.0f}"),
-            "광고비 증감률": ad_vs_total["광고비_증감률"].apply(lambda v: f"{v:+.1f}%" if pd.notna(v) else "-"),
-            "SA 증감률": ad_vs_total["SA_거래액_증감률"].apply(lambda v: f"{v:+.1f}%" if pd.notna(v) else "-"),
-            "EP 증감률": ad_vs_total["EP_거래액_증감률"].apply(lambda v: f"{v:+.1f}%" if pd.notna(v) else "-"),
-        })
-        st.dataframe(ad_vs_total_display, use_container_width=True, hide_index=True)
+        # ── SA×EP 통합 흐름: 광고비 · 거래액 · ROAS · EP채널 (메인 3지표 + EP 흐름 한 화면) ──
+        render_section_title(f"SA×EP 통합 흐름 — 광고비 · 거래액 · ROAS · EP채널 · {unit}")
+        overview = ad_cost_vs_sa_ep_weekly(df, cattxn_df, share_buckets, cattxn_txn_filter)
+        roas_pct = (overview["ROAS"] * 100).round(1)
+        ad_cost_m = _to_million(overview["광고비"])
+        sa_rev_m = _to_million(overview["SA_거래액"])
+        ep_rev_m = _to_million(overview["EP_거래액"])
+
+        fig_overview = go.Figure()
+        fig_overview.add_trace(go.Bar(
+            x=overview["주차"], y=ad_cost_m, name="광고비(전체채널·일평균)", yaxis="y2",
+            marker_color="rgba(148,163,184,0.55)",
+        ))
+        fig_overview.add_trace(go.Scatter(
+            x=overview["주차"], y=sa_rev_m, mode="lines+markers", name="쇼핑검색광고 거래액(일평균)",
+            line=dict(width=2, color="#2563EB"),
+            customdata=roas_pct, hovertemplate="%{x}<br>SA 거래액: %{y:,.1f}백만<br>ROAS: %{customdata}%<extra></extra>",
+        ))
+        fig_overview.add_trace(go.Scatter(
+            x=overview["주차"], y=ep_rev_m, mode="lines+markers", name="EP채널 거래액(일평균)",
+            line=dict(width=2, color="#0D9488"),
+        ))
+        fig_overview.update_layout(
+            height=440, margin=dict(t=20, b=20, l=10, r=10),
+            xaxis=dict(type="category", title=None),
+            yaxis=_money_axis("거래액(일평균)"),
+            yaxis2=dict(**_money_axis("광고비(일평균)"), overlaying="y", side="right", showgrid=False),
+            hovermode="closest",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+        )
+        st.plotly_chart(fig_overview, use_container_width=True)
         st.caption(
-            "💡 광고비가 늘어난 주에 SA뿐 아니라 EP 증감률도 같이 플러스면 '광고가 전체 수요를 키운' 것이고, "
+            "📊 막대=광고비(우측 보조축, 전체채널) · SA 거래액 라인에 마우스를 올리면 해당 시점 ROAS%가 함께 표시됩니다 · "
+            "EP채널 거래액은 SA와 같은 좌측 축에서 나란히 비교합니다. "
+            f"⚠️ 광고비·ROAS는 {MAX_DATE} 기준(D-1), SA·EP 거래액은 {CATTXN_MAX_DATE} 기준(D-2)으로 "
+            "반영 시점이 하루 다를 수 있습니다."
+        )
+
+        ad_vs_total_display = pd.DataFrame({
+            unit: overview["주차"],
+            "광고비(일평균)": overview["광고비"].apply(lambda v: f"{v:,.0f}" if pd.notna(v) else "-"),
+            "ROAS": overview["ROAS"].apply(lambda v: f"{v * 100:,.0f}%" if pd.notna(v) else "-"),
+            "SA 거래액(일평균)": overview["SA_거래액"].apply(lambda v: f"{v:,.0f}"),
+            "EP 거래액(일평균)": overview["EP_거래액"].apply(lambda v: f"{v:,.0f}"),
+            "광고비 증감률": overview["광고비_증감률"].apply(format_delta_text),
+            "SA 증감률": overview["SA_거래액_증감률"].apply(format_delta_text),
+            "EP 증감률": overview["EP_거래액_증감률"].apply(format_delta_text),
+        })
+        st.dataframe(
+            ad_vs_total_display.style.map(
+                delta_cell_style, subset=["광고비 증감률", "SA 증감률", "EP 증감률"]
+            ),
+            use_container_width=True, hide_index=True,
+        )
+        st.caption(
+            "💡 광고비가 늘어난 구간에 SA뿐 아니라 EP 증감률도 같이 플러스면 '광고가 전체 수요를 키운' 것이고, "
             "SA는 늘고 EP는 그대로거나 줄면 '광고가 SA 안에서만 도는(EP를 못 키우는)' 신호일 수 있습니다. "
-            "광고비는 카테고리 구분 없는 전체 채널 기준(01페이지와 동일 소스)입니다."
+            "광고비·ROAS는 카테고리 구분 없는 전체 채널 기준(01페이지와 동일 소스)입니다."
         )
 
     # ══════════════════════════════════════════════════════════
@@ -1033,12 +1623,15 @@ else:
 
         comove_display = pd.DataFrame({
             syn_group_label: latest_moves["category"],
-            "SA 매출 증감": latest_moves["광고_증감률"].apply(lambda v: f"{v:+.1f}%" if pd.notna(v) else "-"),
-            "EP 매출 증감": latest_moves["EP_증감률"].apply(lambda v: f"{v:+.1f}%" if pd.notna(v) else "-"),
+            "SA 매출 증감": latest_moves["광고_증감률"].apply(format_delta_text),
+            "EP 매출 증감": latest_moves["EP_증감률"].apply(format_delta_text),
             "분류": latest_moves["분류"],
         })
-        st.dataframe(comove_display, use_container_width=True, hide_index=True,
-                    height=min(35 * (len(comove_display) + 1) + 3, 460))
+        st.dataframe(
+            comove_display.style.map(delta_cell_style, subset=["SA 매출 증감", "EP 매출 증감"]),
+            use_container_width=True, hide_index=True,
+            height=min(35 * (len(comove_display) + 1) + 3, 460),
+        )
         st.caption(
             "💡 🟢 동반상승(SA·EP 같이 오름, 시너지) · 🔵 SA단독 성장(SA만 오르고 EP는 그대로) · "
             "🔴 광고잠식 의심(SA는 늘었는데 EP는 줄어듦) · ⚪ 동반하락 · ⚫ 변화 미미(±5%p 이내) · 🟡 혼조. "
@@ -1100,6 +1693,139 @@ else:
     # 탭 2: 카테고리별 상세
     # ══════════════════════════════════════════════════════════
     with tab_cat:
+        # ── 카테고리 거래액 추이 분석 카드 (실제 30일 + 14일 추세 예측) ──
+        with st.container(key="cat_trend_card"):
+            render_trend_card_header(
+                "📊", "카테고리 거래액 추이 분석",
+                "채널별 카테고리 일별 거래액 추세와 14일 추세 예측 (실제 최근 30일 · 정상/이월/입점 전체 기준)",
+            )
+            tc1, tc2 = st.columns([1.6, 4])
+            with tc1:
+                trend_channel_pick = st.radio(
+                    "채널", ["전체", "쇼핑검색광고", "EP채널"], horizontal=True, key="cat_trend_channel_pick",
+                )
+            recent30_start = pd.Timestamp(CATTXN_MAX_DATE) - timedelta(days=29)
+            recent30 = cattxn_df[cattxn_df["date"] >= recent30_start]
+            if trend_channel_pick == "쇼핑검색광고":
+                recent30_rev = recent30.groupby("category")["ad_거래액"].sum()
+            elif trend_channel_pick == "EP채널":
+                recent30_rev = recent30.groupby("category")["ep_거래액"].sum()
+            else:
+                recent30_rev = recent30.groupby("category").apply(
+                    lambda g: g["ad_거래액"].sum() + g["ep_거래액"].sum()
+                )
+            default_cats = recent30_rev.sort_values(ascending=False).head(5).index.tolist()
+            with tc2:
+                trend_cat_pick = st.multiselect(
+                    "카테고리 선택 (최근 30일 거래액 상위 5개 기본)", CATTXN_CATEGORY_LIST,
+                    default=default_cats, key="cat_trend_cat_pick",
+                )
+
+            if not trend_cat_pick:
+                st.info("카테고리를 1개 이상 선택하세요.")
+            else:
+                trend_forecast = category_revenue_forecast(
+                    cattxn_df, trend_cat_pick, trend_channel_pick, txn_type="전체",
+                    days_actual=30, days_forecast=14, trend_days=14,
+                )
+                trend_forecast_m = {
+                    cat: {
+                        "actual_dates": d["actual_dates"], "actual_vals": _to_million(d["actual_vals"]),
+                        "forecast_dates": d["forecast_dates"], "forecast_vals": _to_million(d["forecast_vals"]),
+                        "band_upper": _to_million(d["band_upper"]), "band_lower": _to_million(d["band_lower"]),
+                    } for cat, d in trend_forecast.items()
+                }
+                palette = ["#1E293B", "#2563EB", "#0EA5E9", "#8B5CF6", "#F59E0B", "#22C55E", "#EC4899"]
+
+                fig_trend = go.Figure()
+                boundary_date, forecast_end = None, None
+                for i, cat in enumerate(trend_cat_pick):
+                    d = trend_forecast_m[cat]
+                    color = palette[i % len(palette)]
+                    fig_trend.add_trace(go.Scatter(
+                        x=d["actual_dates"], y=d["actual_vals"], mode="lines", name=cat,
+                        line=dict(width=2, color=color), legendgroup=cat,
+                    ))
+                    if d["forecast_vals"]:
+                        boundary_date = d["actual_dates"][-1]
+                        forecast_end = d["forecast_dates"][-1]
+                        fx = [boundary_date] + d["forecast_dates"]
+                        fy = [d["actual_vals"][-1]] + d["forecast_vals"]
+                        fig_trend.add_trace(go.Scatter(
+                            x=fx, y=fy, mode="lines+markers", name=f"{cat}(예측)",
+                            line=dict(width=2, color=color, dash="dot"),
+                            marker=dict(size=5, symbol="circle-open"),
+                            legendgroup=cat, showlegend=False,
+                        ))
+                        band_x = [boundary_date] + d["forecast_dates"] + d["forecast_dates"][::-1] + [boundary_date]
+                        band_y = ([d["actual_vals"][-1]] + d["band_upper"]
+                                  + d["band_lower"][::-1] + [d["actual_vals"][-1]])
+                        fig_trend.add_trace(go.Scatter(
+                            x=band_x, y=band_y, mode="none", fill="toself",
+                            fillcolor=_hex_to_rgba(color, 0.10),
+                            legendgroup=cat, showlegend=False, hoverinfo="skip",
+                        ))
+                if boundary_date is not None:
+                    fig_trend.add_vrect(x0=boundary_date, x1=forecast_end,
+                                        fillcolor="#F1F5F9", opacity=0.6, layer="below", line_width=0)
+                    fig_trend.add_vline(x=boundary_date, line_width=1, line_dash="dash", line_color="#CBD5E1")
+                fig_trend.update_layout(
+                    height=420, margin=dict(t=10, b=10, l=10, r=10),
+                    yaxis=_money_axis("거래액"), xaxis_title=None,
+                    hovermode="closest",
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+                )
+                st.plotly_chart(fig_trend, use_container_width=True)
+                if boundary_date is not None:
+                    st.caption(f"📅 실제: {trend_forecast[trend_cat_pick[0]]['actual_dates'][0].date()} ~ "
+                              f"{boundary_date.date()}  ·  예측: {boundary_date.date()} ~ {forecast_end.date()} "
+                              "(연한 배경 = 예측 구간)")
+
+                # ── 인사이트 + 예측 요약 (규칙 기반) ──
+                recent7_totals = {cat: sum(trend_forecast[cat]["actual_vals"][-7:]) for cat in trend_cat_pick}
+                top_cat = max(recent7_totals, key=recent7_totals.get) if recent7_totals else None
+
+                def _volatility(vals):
+                    s = pd.Series(vals)
+                    return (s.std() / s.mean()) if s.mean() else None
+
+                stability = {cat: _volatility(trend_forecast[cat]["actual_vals"]) for cat in trend_cat_pick}
+                stable_valid = {c: v for c, v in stability.items() if v is not None}
+                stable_cat = min(stable_valid, key=stable_valid.get) if stable_valid else None
+
+                insight_parts = []
+                if top_cat:
+                    insight_parts.append(f"**{top_cat}** 카테고리가 최근 7일 거래액을 가장 크게 견인하고 있습니다.")
+                if stable_cat and stable_cat != top_cat:
+                    insight_parts.append(f"**{stable_cat}** 카테고리는 변동성이 가장 낮아 안정적인 흐름을 보이고 있습니다.")
+                insight_text = " ".join(insight_parts) or "선택한 카테고리의 데이터가 충분하지 않습니다."
+
+                growth_parts = []
+                for cat in trend_cat_pick:
+                    d = trend_forecast[cat]
+                    if d["forecast_vals"]:
+                        last7_avg = sum(d["actual_vals"][-7:]) / 7
+                        fcst7_avg = sum(d["forecast_vals"][:7]) / min(7, len(d["forecast_vals"]))
+                        if last7_avg:
+                            growth_parts.append((cat, (fcst7_avg - last7_avg) / last7_avg * 100))
+
+                forecast_text = "예측을 계산할 데이터가 부족합니다."
+                if growth_parts:
+                    avg_growth = sum(g for _, g in growth_parts) / len(growth_parts)
+                    best_cat, best_growth = max(growth_parts, key=lambda x: x[1])
+                    direction = "증가" if avg_growth >= 0 else "감소"
+                    forecast_text = (
+                        f"선택 카테고리 평균 거래액은 향후 1주 기준 직전 7일 대비 {abs(avg_growth):.1f}% {direction}할 "
+                        f"것으로 추정되며, **{best_cat}** 카테고리의 성장세가 가장 두드러질 전망입니다."
+                    )
+
+                render_trend_summary_boxes([
+                    {"icon": "📈", "title": "인사이트", "text": insight_text},
+                    {"icon": "✨", "title": "예측 요약 (추세 기반, 참고용)", "text": forecast_text},
+                ])
+                st.caption("⚠️ 예측은 최근 14일 선형추세를 단순 연장한 대략적 방향성 참고용입니다 "
+                          "(계절성·프로모션·광고 예산 변경 등은 반영되지 않습니다).")
+
         render_section_title("카테고리·브랜드별 거래액 추이")
         fc0, fc1 = st.columns([2, 2])
         with fc0:
@@ -1161,15 +1887,20 @@ else:
             cattxn_rank[ep_col] = cattxn_rank[ep_col] / cattxn_cur_days
         cattxn_rank = cattxn_rank.sort_values(ad_col, ascending=False)
 
+        cattxn_is_million = cattxn_rank_metric == "거래액"
         fig_cattxn = go.Figure()
-        fig_cattxn.add_trace(go.Bar(x=cattxn_rank["category"], y=cattxn_rank[ep_col],
-                                     name="EP채널", marker_color="#CBD5E1"))
-        fig_cattxn.add_trace(go.Bar(x=cattxn_rank["category"], y=cattxn_rank[ad_col],
-                                     name="쇼핑검색광고", marker_color="#2563EB"))
+        fig_cattxn.add_trace(go.Bar(
+            x=cattxn_rank["category"],
+            y=_to_million(cattxn_rank[ep_col]) if cattxn_is_million else cattxn_rank[ep_col],
+            name="EP채널", marker_color="#CBD5E1"))
+        fig_cattxn.add_trace(go.Bar(
+            x=cattxn_rank["category"],
+            y=_to_million(cattxn_rank[ad_col]) if cattxn_is_million else cattxn_rank[ad_col],
+            name="쇼핑검색광고", marker_color="#2563EB"))
         fig_cattxn.update_layout(
             barmode="group", height=420, margin=dict(t=20, b=20, l=10, r=10),
-            yaxis_title=f"{cattxn_rank_metric} ({cattxn_mode})" if cattxn_rank_metric == "거래액" else "객단가",
-            hovermode="x unified",
+            yaxis=_money_axis(f"{cattxn_rank_metric} ({cattxn_mode})" if cattxn_is_million else "객단가", cattxn_is_million),
+            hovermode="closest",
         )
         st.plotly_chart(fig_cattxn, use_container_width=True)
 
@@ -1208,15 +1939,20 @@ else:
         cattxn_brand_rank = cattxn_brand_rank.sort_values(brand_ad_col, ascending=False)
         cattxn_brand_rank_top = cattxn_brand_rank.head(15)
 
+        brand_is_million = cattxn_brand_rank_metric == "거래액"
         fig_brand = go.Figure()
-        fig_brand.add_trace(go.Bar(x=cattxn_brand_rank_top["brand"], y=cattxn_brand_rank_top[brand_ep_col],
-                                    name="EP채널", marker_color="#CBD5E1"))
-        fig_brand.add_trace(go.Bar(x=cattxn_brand_rank_top["brand"], y=cattxn_brand_rank_top[brand_ad_col],
-                                    name="쇼핑검색광고", marker_color="#2563EB"))
+        fig_brand.add_trace(go.Bar(
+            x=cattxn_brand_rank_top["brand"],
+            y=_to_million(cattxn_brand_rank_top[brand_ep_col]) if brand_is_million else cattxn_brand_rank_top[brand_ep_col],
+            name="EP채널", marker_color="#CBD5E1"))
+        fig_brand.add_trace(go.Bar(
+            x=cattxn_brand_rank_top["brand"],
+            y=_to_million(cattxn_brand_rank_top[brand_ad_col]) if brand_is_million else cattxn_brand_rank_top[brand_ad_col],
+            name="쇼핑검색광고", marker_color="#2563EB"))
         fig_brand.update_layout(
             barmode="group", height=420, margin=dict(t=20, b=20, l=10, r=10),
-            yaxis_title=f"{cattxn_brand_rank_metric} ({cattxn_mode})" if cattxn_brand_rank_metric == "거래액" else "객단가",
-            xaxis=dict(type="category"), hovermode="x unified",
+            yaxis=_money_axis(f"{cattxn_brand_rank_metric} ({cattxn_mode})" if brand_is_million else "객단가", brand_is_million),
+            xaxis=dict(type="category"), hovermode="closest",
         )
         st.plotly_chart(fig_brand, use_container_width=True)
         st.caption(f"※ 전체 {len(cattxn_brand_rank)}개 브랜드 중 상위 15개만 차트에 표시합니다. 전체 목록은 아래 표·다운로드에서 확인하세요.")
@@ -1257,3 +1993,380 @@ else:
             use_container_width=True, hide_index=True,
         )
         st.caption("※ 정상/이월/입점 필터와 무관하게 구성을 항상 보여줍니다.")
+
+
+# ════════════════════════════════════════════════════════════════
+# PAGE 4: 상품군 효율 — 쇼핑검색광고 리포트(NBOS 매칭, 대/중카테고리·브랜드 단위)
+# 03페이지(태블로 기반)와 데이터 소스·카테고리 체계가 다른 별도 페이지.
+# ════════════════════════════════════════════════════════════════
+elif menu == "상품군 효율":
+    with st.container(key="page4_filters"):
+        c_ref, c_quick, c_mode = st.columns([2, 1.6, 1.3])
+        with c_ref:
+            if unit == "일별":
+                _ensure_default_date("adprod_ref_date", AD_PRODUCT_MAX_DATE, AD_PRODUCT_MIN_DATE, AD_PRODUCT_MAX_DATE)
+                ap_ref_date = st.date_input("기준일자", min_value=AD_PRODUCT_MIN_DATE, max_value=AD_PRODUCT_MAX_DATE,
+                                            key="adprod_ref_date")
+            else:
+                ap_ref_options = build_ref_options(unit, AD_PRODUCT_MIN_DATE, AD_PRODUCT_MAX_DATE)
+                if not ap_ref_options:
+                    st.info(f"'{unit}' 단위로 마감된 구간이 아직 없습니다 (보유 기간: "
+                            f"{AD_PRODUCT_MIN_DATE} ~ {AD_PRODUCT_MAX_DATE}). 사이드바에서 '일별'을 선택해주세요.")
+                    st.stop()
+                ap_label_to_date = dict(ap_ref_options)
+                ap_picker_label = "기준 주차" if unit == "주별" else "기준 월"
+                _ensure_valid_select("adprod_ref_select", list(ap_label_to_date.keys()))
+                ap_chosen = st.selectbox(ap_picker_label, list(ap_label_to_date.keys()), key="adprod_ref_select")
+                ap_ref_date = ap_label_to_date[ap_chosen]
+        with c_quick:
+            st.markdown("<div style='margin-top:1.8rem'></div>", unsafe_allow_html=True)
+            render_quick_date_buttons(unit, AD_PRODUCT_MIN_DATE, AD_PRODUCT_MAX_DATE, "adprod_ref_date", "adprod_ref_select")
+        with c_mode:
+            ap_mode = st.radio("표시방식", ["누계", "일평균"], horizontal=True, index=1, key="adprod_mode")
+
+        c_own, c_large, c_mid = st.columns([1.5, 2, 2])
+        with c_own:
+            ap_own = st.selectbox("자사/입점", AD_PRODUCT_OWN_OPTIONS, key="adprod_own")
+        with c_large:
+            # 자사/입점을 고르면 그 구분에 실제로 존재하는 대카테고리만 선택지로 보여준다
+            # (없는 조합을 골라 빈 화면을 보는 걸 방지).
+            if ap_own != "전체":
+                ap_large_list = sorted(ad_product_df.loc[ad_product_df["자사/입점"] == ap_own, "대카테고리"].unique())
+            else:
+                ap_large_list = AD_PRODUCT_LARGE_CAT_LIST
+            ap_large_options = ["전체"] + ap_large_list
+            _ensure_valid_select("adprod_large", ap_large_options)
+            ap_large = st.selectbox("대카테고리", ap_large_options, key="adprod_large")
+        with c_mid:
+            ap_mid_scope = ad_product_df
+            if ap_own != "전체":
+                ap_mid_scope = ap_mid_scope[ap_mid_scope["자사/입점"] == ap_own]
+            if ap_large != "전체":
+                ap_mid_scope = ap_mid_scope[ap_mid_scope["대카테고리"] == ap_large]
+            ap_mid_options = ["전체"] + sorted(ap_mid_scope["중카테고리"].unique())
+            _ensure_valid_select("adprod_mid", ap_mid_options)
+            ap_mid = st.selectbox("중카테고리", ap_mid_options, key="adprod_mid")
+
+    ap_start_ts, ap_end_ts = get_period_bounds(ap_ref_date, unit, AD_PRODUCT_MIN_DATE, AD_PRODUCT_MAX_DATE)
+    ap_cur_label = period_label(ap_start_ts, ap_end_ts, unit)
+    ap_cur_days = days_in_period(ap_start_ts, ap_end_ts)
+    ap_scope_note = " · ".join(
+        v for v in [ap_own if ap_own != "전체" else None, ap_large if ap_large != "전체" else None,
+                    ap_mid if ap_mid != "전체" else None] if v
+    )
+
+    render_page_header(
+        eyebrow="쇼핑검색광고 리포트 · NBOS 매칭",
+        title=f"상품군 효율 — {ap_cur_label}" + (f" · {ap_scope_note}" if ap_scope_note else ""),
+        sub=f"조회단위: {unit}  ·  표시방식: {ap_mode}  ·  집계기간: {ap_start_ts.date()} ~ {ap_end_ts.date()} ({ap_cur_days}일)",
+    )
+    st.markdown(
+        '<div class="kpi-footnote">※ 이 페이지의 대카테고리·중카테고리·브랜드명은 03페이지(태블로 기반, EP 비교)와 '
+        '체계가 다른 이 광고 리포트 자체의 분류입니다 — 서로 직접 매핑되지 않습니다. '
+        '<b>판매액</b>은 NBOS 매칭 실매출 기준이며, 광고 플랫폼이 자체 귀속하는 "전환매출액"과는 다릅니다 — '
+        '전환매출액은 간접전환까지 넓게 잡아 실매출보다 크게 부풀려질 수 있어 ROAS 계산에서 의도적으로 제외했습니다. '
+        f'현재 데이터 보유 기간: {AD_PRODUCT_MIN_DATE} ~ {AD_PRODUCT_MAX_DATE} '
+        '(과거 기간은 원본을 추가로 변환해 순차적으로 백필 예정이며, 기간이 늘어날수록 전주비·전월비·전년비가 순차 활성화됩니다).</div>',
+        unsafe_allow_html=True,
+    )
+
+    ap_view = ad_product_df[(ad_product_df["date"] >= ap_start_ts) & (ad_product_df["date"] <= ap_end_ts)]
+    if ap_view.empty:
+        st.warning("선택한 기간에 데이터가 없습니다.")
+        st.stop()
+
+    ap_agg = aggregate_ad_product(ap_view, ap_own, ap_large, ap_mid)
+
+    def ap_scaled(metric, value, days):
+        if value is None:
+            return None
+        if ap_mode == "일평균" and metric in AD_PRODUCT_BASE_METRICS and days:
+            return value / days
+        return value
+
+    # ── 비교기간 (전일/전주/전월비 + 전년비) — 보유 기간이 짧으면 일부만 존재 ──
+    ap_comp_periods = get_comparison_periods(ap_ref_date, unit, AD_PRODUCT_MIN_DATE, AD_PRODUCT_MAX_DATE)
+    ap_comp_aggs, ap_comp_days = {}, {}
+    for label, (p_start, p_end) in ap_comp_periods.items():
+        p_view = ad_product_df[(ad_product_df["date"] >= p_start) & (ad_product_df["date"] <= p_end)]
+        ap_comp_aggs[label] = aggregate_ad_product(p_view, ap_own, ap_large, ap_mid) if not p_view.empty else None
+        ap_comp_days[label] = days_in_period(p_start, p_end)
+
+    def ap_format_value(metric, value):
+        if value is None:
+            return None
+        if metric in ("판매액", "광고비"):
+            return format_million(value)
+        if metric == "ROAS":
+            return format_roas_percent(value)
+        if metric == "CVR":
+            return f"{value * 100:.2f}%"
+        return f"{value:,.0f}"  # 구매수량 · 객단가
+
+    def ap_deltas_for(metric):
+        out = []
+        cur_v = ap_scaled(metric, ap_agg[metric], ap_cur_days)
+        for label, p_agg in ap_comp_aggs.items():
+            prev_raw = p_agg[metric] if p_agg else None
+            prev_v = ap_scaled(metric, prev_raw, ap_comp_days[label])
+            out.append((label, pct_change(cur_v, prev_v), ap_format_value(metric, prev_v)))
+        return out
+
+    ap_kpi_metrics = ["판매액", "광고비", "ROAS", "CVR", "구매수량", "객단가"]
+    ap_kpi_label_map = {
+        "판매액": "판매액", "광고비": "광고비", "ROAS": "ROAS(판매액 기준)", "CVR": "CR(구매/클릭)",
+        "구매수량": "구매건수", "객단가": "객단가",
+    }
+    ap_cards = []
+    for m in ap_kpi_metrics:
+        v = ap_scaled(m, ap_agg[m], ap_cur_days)
+        ap_cards.append({"label": ap_kpi_label_map[m], "value": ap_format_value(m, v), "deltas": ap_deltas_for(m)})
+    render_kpi_cards(ap_cards)
+    ap_comp_strs = [
+        f"{label} = {period_label(p_start, p_end, unit) if p_start <= p_end else '데이터 없음(보유 기간 밖)'}"
+        for label, (p_start, p_end) in ap_comp_periods.items()
+    ]
+    st.caption("📅 비교대상 기간 — " + " · ".join(ap_comp_strs) +
+              "  (해당 기간에 데이터가 아직 없으면 배지가 '-'로 표시됩니다)")
+
+    ap_immediate_label = next(iter(ap_comp_periods.keys()))
+    ap_prev_start, ap_prev_end = ap_comp_periods[ap_immediate_label]
+
+    # ── 핵심 요약 (규칙 기반 자동 인사이트) — 대카테고리 기준 성과 분포를 항상 보여준다 ──
+    ap_default_rank = ad_product_group_compare(
+        ad_product_df, "대카테고리", ap_start_ts, ap_end_ts, ap_prev_start, ap_prev_end,
+        ap_own, ap_large, ap_mid,
+    )
+    ap_insight_lines = []
+    if not ap_default_rank.empty:
+        perf_counts = ap_default_rank["성과"].value_counts()
+        good_n = int(perf_counts.get("🟢 우수(증액 검토)", 0))
+        watch_n = int(perf_counts.get("🟡 물량↑효율↓(점검 필요)", 0))
+        bad_n = int(perf_counts.get("🔴 부진(축소·재검토)", 0))
+        if good_n or watch_n or bad_n:
+            ap_insight_lines.append(
+                f"대카테고리 {len(ap_default_rank)}개 중 🟢 우수 {good_n}개 · 🟡 점검 필요 {watch_n}개 · "
+                f"🔴 부진 {bad_n}개입니다 ({ap_immediate_label} 기준)."
+            )
+        top_sale = ap_default_rank.sort_values("판매액_증감", ascending=False, na_position="last").iloc[0]
+        if pd.notna(top_sale["판매액_증감"]) and top_sale["판매액_증감"] > 10:
+            ap_insight_lines.append(
+                f"**{top_sale['대카테고리']}**의 판매액이 {ap_immediate_label} {format_delta_text(top_sale['판매액_증감'])}로 "
+                f"가장 큰 폭으로 늘었습니다 (ROAS {format_delta_text(top_sale['ROAS_증감']) if pd.notna(top_sale['ROAS_증감']) else '-'})."
+            )
+        bottom_sale = ap_default_rank.sort_values("판매액_증감", ascending=True, na_position="last").iloc[0]
+        if pd.notna(bottom_sale["판매액_증감"]) and bottom_sale["판매액_증감"] < -10:
+            ap_insight_lines.append(
+                f"**{bottom_sale['대카테고리']}**의 판매액이 {ap_immediate_label} {format_delta_text(bottom_sale['판매액_증감'])}로 "
+                f"가장 크게 줄었습니다."
+            )
+        # 증감률(%)만 보면 기저값이 작은 카테고리가 과장돼 보일 수 있어, 절대 증감액(원) 기준
+        # 1위도 같이 보여준다 — 실제 매출 영향이 가장 큰 곳이 어디인지 놓치지 않기 위함.
+        top_abs = ap_default_rank.sort_values("판매액_증감액", ascending=False).iloc[0]
+        if top_abs["판매액_증감액"] > 0:
+            ap_insight_lines.append(
+                f"절대액 기준으로는 **{top_abs['대카테고리']}**의 판매액이 {ap_immediate_label} 가장 크게 늘었습니다 "
+                f"({format_million(top_abs['판매액_전기'])} → {format_million(top_abs['판매액'])}, "
+                f"▲{format_million(top_abs['판매액_증감액'])} 증가)."
+            )
+        bottom_abs = ap_default_rank.sort_values("판매액_증감액", ascending=True).iloc[0]
+        if bottom_abs["판매액_증감액"] < 0:
+            ap_insight_lines.append(
+                f"절대액 기준으로는 **{bottom_abs['대카테고리']}**의 판매액이 {ap_immediate_label} 가장 크게 줄었습니다 "
+                f"({format_million(bottom_abs['판매액_전기'])} → {format_million(bottom_abs['판매액'])}, "
+                f"▼{format_million(abs(bottom_abs['판매액_증감액']))} 감소)."
+            )
+    render_insight_box(ap_insight_lines)
+
+    # ── 실적 퍼널 (노출 → 클릭 → 구매) — 상단 자사/입점·대/중카테고리 필터를 그대로 반영.
+    # ad_product 리포트에는 UV(방문) 개념이 없어(광고 클릭→매칭된 구매만 추적) 01페이지와
+    # 달리 3단계로 구성한다.
+    ap_title_col, ap_title_pill_col = st.columns([2.4, 1.6])
+    with ap_title_col:
+        render_section_title(
+            f"실적 퍼널 (노출 → 클릭 → 구매)" + (f" · {ap_scope_note}" if ap_scope_note else "") + f" · {ap_mode}"
+        )
+    with ap_title_pill_col:
+        st.markdown("<div style='margin-top:26px'></div>", unsafe_allow_html=True)
+        with st.container(key="pill_ap_diag_metric"):
+            ap_diag_metric = st.radio(
+                "정렬 기준(TOP5)", ["구매전환", "판매액"], horizontal=True,
+                label_visibility="collapsed", key="adprod_diag_metric",
+            )
+    ap_funnel_stages = ["노출수", "클릭수", "구매수량"]
+    ap_funnel_labels = ["노출", "클릭", "구매"]
+    ap_funnel_vals = [ap_scaled(m, ap_agg[m], ap_cur_days) for m in ap_funnel_stages]
+
+    ap_funnel_deltas = []
+    ap_funnel_yoy_deltas = []
+    for m in ap_funnel_stages:
+        d = ap_deltas_for(m)
+        d_label, d_pct, d_prev = d[0]
+        ap_funnel_deltas.append(
+            f"{d_label} {format_delta_text(d_pct)} ({d_prev})" if d_pct is not None and d_prev else
+            (f"{d_label} {format_delta_text(d_pct)}" if d_pct is not None else f"{d_label} -")
+        )
+        yoy_entry = next((x for x in d if x[0] == "전년비"), None)
+        yoy_pct = yoy_entry[1] if yoy_entry else None
+        yoy_prev = yoy_entry[2] if yoy_entry else None
+        ap_funnel_yoy_deltas.append(
+            f"전년비 {format_delta_text(yoy_pct)} ({yoy_prev})" if yoy_pct is not None and yoy_prev else
+            (f"전년비 {format_delta_text(yoy_pct)}" if yoy_pct is not None else "전년비 -")
+        )
+
+    # 물량이 아니라 전환율(CTR=클릭/노출, CVR=구매/클릭) 기준으로 가장 부진한 구간 진단 —
+    # 01페이지 퍼널과 동일한 방식, 전년비가 있으면 우선 사용하고 없으면 직전기간으로 대체.
+    ap_stage_rate_defs = [("CTR", 1), ("CVR", 2)]  # (지표, 퍼널 단계 인덱스)
+    ap_yoy_agg = ap_comp_aggs.get("전년비")
+    ap_rate_candidates = []
+    for metric, idx in ap_stage_rate_defs:
+        cur_r = ap_agg[metric]
+        pct, basis = (pct_change(cur_r, ap_yoy_agg[metric]), "전년비") if ap_yoy_agg is not None else (None, None)
+        if pct is None:
+            imm_label, imm_pct, _ = ap_deltas_for(metric)[0]
+            pct, basis = imm_pct, imm_label
+        if pct is not None:
+            ap_rate_candidates.append((idx, metric, pct, basis))
+
+    ap_weak_index, ap_weak_note = None, None
+    if ap_rate_candidates:
+        w_idx, w_metric, w_pct, w_basis = min(ap_rate_candidates, key=lambda x: x[2])
+        if w_pct < 0:
+            ap_weak_index, ap_weak_note = w_idx, f"{w_metric} {w_basis} {format_delta_text(w_pct)}"
+
+    ap_funnel_col, ap_diag_col = st.columns([2.3, 1.7])
+    with ap_funnel_col:
+        render_custom_funnel(
+            ap_funnel_labels, ap_funnel_vals, deltas=ap_funnel_deltas, yoy_deltas=ap_funnel_yoy_deltas,
+            sub_labels=[f"{ap_cur_label} · {ap_mode}"] * 3,
+            colors=["#2563EB", "#0EA5E9", "#22C55E"],
+            weak_index=ap_weak_index, weak_note=ap_weak_note,
+        )
+        if ap_weak_index is not None:
+            render_colored_caption(f"🔻 **{ap_funnel_labels[ap_weak_index]} 전환 구간이 가장 부진합니다** — {ap_weak_note}.")
+        st.caption("💡 상단 필터(자사/입점·대카테고리·중카테고리)를 바꾸면 이 퍼널도 그 범위로 다시 계산됩니다.")
+        st.caption(f"📅 전년비 기준: {'정확히 12개월 전 같은 달(마감 실적 기준)' if unit == '월마감' else '전년 동요일비(364일=52주 전, 요일 정렬)'}")
+
+    with ap_diag_col:
+        # 상단 필터와 무관하게 항상 "전체" 기준으로 대카테고리별 부진/우수 순위를 보여준다 —
+        # 필터를 하나하나 바꿔보지 않아도 어디가 문제인지 바로 알 수 있게.
+        # 대/중카테고리 필터는 무시(카테고리를 굳이 안 좁혀도 전체를 훑어보려는 패널의 목적과
+        # 맞지 않으므로)하지만, 자사/입점은 "보고 있는 관점" 자체를 바꾸는 선택이라 반영한다.
+        # (정렬 기준 알약 버튼은 위쪽 섹션 타이틀 옆으로 이동 — ap_diag_metric은 거기서 정의됨)
+        ap_diag_sort_col = "CVR_증감" if ap_diag_metric == "구매전환" else "판매액_증감"
+        ap_diag_label = "CVR" if ap_diag_metric == "구매전환" else "판매액"
+        ap_diag_other_col = "판매액_증감" if ap_diag_metric == "구매전환" else "CVR_증감"
+        ap_diag_other_label = "판매액" if ap_diag_metric == "구매전환" else "CVR"
+
+        ap_diag_rank = ad_product_group_compare(
+            ad_product_df, "대카테고리", ap_start_ts, ap_end_ts, ap_prev_start, ap_prev_end,
+            ap_own, "전체", "전체",
+        )
+        ap_diag_valid = ap_diag_rank[ap_diag_rank[ap_diag_sort_col].notna()]
+        ap_diag_worst = ap_diag_valid.sort_values(ap_diag_sort_col).head(5)
+        ap_diag_best = ap_diag_valid.sort_values(ap_diag_sort_col, ascending=False).head(5)
+        ap_own_note = ap_own if ap_own != "전체" else "자사+입점 전체"
+
+        def _diag_lines(rows, positive: bool):
+            lines = []
+            for _, row in rows.iterrows():
+                if (row[ap_diag_sort_col] > 0) != positive:
+                    continue
+                prev_v, cur_v = row.get(f"{ap_diag_label}_전기"), row.get(ap_diag_label)
+                change_str = (
+                    f" ({ap_format_value(ap_diag_label, prev_v)} → {ap_format_value(ap_diag_label, cur_v)})"
+                    if prev_v is not None and cur_v is not None else ""
+                )
+                lines.append(
+                    f"**{row['대카테고리']}** — {ap_diag_label} {format_delta_text(row[ap_diag_sort_col])}"
+                    f"{change_str} · {ap_diag_other_label} {format_delta_text(row[ap_diag_other_col])}"
+                )
+            return lines
+
+        worst_lines = _diag_lines(ap_diag_worst, positive=False)
+        render_insight_box(
+            worst_lines or [f"{ap_own_note} 기준, 카테고리 전반에서 뚜렷한 {ap_diag_metric} 부진 신호가 없습니다."],
+            title=f"{ap_diag_metric} 부진 TOP5 ({ap_immediate_label} · {ap_own_note} · 카테고리 필터 무관)",
+            tone="danger",
+        )
+        best_lines = _diag_lines(ap_diag_best, positive=True)
+        render_insight_box(
+            best_lines or [f"{ap_own_note} 기준, 카테고리 전반에서 뚜렷한 {ap_diag_metric} 개선 신호가 없습니다."],
+            title=f"{ap_diag_metric} 우수 TOP5 ({ap_immediate_label} · {ap_own_note} · 카테고리 필터 무관)",
+            tone="success",
+        )
+
+    render_section_title("랭킹 · 직전기간 대비 증감")
+    ap_r1, ap_r2, ap_r3 = st.columns([2.2, 2.5, 2])
+    with ap_r1:
+        ap_group_label = st.radio("기준", ["대카테고리", "중카테고리", "브랜드"], horizontal=True, key="adprod_group")
+    with ap_r2:
+        ap_sort_metric = st.radio("정렬", ["판매액", "광고비", "ROAS", "판매액 증감률"], horizontal=True, key="adprod_sort")
+    with ap_r3:
+        ap_perf_filter = st.radio("성과 필터", ["전체", "🟢 우수만", "🔴 부진만"], horizontal=True, key="adprod_perf_filter")
+    ap_group_col = {"대카테고리": "대카테고리", "중카테고리": "중카테고리", "브랜드": "브랜드명"}[ap_group_label]
+
+    ap_rank = ad_product_group_compare(
+        ad_product_df, ap_group_col, ap_start_ts, ap_end_ts, ap_prev_start, ap_prev_end,
+        ap_own, ap_large, ap_mid,
+    ) if ap_group_col != "대카테고리" else ap_default_rank.copy()
+
+    # 중카테고리는 대카테고리 하위 분류라 부모가 뭔지 같이 안 보이면 헷갈린다 — 대카테고리 필터가
+    # 특정 카테고리로 좁혀져 있으면 전부 그 값, "전체"면 원본에서 최빈 대카테고리를 찾아 붙인다.
+    if ap_group_col == "중카테고리":
+        if ap_large != "전체":
+            ap_rank["대카테고리"] = ap_large
+        else:
+            _midcat_map = ad_product_df.groupby("중카테고리")["대카테고리"].agg(
+                lambda s: s.mode().iat[0] if len(s.mode()) else s.iloc[0]
+            ).to_dict()
+            ap_rank["대카테고리"] = ap_rank["중카테고리"].map(_midcat_map)
+
+    if ap_perf_filter == "🟢 우수만":
+        ap_rank = ap_rank[ap_rank["성과"] == "🟢 우수(증액 검토)"]
+    elif ap_perf_filter == "🔴 부진만":
+        ap_rank = ap_rank[ap_rank["성과"] == "🔴 부진(축소·재검토)"]
+
+    ap_sort_col = "판매액_증감" if ap_sort_metric == "판매액 증감률" else ap_sort_metric
+    ap_rank = ap_rank.sort_values(ap_sort_col, ascending=False, na_position="last")
+    ap_rank_total = len(ap_rank)
+    if ap_group_col == "브랜드명":
+        ap_rank = ap_rank.head(20)
+
+    if ap_rank.empty:
+        st.info("조건에 해당하는 항목이 없습니다.")
+    else:
+        ap_display = pd.DataFrame({
+            **({"대카테고리": ap_rank["대카테고리"]} if ap_group_col == "중카테고리" else {}),
+            ap_group_label: ap_rank[ap_group_col],
+            "성과": ap_rank["성과"],
+            f"판매액 ({ap_immediate_label} 전 → 현재)": [
+                f"{p:,.0f} → {c:,.0f}" for p, c in zip(ap_rank["판매액_전기"], ap_rank["판매액"])
+            ],
+            f"판매액 {ap_immediate_label}": ap_rank["판매액_증감"].apply(format_delta_text),
+            f"ROAS ({ap_immediate_label} 전 → 현재)": [
+                f"{p * 100:,.0f}% → {c * 100:,.0f}%" for p, c in zip(ap_rank["ROAS_전기"], ap_rank["ROAS"])
+            ],
+            f"ROAS {ap_immediate_label}": ap_rank["ROAS_증감"].apply(format_delta_text),
+            f"CR(구매/클릭) ({ap_immediate_label} 전 → 현재)": [
+                f"{p * 100:.2f}% → {c * 100:.2f}%" for p, c in zip(ap_rank["CVR_전기"], ap_rank["CVR"])
+            ],
+            f"CR {ap_immediate_label}": ap_rank["CVR_증감"].apply(format_delta_text),
+            "구매건수": ap_rank["구매수량"].apply(lambda v: f"{v:,.0f}"),
+            "객단가": ap_rank["객단가"].apply(lambda v: f"{v:,.0f}"),
+        })
+        st.dataframe(
+            ap_display.style.map(
+                delta_cell_style,
+                subset=[f"판매액 {ap_immediate_label}", f"ROAS {ap_immediate_label}", f"CR {ap_immediate_label}"],
+            ),
+            use_container_width=True, hide_index=True,
+            height=min(35 * (len(ap_display) + 1) + 3, 560),
+        )
+    ap_prev_label_str = period_label(ap_prev_start, ap_prev_end, unit) if ap_prev_start <= ap_prev_end else "데이터 없음(보유 기간 밖)"
+    st.caption(
+        f"📅 비교기준: {ap_immediate_label} = {ap_prev_label_str}  ·  "
+        + (f"※ 전체 {ap_rank_total}개 브랜드 중 {ap_sort_metric} 상위 20개만 표시합니다.  ·  " if ap_group_col == "브랜드명" else "")
+        + "💡 🟢 우수(판매액·ROAS 동반상승)=증액 검토 · 🟡 물량↑효율↓=소재/입찰 점검 · "
+          "🔵 효율 개선=회복 여지 · 🔴 부진(둘 다 하락)=축소·재검토 대상입니다. (±5%p 이내 변화는 ⚫ 변화 미미로 취급)"
+    )

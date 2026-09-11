@@ -1,0 +1,11 @@
+# 데이터 파일 — 코드만 버전관리, 데이터는 로컬 전용
+*.csv
+*.xlsx
+*.xls
+
+# Python
+__pycache__/
+*.pyc
+
+# Streamlit
+.streamlit/
