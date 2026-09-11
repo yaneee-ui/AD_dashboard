@@ -2024,30 +2024,32 @@ elif menu == "상품군 효율":
         with c_mode:
             ap_mode = st.radio("표시방식", ["누계", "일평균"], horizontal=True, index=1, key="adprod_mode")
 
+        # 대/중카테고리 선택지를 "지금 고른 기준일자/기간" 범위로 좁히기 위해, 자사/입점 위젯보다
+        # 먼저 기간부터 계산해둔다 (예전엔 전체 기간 통틀어 데이터가 있었는지로만 걸러서,
+        # 이번 달엔 실적이 하나도 없는 카테고리가 계속 선택지에 남는 문제가 있었음).
+        ap_start_ts, ap_end_ts = get_period_bounds(ap_ref_date, unit, AD_PRODUCT_MIN_DATE, AD_PRODUCT_MAX_DATE)
+
         c_own, c_large, c_mid = st.columns([1.5, 2, 2])
         with c_own:
             ap_own = st.selectbox("자사/입점", AD_PRODUCT_OWN_OPTIONS, key="adprod_own")
         with c_large:
-            # 자사/입점을 고르면 그 구분에 실제로 존재하는 대카테고리만 선택지로 보여준다
+            # 자사/입점 + 현재 선택한 기간에 실제로 데이터가 있는 대카테고리만 선택지로 보여준다
             # (없는 조합을 골라 빈 화면을 보는 걸 방지).
+            ap_period_scope = ad_product_df[
+                (ad_product_df["date"] >= ap_start_ts) & (ad_product_df["date"] <= ap_end_ts)
+            ]
             if ap_own != "전체":
-                ap_large_list = sorted(ad_product_df.loc[ad_product_df["자사/입점"] == ap_own, "대카테고리"].unique())
-            else:
-                ap_large_list = AD_PRODUCT_LARGE_CAT_LIST
-            ap_large_options = ["전체"] + ap_large_list
+                ap_period_scope = ap_period_scope[ap_period_scope["자사/입점"] == ap_own]
+            ap_large_options = ["전체"] + sorted(ap_period_scope["대카테고리"].unique())
             _ensure_valid_select("adprod_large", ap_large_options)
             ap_large = st.selectbox("대카테고리", ap_large_options, key="adprod_large")
         with c_mid:
-            ap_mid_scope = ad_product_df
-            if ap_own != "전체":
-                ap_mid_scope = ap_mid_scope[ap_mid_scope["자사/입점"] == ap_own]
+            ap_mid_scope = ap_period_scope
             if ap_large != "전체":
                 ap_mid_scope = ap_mid_scope[ap_mid_scope["대카테고리"] == ap_large]
             ap_mid_options = ["전체"] + sorted(ap_mid_scope["중카테고리"].unique())
             _ensure_valid_select("adprod_mid", ap_mid_options)
             ap_mid = st.selectbox("중카테고리", ap_mid_options, key="adprod_mid")
-
-    ap_start_ts, ap_end_ts = get_period_bounds(ap_ref_date, unit, AD_PRODUCT_MIN_DATE, AD_PRODUCT_MAX_DATE)
     ap_cur_label = period_label(ap_start_ts, ap_end_ts, unit)
     ap_cur_days = days_in_period(ap_start_ts, ap_end_ts)
     ap_scope_note = " · ".join(
@@ -2336,30 +2338,35 @@ elif menu == "상품군 효율":
     if ap_rank.empty:
         st.info("조건에 해당하는 항목이 없습니다.")
     else:
+        # st.dataframe은 마크다운(**볼드**)을 텍스트 그대로 렌더링하지 않아서(글자 단위 스타일
+        # 불가) "이전"/"현재"를 아예 별도 컬럼으로 나누고, "현재" 컬럼 전체에 Styler로
+        # font-weight를 줘서 굵게 강조한다.
         ap_display = pd.DataFrame({
             **({"대카테고리": ap_rank["대카테고리"]} if ap_group_col == "중카테고리" else {}),
             ap_group_label: ap_rank[ap_group_col],
             "성과": ap_rank["성과"],
-            f"판매액 ({ap_immediate_label} 전 → 현재)": [
-                f"{p:,.0f} → {c:,.0f}" for p, c in zip(ap_rank["판매액_전기"], ap_rank["판매액"])
-            ],
+            f"판매액 (이전)": ap_rank["판매액_전기"].apply(lambda v: f"{v:,.0f}"),
+            f"판매액 (현재)": ap_rank["판매액"].apply(lambda v: f"{v:,.0f}"),
             f"판매액 {ap_immediate_label}": ap_rank["판매액_증감"].apply(format_delta_text),
-            f"ROAS ({ap_immediate_label} 전 → 현재)": [
-                f"{p * 100:,.0f}% → {c * 100:,.0f}%" for p, c in zip(ap_rank["ROAS_전기"], ap_rank["ROAS"])
-            ],
+            f"광고비 (이전)": ap_rank["광고비_전기"].apply(lambda v: f"{v:,.0f}"),
+            f"광고비 (현재)": ap_rank["광고비"].apply(lambda v: f"{v:,.0f}"),
+            f"광고비 {ap_immediate_label}": ap_rank["광고비_증감"].apply(format_delta_text),
+            f"ROAS (이전)": ap_rank["ROAS_전기"].apply(lambda v: f"{v * 100:,.0f}%"),
+            f"ROAS (현재)": ap_rank["ROAS"].apply(lambda v: f"{v * 100:,.0f}%"),
             f"ROAS {ap_immediate_label}": ap_rank["ROAS_증감"].apply(format_delta_text),
-            f"CR(구매/클릭) ({ap_immediate_label} 전 → 현재)": [
-                f"{p * 100:.2f}% → {c * 100:.2f}%" for p, c in zip(ap_rank["CVR_전기"], ap_rank["CVR"])
-            ],
+            f"CR(구매/클릭) (이전)": ap_rank["CVR_전기"].apply(lambda v: f"{v * 100:.2f}%"),
+            f"CR(구매/클릭) (현재)": ap_rank["CVR"].apply(lambda v: f"{v * 100:.2f}%"),
             f"CR {ap_immediate_label}": ap_rank["CVR_증감"].apply(format_delta_text),
             "구매건수": ap_rank["구매수량"].apply(lambda v: f"{v:,.0f}"),
             "객단가": ap_rank["객단가"].apply(lambda v: f"{v:,.0f}"),
         })
+        ap_current_cols = ["판매액 (현재)", "광고비 (현재)", "ROAS (현재)", "CR(구매/클릭) (현재)"]
         st.dataframe(
             ap_display.style.map(
                 delta_cell_style,
-                subset=[f"판매액 {ap_immediate_label}", f"ROAS {ap_immediate_label}", f"CR {ap_immediate_label}"],
-            ),
+                subset=[f"판매액 {ap_immediate_label}", f"광고비 {ap_immediate_label}",
+                        f"ROAS {ap_immediate_label}", f"CR {ap_immediate_label}"],
+            ).set_properties(subset=ap_current_cols, **{"font-weight": "700", "color": "#0F172A"}),
             use_container_width=True, hide_index=True,
             height=min(35 * (len(ap_display) + 1) + 3, 560),
         )

@@ -1166,6 +1166,9 @@ def ad_product_group_compare(df: pd.DataFrame, group_col: str, cur_start, cur_en
                                               p["판매액"] if p is not None else None)
         row["판매액_증감액"] = (c["판매액"] if c is not None else 0) - (p["판매액"] if p is not None else 0)
         row["판매액_전기"] = p["판매액"] if p is not None else 0
+        row["광고비_증감"] = _pct_change_simple(c["광고비"] if c is not None else None,
+                                             p["광고비"] if p is not None else None)
+        row["광고비_전기"] = p["광고비"] if p is not None else 0
         row["ROAS_증감"] = _pct_change_simple(c["ROAS"] if c is not None else None,
                                              p["ROAS"] if p is not None else None)
         row["ROAS_전기"] = p["ROAS"] if p is not None else 0
@@ -1181,6 +1184,7 @@ def ad_product_group_compare(df: pd.DataFrame, group_col: str, cur_start, cur_en
         # KeyError가 난다 — 빈 데이터라도 항상 같은 컬럼 스키마를 갖도록 명시한다.
         cols = [group_col] + AD_PRODUCT_BASE_METRICS + [
             "ROAS", "CTR", "CVR", "객단가", "판매액_증감", "판매액_증감액", "판매액_전기",
+            "광고비_증감", "광고비_전기",
             "ROAS_증감", "ROAS_전기", "CVR_증감", "CVR_전기", "성과",
         ]
         return pd.DataFrame(columns=cols)
