@@ -141,6 +141,21 @@ def convert(raw_paths: list, out_path: str):
     print(f"저장 완료: {out_path} "
           f"(전체 날짜 범위: {merged['date'].min().date()} ~ {merged['date'].max().date()})")
 
+    _write_year_splits(merged, out_path)
+
+
+def _write_year_splits(merged: pd.DataFrame, out_path: str):
+    """GitHub은 파일당 100MB 제한이 있어(이 데이터는 합쳐서 100MB를 넘음) 배포 환경(Streamlit
+    Cloud 등)에서는 이 합본 CSV를 커밋할 수 없다. 연도별로 쪼갠 CSV를 같이 저장해두면
+    utils.load_ad_product_data()가 합본이 없을 때 이 조각들을 대신 읽어 합친다 — 로컬은
+    합본(빠름), 배포는 조각(용량 제한 통과) 파일을 쓰는 구조."""
+    stem, ext = os.path.splitext(out_path)
+    for year, g in merged.groupby(merged["date"].dt.year):
+        split_path = f"{stem}_{year}{ext}"
+        g.to_csv(split_path, index=False, encoding="utf-8-sig")
+        size_mb = os.path.getsize(split_path) / 1_000_000
+        print(f"  연도별 분할 저장: {split_path} ({len(g):,}행, {size_mb:.1f}MB)")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)

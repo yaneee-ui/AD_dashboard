@@ -4,6 +4,7 @@
 (EP 대시보드에서 확인된 것과 동일한 원칙)
 """
 
+import glob
 import os
 import pandas as pd
 import streamlit as st
@@ -48,6 +49,13 @@ _AD_PRODUCT_CANDIDATE_PATHS = [
 AD_PRODUCT_DATA_PATH = next(
     (p for p in _AD_PRODUCT_CANDIDATE_PATHS if os.path.exists(p)), _AD_PRODUCT_CANDIDATE_PATHS[0]
 )
+# 합본 CSV(124MB+)는 GitHub 100MB 파일당 제한 때문에 배포 저장소에는 못 올린다 — 대신
+# build_ad_product_daily.py가 같이 만들어두는 연도별 조각(ad_product_category_daily_2025.csv 등)을
+# 배포 환경에서 찾아 합쳐 쓴다. 로컬은 합본이 있으니 그쪽을 그대로 쓰고, 빠르다.
+_AD_PRODUCT_SPLIT_GLOBS = [
+    os.path.join(BASE_DIR, "data", "ad_product_category_daily_*.csv"),
+    os.path.join(BASE_DIR, "ad_product_category_daily_*.csv"),
+]
 
 _CATEGORY_CANDIDATE_PATHS = [
     os.path.join(BASE_DIR, "data", "category_daily.csv"),
@@ -1079,9 +1087,20 @@ AD_PRODUCT_BASE_METRICS = ["노출수", "클릭수", "광고비", "구매수량"
 
 @st.cache_data
 def load_ad_product_data():
-    if not os.path.exists(AD_PRODUCT_DATA_PATH):
-        return None
-    df = pd.read_csv(AD_PRODUCT_DATA_PATH, parse_dates=["date"], encoding="utf-8-sig")
+    if os.path.exists(AD_PRODUCT_DATA_PATH):
+        df = pd.read_csv(AD_PRODUCT_DATA_PATH, parse_dates=["date"], encoding="utf-8-sig")
+    else:
+        split_paths = []
+        for pattern in _AD_PRODUCT_SPLIT_GLOBS:
+            split_paths = sorted(glob.glob(pattern))
+            if split_paths:
+                break
+        if not split_paths:
+            return None
+        df = pd.concat(
+            [pd.read_csv(p, parse_dates=["date"], encoding="utf-8-sig") for p in split_paths],
+            ignore_index=True,
+        )
     df["연도"] = df["date"].dt.year
     return df
 
