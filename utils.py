@@ -751,16 +751,23 @@ def aggregate_cattxn_by(df: pd.DataFrame, group_col: str = "category", txn_type:
 
 
 def cattxn_group_yoy_wow(df: pd.DataFrame, group_col: str, cur_start, cur_end, comp_periods: dict,
-                         txn_type: str = "전체", category: str = "전체", brand: str = "전체") -> pd.DataFrame:
-    """group_col(category/brand) 별 현재기간 Total(쇼핑검색광고+EP채널) 거래액에, comp_periods에
-    담긴 각 비교기간(전주비/전월비/전년비 등, get_comparison_periods() 결과)의 Total 거래액을
-    나란히 붙이고 증감률(%)까지 계산한다. 02페이지(EP리포트)식 전년비·전주비 비교를
-    03페이지의 카테고리/브랜드 랭킹에도 쓰기 위한 함수."""
+                         txn_type: str = "전체", category: str = "전체", brand: str = "전체",
+                         channel: str = "전체") -> pd.DataFrame:
+    """group_col(category/brand) 별 현재기간 거래액에, comp_periods에 담긴 각 비교기간(전주비/
+    전월비/전년비 등, get_comparison_periods() 결과)의 거래액을 나란히 붙이고 증감률(%)까지
+    계산한다. 02페이지(EP리포트)식 전년비·전주비 비교를 03페이지의 카테고리/브랜드 랭킹에도
+    쓰기 위한 함수. channel: "전체"(쇼핑검색광고+EP채널 합산) | "쇼핑검색광고" | "EP채널"."""
     def _total_by_group(view: pd.DataFrame) -> pd.Series:
         if view.empty:
             return pd.Series(dtype=float)
         g = aggregate_cattxn_by(view, group_col, txn_type, category, brand)
-        return (g["쇼핑검색광고_거래액"] + g["EP채널_거래액"]).set_axis(g[group_col])
+        if channel == "쇼핑검색광고":
+            vals = g["쇼핑검색광고_거래액"]
+        elif channel == "EP채널":
+            vals = g["EP채널_거래액"]
+        else:
+            vals = g["쇼핑검색광고_거래액"] + g["EP채널_거래액"]
+        return vals.set_axis(g[group_col])
 
     cur_view = df[(df["date"] >= pd.Timestamp(cur_start)) & (df["date"] <= pd.Timestamp(cur_end))]
     cur_series = _total_by_group(cur_view)

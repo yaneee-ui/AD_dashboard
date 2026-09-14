@@ -1923,10 +1923,14 @@ elif menu == "카테고리별 실적":
         )
 
         # ── 카테고리별 거래액 랭킹 · 전년비·전주비(EP리포트 스타일) ──
-        render_section_title(f"카테고리별 거래액 랭킹 · 전년비·{cattxn_immediate_label} (Total 기준{cattxn_txn_suffix})")
+        render_section_title(f"카테고리별 거래액 랭킹 · 전년비·{cattxn_immediate_label}{cattxn_txn_suffix}")
+        cattxn_cat_yoy_channel = st.radio(
+            "채널", ["전체(Total)", "쇼핑검색광고", "EP채널"], horizontal=True, key="cattxn_cat_yoy_channel",
+        )
         cattxn_cat_yoy = cattxn_group_yoy_wow(
             cattxn_df, "category", cattxn_start_ts, cattxn_end_ts, cattxn_comp_periods,
             cattxn_txn_filter, brand=cattxn_brand_filter,
+            channel="전체" if cattxn_cat_yoy_channel == "전체(Total)" else cattxn_cat_yoy_channel,
         )
         if cattxn_cat_yoy.empty:
             st.info("표시할 데이터가 없습니다.")
@@ -1945,7 +1949,7 @@ elif menu == "카테고리별 실적":
                 use_container_width=True, hide_index=True,
                 height=min(35 * (len(cat_yoy_display) + 1) + 3, 460),
             )
-            st.caption("📅 전년비 기준: 전년 동요일비(364일=52주 전, 요일 정렬) · 거래액은 광고+EP 합산(Total) 기준입니다.")
+            st.caption(f"📅 전년비 기준: 전년 동요일비(364일=52주 전, 요일 정렬) · 거래액은 {cattxn_cat_yoy_channel} 기준입니다.")
 
     # ══════════════════════════════════════════════════════════
     # 탭 3: 브랜드별 상세
@@ -2001,10 +2005,14 @@ elif menu == "카테고리별 실적":
         )
 
         # ── 브랜드별 거래액 랭킹 · 전년비·전주비(EP리포트 스타일) ──
-        render_section_title(f"브랜드별 거래액 랭킹{brand_scope_note} · 전년비·{cattxn_immediate_label} (Total 기준{cattxn_txn_suffix})")
+        render_section_title(f"브랜드별 거래액 랭킹{brand_scope_note} · 전년비·{cattxn_immediate_label}{cattxn_txn_suffix}")
+        cattxn_brand_yoy_channel = st.radio(
+            "채널", ["전체(Total)", "쇼핑검색광고", "EP채널"], horizontal=True, key="cattxn_brand_yoy_channel",
+        )
         cattxn_brand_yoy = cattxn_group_yoy_wow(
             cattxn_df, "brand", cattxn_start_ts, cattxn_end_ts, cattxn_comp_periods,
             cattxn_txn_filter, category=cattxn_category_filter,
+            channel="전체" if cattxn_brand_yoy_channel == "전체(Total)" else cattxn_brand_yoy_channel,
         )
         if cattxn_brand_yoy.empty:
             st.info("표시할 데이터가 없습니다.")
@@ -2023,7 +2031,7 @@ elif menu == "카테고리별 실적":
                 use_container_width=True, hide_index=True, height=420,
             )
             st.caption(f"※ 전체 {len(brand_yoy_display)}개 브랜드입니다. "
-                      "📅 전년비 기준: 전년 동요일비(364일=52주 전, 요일 정렬) · 거래액은 광고+EP 합산(Total) 기준입니다.")
+                      f"📅 전년비 기준: 전년 동요일비(364일=52주 전, 요일 정렬) · 거래액은 {cattxn_brand_yoy_channel} 기준입니다.")
 
     # ══════════════════════════════════════════════════════════
     # 탭 4: 거래유형 구성
@@ -2056,7 +2064,10 @@ elif menu == "카테고리별 실적":
         cattxn_wide_prev_start = max(pd.Timestamp(year=cattxn_wide_prev_year, month=1, day=1), pd.Timestamp(CATTXN_MIN_DATE))
 
         render_section_title(
-            f"정상/이월/입점 × 카테고리 · 연간 누계 비교 ({cattxn_wide_prev_year}년 vs {cattxn_wide_cur_year}년, Total 기준)"
+            f"정상/이월/입점 × 카테고리 · 연간 누계 비교 ({cattxn_wide_prev_year}년 vs {cattxn_wide_cur_year}년)"
+        )
+        cattxn_wide_channel = st.radio(
+            "채널", ["전체(Total)", "쇼핑검색광고", "EP채널"], horizontal=True, key="cattxn_wide_channel",
         )
         st.caption(
             f"📅 {cattxn_wide_prev_year}년: {cattxn_wide_prev_start.date()} ~ {cattxn_wide_prev_end.date()}  ·  "
@@ -2067,6 +2078,10 @@ elif menu == "카테고리별 실적":
         def _cattxn_year_group_totals(y_start, y_end):
             sub = cattxn_df[(cattxn_df["date"] >= y_start) & (cattxn_df["date"] <= y_end)]
             g = sub.groupby(["txn_type", "category"])[["ad_거래액", "ep_거래액"]].sum()
+            if cattxn_wide_channel == "쇼핑검색광고":
+                return g["ad_거래액"]
+            if cattxn_wide_channel == "EP채널":
+                return g["ep_거래액"]
             return g["ad_거래액"] + g["ep_거래액"]
 
         cattxn_wide_cur_totals = _cattxn_year_group_totals(cattxn_wide_cur_start, cattxn_wide_cur_end)
