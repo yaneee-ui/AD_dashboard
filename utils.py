@@ -750,6 +750,38 @@ def aggregate_cattxn_by(df: pd.DataFrame, group_col: str = "category", txn_type:
     return grouped.reset_index()
 
 
+def cattxn_group_yoy_wow(df: pd.DataFrame, group_col: str, cur_start, cur_end, comp_periods: dict,
+                         txn_type: str = "전체", category: str = "전체", brand: str = "전체") -> pd.DataFrame:
+    """group_col(category/brand) 별 현재기간 Total(쇼핑검색광고+EP채널) 거래액에, comp_periods에
+    담긴 각 비교기간(전주비/전월비/전년비 등, get_comparison_periods() 결과)의 Total 거래액을
+    나란히 붙이고 증감률(%)까지 계산한다. 02페이지(EP리포트)식 전년비·전주비 비교를
+    03페이지의 카테고리/브랜드 랭킹에도 쓰기 위한 함수."""
+    def _total_by_group(view: pd.DataFrame) -> pd.Series:
+        if view.empty:
+            return pd.Series(dtype=float)
+        g = aggregate_cattxn_by(view, group_col, txn_type, category, brand)
+        return (g["쇼핑검색광고_거래액"] + g["EP채널_거래액"]).set_axis(g[group_col])
+
+    cur_view = df[(df["date"] >= pd.Timestamp(cur_start)) & (df["date"] <= pd.Timestamp(cur_end))]
+    cur_series = _total_by_group(cur_view)
+    result = cur_series.rename("거래액").reset_index().rename(columns={"index": group_col})
+    if result.empty:
+        return result
+    total = result["거래액"].sum()
+    result["비중"] = (result["거래액"] / total * 100) if total else 0
+
+    for label, (p_start, p_end) in comp_periods.items():
+        p_view = df[(df["date"] >= pd.Timestamp(p_start)) & (df["date"] <= pd.Timestamp(p_end))]
+        p_series = _total_by_group(p_view)
+        result[f"__prev_{label}"] = result[group_col].map(p_series)
+        result[f"{label}(%)"] = result.apply(
+            lambda r, lbl=label: _pct_change_simple(r["거래액"], r[f"__prev_{lbl}"]), axis=1
+        )
+        result = result.drop(columns=[f"__prev_{label}"])
+
+    return result.sort_values("거래액", ascending=False).reset_index(drop=True)
+
+
 def cattxn_txn_type_breakdown(df: pd.DataFrame, category: str = "전체", brand: str = "전체") -> pd.DataFrame:
     """선택된 카테고리/브랜드 범위에 대해 정상/이월/입점 유형별 광고·EP 거래액/주문고객수 구성을 반환."""
     scope = _cattxn_scope(df, "전체", category, brand)
