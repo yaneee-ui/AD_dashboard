@@ -780,11 +780,10 @@ def cattxn_group_yoy_wow(df: pd.DataFrame, group_col: str, cur_start, cur_end, c
     for label, (p_start, p_end) in comp_periods.items():
         p_view = df[(df["date"] >= pd.Timestamp(p_start)) & (df["date"] <= pd.Timestamp(p_end))]
         p_series = _total_by_group(p_view)
-        result[f"__prev_{label}"] = result[group_col].map(p_series)
+        result[f"{label}_이전값"] = result[group_col].map(p_series)
         result[f"{label}(%)"] = result.apply(
-            lambda r, lbl=label: _pct_change_simple(r["거래액"], r[f"__prev_{lbl}"]), axis=1
+            lambda r, lbl=label: _pct_change_simple(r["거래액"], r[f"{lbl}_이전값"]), axis=1
         )
-        result = result.drop(columns=[f"__prev_{label}"])
 
     return result.sort_values("거래액", ascending=False).reset_index(drop=True)
 

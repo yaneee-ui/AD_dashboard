@@ -675,10 +675,16 @@ if menu == "쇼핑검색광고 실적":
                     use_container_width=True, hide_index=True,
                     height=min(35 * (len(cat_table_df) + 1) + 3, 360),
                 )
+            cat_comp_strs = [
+                f"{lbl} = {p[0].date()} ~ {p[1].date()}" if p else f"{lbl} = 데이터 없음"
+                for lbl, p in [(cat_immediate_label, cat_comp_periods.get(cat_immediate_label)),
+                               ("전년비", cat_comp_periods.get("전년비"))]
+            ]
             st.caption(
-                f"ℹ️ 카테고리 데이터는 태블로 원본과 별도 집계라 2일 전 실적까지 반영됩니다 (최신일자: {CATTXN_MAX_DATE}) "
-                f"· 집계기간: {cat_start.date()} ~ {cat_end.date()}"
+                f"ℹ️ 이 표는 2일 전 실적까지 반영됩니다 (최신일자: {CATTXN_MAX_DATE}) "
+                f"· 집계기간: {cat_start.date()} ~ {cat_end.date()} · 비교대상 기간 — {' · '.join(cat_comp_strs)}"
             )
+            st.caption("📁 데이터 출처: category_brand_txn_daily.csv ← 정상이월입점_RAW.xlsx (01·02페이지 태블로 원본과는 별도 집계)")
 
     # ── 추이 차트: 2026년 기준 + 전년비 비교선 (조회단위별 집계) ──
     render_section_title(f"2026년 추이 (전년비 비교) · {mode}")
@@ -1944,21 +1950,33 @@ elif menu == "카테고리별 실적":
         if cattxn_cat_yoy.empty:
             st.info("표시할 데이터가 없습니다.")
         else:
-            comp_pct_cols = [f"{lbl}(%)" for lbl in cattxn_comp_periods]
-            cat_yoy_display = pd.DataFrame({
+            cat_yoy_cols = {
                 "카테고리": cattxn_cat_yoy["category"],
                 "거래액": cattxn_cat_yoy["거래액"].apply(
                     lambda v: format_million(v / cattxn_cur_days) if cattxn_mode == "일평균" and cattxn_cur_days else format_million(v)
                 ),
                 "비중": cattxn_cat_yoy["비중"].apply(lambda v: f"{v:.1f}%"),
-                **{lbl: cattxn_cat_yoy[lbl].apply(format_delta_text) for lbl in comp_pct_cols},
-            })
+            }
+            comp_pct_cols = []
+            cat_yoy_value_cols = []
+            for lbl in cattxn_comp_periods:
+                cat_yoy_cols[lbl] = cattxn_cat_yoy[f"{lbl}(%)"].apply(format_delta_text)
+                comp_pct_cols.append(lbl)
+                value_col = f"{lbl} 값"
+                cat_yoy_cols[value_col] = cattxn_cat_yoy[f"{lbl}_이전값"].apply(
+                    lambda v: format_million(v / cattxn_cur_days) if cattxn_mode == "일평균" and cattxn_cur_days else format_million(v)
+                )
+                cat_yoy_value_cols.append(value_col)
+            cat_yoy_display = pd.DataFrame(cat_yoy_cols)
             st.dataframe(
-                cat_yoy_display.style.map(delta_cell_style, subset=comp_pct_cols),
+                cat_yoy_display.style.map(delta_cell_style, subset=comp_pct_cols)
+                    .set_properties(subset=cat_yoy_value_cols, **{"color": "#94A3B8", "font-weight": "400"}),
                 use_container_width=True, hide_index=True,
                 height=min(35 * (len(cat_yoy_display) + 1) + 3, 460),
             )
             st.caption(f"📅 전년비 기준: 전년 동요일비(364일=52주 전, 요일 정렬) · 거래액은 {cattxn_cat_yoy_channel} 기준입니다.")
+            st.caption("📅 비교대상 기간 — " + " · ".join(cattxn_comp_strs))
+            st.caption("📁 데이터 출처: category_brand_txn_daily.csv ← 정상이월입점_RAW.xlsx (01·02페이지 태블로 원본과는 별도 집계)")
 
     # ══════════════════════════════════════════════════════════
     # 탭 3: 브랜드별 상세
@@ -2026,21 +2044,33 @@ elif menu == "카테고리별 실적":
         if cattxn_brand_yoy.empty:
             st.info("표시할 데이터가 없습니다.")
         else:
-            brand_comp_pct_cols = [f"{lbl}(%)" for lbl in cattxn_comp_periods]
-            brand_yoy_display = pd.DataFrame({
+            brand_yoy_cols = {
                 "브랜드": cattxn_brand_yoy["brand"],
                 "거래액": cattxn_brand_yoy["거래액"].apply(
                     lambda v: format_million(v / cattxn_cur_days) if cattxn_mode == "일평균" and cattxn_cur_days else format_million(v)
                 ),
                 "비중": cattxn_brand_yoy["비중"].apply(lambda v: f"{v:.1f}%"),
-                **{lbl: cattxn_brand_yoy[lbl].apply(format_delta_text) for lbl in brand_comp_pct_cols},
-            })
+            }
+            brand_comp_pct_cols = []
+            brand_yoy_value_cols = []
+            for lbl in cattxn_comp_periods:
+                brand_yoy_cols[lbl] = cattxn_brand_yoy[f"{lbl}(%)"].apply(format_delta_text)
+                brand_comp_pct_cols.append(lbl)
+                value_col = f"{lbl} 값"
+                brand_yoy_cols[value_col] = cattxn_brand_yoy[f"{lbl}_이전값"].apply(
+                    lambda v: format_million(v / cattxn_cur_days) if cattxn_mode == "일평균" and cattxn_cur_days else format_million(v)
+                )
+                brand_yoy_value_cols.append(value_col)
+            brand_yoy_display = pd.DataFrame(brand_yoy_cols)
             st.dataframe(
-                brand_yoy_display.style.map(delta_cell_style, subset=brand_comp_pct_cols),
+                brand_yoy_display.style.map(delta_cell_style, subset=brand_comp_pct_cols)
+                    .set_properties(subset=brand_yoy_value_cols, **{"color": "#94A3B8", "font-weight": "400"}),
                 use_container_width=True, hide_index=True, height=420,
             )
             st.caption(f"※ 전체 {len(brand_yoy_display)}개 브랜드입니다. "
                       f"📅 전년비 기준: 전년 동요일비(364일=52주 전, 요일 정렬) · 거래액은 {cattxn_brand_yoy_channel} 기준입니다.")
+            st.caption("📅 비교대상 기간 — " + " · ".join(cattxn_comp_strs))
+            st.caption("📁 데이터 출처: category_brand_txn_daily.csv ← 정상이월입점_RAW.xlsx (01·02페이지 태블로 원본과는 별도 집계)")
 
     # ══════════════════════════════════════════════════════════
     # 탭 4: 거래유형 구성
@@ -2158,6 +2188,7 @@ elif menu == "카테고리별 실적":
             height=min(35 * (len(cattxn_wide_display) + 1) + 3, 560),
         )
         st.caption("💡 맨 왼쪽 \"합계\" 열 = 정상+이월+입점 합산 · 맨 위 \"합계(전체)\" 행 = 전체 카테고리 합산")
+        st.caption("📁 데이터 출처: category_brand_txn_daily.csv ← 정상이월입점_RAW.xlsx (01·02페이지 태블로 원본과는 별도 집계)")
         st.download_button(
             "📥 Excel 다운로드",
             data=to_excel_bytes(cattxn_wide_df),
