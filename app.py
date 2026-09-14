@@ -660,12 +660,18 @@ if menu == "쇼핑검색광고 실적":
                         "카테고리": cname,
                         "거래액": format_million(cur_v),
                         "비중": f"{share:.1f}%" if share is not None else "-",
-                        "전년동요일비": f"{format_delta_text(yoy_pct)} ({format_million(yoy_v)})" if yoy_v is not None else "-",
-                        cat_immediate_label: f"{format_delta_text(imm_pct)} ({format_million(imm_v)})" if imm_v is not None else "-",
+                        "전년동요일비": format_delta_text(yoy_pct) if yoy_v is not None else "-",
+                        "전년동요일 값": format_million(yoy_v) if yoy_v is not None else "-",
+                        cat_immediate_label: format_delta_text(imm_pct) if imm_v is not None else "-",
+                        f"{cat_immediate_label} 값": format_million(imm_v) if imm_v is not None else "-",
                     })
                 cat_table_df = pd.DataFrame(cat_table_rows)
+                # st.dataframe은 한 셀 안에서 일부만 다른 색/굵기로 못 칠해서(마크다운 **볼드**도
+                # 렌더링 안 됨) — 비교 기준값을 별도 회색·비볼드 컬럼으로 분리했다.
                 st.dataframe(
-                    cat_table_df.style.map(delta_cell_style, subset=["전년동요일비", cat_immediate_label]),
+                    cat_table_df.style.map(delta_cell_style, subset=["전년동요일비", cat_immediate_label])
+                        .set_properties(subset=["전년동요일 값", f"{cat_immediate_label} 값"],
+                                        **{"color": "#94A3B8", "font-weight": "400"}),
                     use_container_width=True, hide_index=True,
                     height=min(35 * (len(cat_table_df) + 1) + 3, 360),
                 )
