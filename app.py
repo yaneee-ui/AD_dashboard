@@ -2088,32 +2088,56 @@ elif menu == "카테고리별 실적":
         cattxn_wide_prev_totals = _cattxn_year_group_totals(cattxn_wide_prev_start, cattxn_wide_prev_end)
 
         cattxn_wide_txn_types = ["정상", "이월", "입점"]
+        cattxn_wide_groups = ["합계"] + cattxn_wide_txn_types  # 열 합계(정상+이월+입점)를 맨 앞에
         cattxn_wide_rows = []
         for cat in CATTXN_CATEGORY_LIST:
             row = {"카테고리": cat}
+            cat_cur_total, cat_prev_total = 0, 0
             for t in cattxn_wide_txn_types:
                 cur_v = cattxn_wide_cur_totals.get((t, cat), 0)
                 prev_v = cattxn_wide_prev_totals.get((t, cat), 0)
                 row[f"{t} · {cattxn_wide_prev_year}년"] = prev_v
                 row[f"{t} · {cattxn_wide_cur_year}년"] = cur_v
                 row[f"{t} · 전년비"] = pct_change(cur_v, prev_v)
+                cat_cur_total += cur_v
+                cat_prev_total += prev_v
+            row[f"합계 · {cattxn_wide_prev_year}년"] = cat_prev_total
+            row[f"합계 · {cattxn_wide_cur_year}년"] = cat_cur_total
+            row["합계 · 전년비"] = pct_change(cat_cur_total, cat_prev_total)
             cattxn_wide_rows.append(row)
         cattxn_wide_df = pd.DataFrame(cattxn_wide_rows)
 
+        # 행 합계("합계(전체)" 행): 카테고리 전체를 다 더한 맨 아래 줄
+        cattxn_wide_total_row = {"카테고리": "합계(전체)"}
+        for g in cattxn_wide_groups:
+            prev_col, cur_col = f"{g} · {cattxn_wide_prev_year}년", f"{g} · {cattxn_wide_cur_year}년"
+            prev_sum, cur_sum = cattxn_wide_df[prev_col].sum(), cattxn_wide_df[cur_col].sum()
+            cattxn_wide_total_row[prev_col] = prev_sum
+            cattxn_wide_total_row[cur_col] = cur_sum
+            cattxn_wide_total_row[f"{g} · 전년비"] = pct_change(cur_sum, prev_sum)
+        cattxn_wide_df = pd.concat([cattxn_wide_df, pd.DataFrame([cattxn_wide_total_row])], ignore_index=True)
+
         cattxn_wide_display_cols = {"카테고리": cattxn_wide_df["카테고리"]}
         cattxn_wide_pct_cols = []
-        for t in cattxn_wide_txn_types:
-            cattxn_wide_display_cols[f"{t} · {cattxn_wide_prev_year}년"] = cattxn_wide_df[f"{t} · {cattxn_wide_prev_year}년"].apply(lambda v: f"{v:,.0f}")
-            cattxn_wide_display_cols[f"{t} · {cattxn_wide_cur_year}년"] = cattxn_wide_df[f"{t} · {cattxn_wide_cur_year}년"].apply(lambda v: f"{v:,.0f}")
-            pct_col = f"{t} · 전년비"
+        for g in cattxn_wide_groups:
+            cattxn_wide_display_cols[f"{g} · {cattxn_wide_prev_year}년"] = cattxn_wide_df[f"{g} · {cattxn_wide_prev_year}년"].apply(lambda v: f"{v:,.0f}")
+            cattxn_wide_display_cols[f"{g} · {cattxn_wide_cur_year}년"] = cattxn_wide_df[f"{g} · {cattxn_wide_cur_year}년"].apply(lambda v: f"{v:,.0f}")
+            pct_col = f"{g} · 전년비"
             cattxn_wide_display_cols[pct_col] = cattxn_wide_df[pct_col].apply(format_delta_text)
             cattxn_wide_pct_cols.append(pct_col)
         cattxn_wide_display = pd.DataFrame(cattxn_wide_display_cols)
+
+        def _bold_cattxn_total_row(row):
+            is_total = row["카테고리"] == "합계(전체)"
+            return ["font-weight: 700; background-color: #F1F5F9;" if is_total else "" for _ in row]
+
         st.dataframe(
-            cattxn_wide_display.style.map(delta_cell_style, subset=cattxn_wide_pct_cols),
+            cattxn_wide_display.style.map(delta_cell_style, subset=cattxn_wide_pct_cols)
+                .apply(_bold_cattxn_total_row, axis=1),
             use_container_width=True, hide_index=True,
-            height=min(35 * (len(cattxn_wide_display) + 1) + 3, 520),
+            height=min(35 * (len(cattxn_wide_display) + 1) + 3, 560),
         )
+        st.caption("💡 맨 왼쪽 \"합계\" 열 = 정상+이월+입점 합산(행 합계) · 맨 아래 \"합계(전체)\" 행 = 전체 카테고리 합산(열 합계)")
         st.download_button(
             "📥 Excel 다운로드",
             data=to_excel_bytes(cattxn_wide_df),
