@@ -575,6 +575,9 @@ if menu == "쇼핑검색광고 실적":
 
     # ── 카테고리별 거래액 비중 (쇼핑검색광고) — cattxn_df 기준, D-2 반영 ──
     render_section_title(f"카테고리별 거래액 비중 (쇼핑검색광고) · {mode}")
+    cat_txn_filter = st.radio(
+        "정상/이월/입점", CATTXN_TXN_TYPE_OPTIONS, horizontal=True, key="page1_cat_txn_filter",
+    )
 
     cat_start = max(start_ts, pd.Timestamp(CATTXN_MIN_DATE))
     cat_end = min(end_ts, pd.Timestamp(CATTXN_MAX_DATE))
@@ -582,7 +585,7 @@ if menu == "쇼핑검색광고 실적":
         st.info(f"이 기간에는 카테고리별 데이터가 아직 없습니다 (카테고리 데이터 최신일자: {CATTXN_MAX_DATE}).")
     else:
         cat_view = cattxn_df[(cattxn_df["date"] >= cat_start) & (cattxn_df["date"] <= cat_end)]
-        cat_rank = aggregate_cattxn_by(cat_view, group_col="category", txn_type="전체")
+        cat_rank = aggregate_cattxn_by(cat_view, group_col="category", txn_type=cat_txn_filter)
         cat_rank = cat_rank[cat_rank["쇼핑검색광고_거래액"] > 0].sort_values(
             "쇼핑검색광고_거래액", ascending=False
         ).reset_index(drop=True)
@@ -606,7 +609,7 @@ if menu == "쇼핑검색광고 실적":
                 p_view = cattxn_df[(cattxn_df["date"] >= p_start) & (cattxn_df["date"] <= p_end)]
                 if p_view.empty:
                     return None
-                return aggregate_cattxn_by(p_view, group_col="category", txn_type="전체").set_index("category")[
+                return aggregate_cattxn_by(p_view, group_col="category", txn_type=cat_txn_filter).set_index("category")[
                     "쇼핑검색광고_거래액"
                 ]
 
@@ -649,16 +652,16 @@ if menu == "쇼핑검색광고 실적":
                     cname = r["category"]
                     cur_v = r["쇼핑검색광고_거래액"]
                     share = (cur_v / cat_total * 100) if cat_total else None
-                    yoy_pct = pct_change(cur_v, cat_yoy_series.loc[cname]) \
-                        if cat_yoy_series is not None and cname in cat_yoy_series.index else None
-                    imm_pct = pct_change(cur_v, cat_imm_series.loc[cname]) \
-                        if cat_imm_series is not None and cname in cat_imm_series.index else None
+                    yoy_v = cat_yoy_series.loc[cname] if cat_yoy_series is not None and cname in cat_yoy_series.index else None
+                    imm_v = cat_imm_series.loc[cname] if cat_imm_series is not None and cname in cat_imm_series.index else None
+                    yoy_pct = pct_change(cur_v, yoy_v) if yoy_v is not None else None
+                    imm_pct = pct_change(cur_v, imm_v) if imm_v is not None else None
                     cat_table_rows.append({
                         "카테고리": cname,
                         "거래액": format_million(cur_v),
                         "비중": f"{share:.1f}%" if share is not None else "-",
-                        "전년동요일비": format_delta_text(yoy_pct),
-                        cat_immediate_label: format_delta_text(imm_pct),
+                        "전년동요일비": f"{format_delta_text(yoy_pct)} ({format_million(yoy_v)})" if yoy_v is not None else "-",
+                        cat_immediate_label: f"{format_delta_text(imm_pct)} ({format_million(imm_v)})" if imm_v is not None else "-",
                     })
                 cat_table_df = pd.DataFrame(cat_table_rows)
                 st.dataframe(
@@ -2064,15 +2067,18 @@ elif menu == "카테고리별 실적":
         cattxn_wide_prev_start = max(pd.Timestamp(year=cattxn_wide_prev_year, month=1, day=1), pd.Timestamp(CATTXN_MIN_DATE))
 
         render_section_title(
-            f"정상/이월/입점 × 카테고리 · 연간 누계 비교 ({cattxn_wide_prev_year}년 vs {cattxn_wide_cur_year}년)"
+            f"정상/이월/입점 × 카테고리 · 연간 비교 ({cattxn_wide_prev_year}년 vs {cattxn_wide_cur_year}년, {cattxn_mode})"
         )
         cattxn_wide_channel = st.radio(
             "채널", ["전체(Total)", "쇼핑검색광고", "EP채널"], horizontal=True, key="cattxn_wide_channel",
         )
+        cattxn_wide_cur_days = (cattxn_wide_cur_end - cattxn_wide_cur_start).days + 1
+        cattxn_wide_prev_days = (cattxn_wide_prev_end - cattxn_wide_prev_start).days + 1
         st.caption(
             f"📅 {cattxn_wide_prev_year}년: {cattxn_wide_prev_start.date()} ~ {cattxn_wide_prev_end.date()}  ·  "
             f"{cattxn_wide_cur_year}년: {cattxn_wide_cur_start.date()} ~ {cattxn_wide_cur_end.date()} "
-            "(기준일자와 같은 월/일까지 누계 — 연간 진행 정도를 맞춰서 비교합니다)"
+            f"(기준일자와 같은 월/일까지 누계 — 연간 진행 정도를 맞춰서 비교합니다) · "
+            f"상단 표시방식({cattxn_mode})을 따릅니다."
         )
 
         def _cattxn_year_group_totals(y_start, y_end):
@@ -2107,7 +2113,8 @@ elif menu == "카테고리별 실적":
             cattxn_wide_rows.append(row)
         cattxn_wide_df = pd.DataFrame(cattxn_wide_rows)
 
-        # 행 합계("합계(전체)" 행): 카테고리 전체를 다 더한 맨 아래 줄
+        # 행 합계("합계(전체)" 행): 카테고리 전체를 다 더한 줄 — 맨 위에 고정 노출(스크롤해도
+        # 헤더 바로 아래라 항상 보임)되도록 맨 앞에 둔다.
         cattxn_wide_total_row = {"카테고리": "합계(전체)"}
         for g in cattxn_wide_groups:
             prev_col, cur_col = f"{g} · {cattxn_wide_prev_year}년", f"{g} · {cattxn_wide_cur_year}년"
@@ -2115,13 +2122,20 @@ elif menu == "카테고리별 실적":
             cattxn_wide_total_row[prev_col] = prev_sum
             cattxn_wide_total_row[cur_col] = cur_sum
             cattxn_wide_total_row[f"{g} · 전년비"] = pct_change(cur_sum, prev_sum)
-        cattxn_wide_df = pd.concat([cattxn_wide_df, pd.DataFrame([cattxn_wide_total_row])], ignore_index=True)
+        cattxn_wide_df = pd.concat([pd.DataFrame([cattxn_wide_total_row]), cattxn_wide_df], ignore_index=True)
+
+        def _wide_scaled(v, is_prev_col):
+            if cattxn_mode != "일평균":
+                return v
+            days = cattxn_wide_prev_days if is_prev_col else cattxn_wide_cur_days
+            return v / days if days else v
 
         cattxn_wide_display_cols = {"카테고리": cattxn_wide_df["카테고리"]}
         cattxn_wide_pct_cols = []
         for g in cattxn_wide_groups:
-            cattxn_wide_display_cols[f"{g} · {cattxn_wide_prev_year}년"] = cattxn_wide_df[f"{g} · {cattxn_wide_prev_year}년"].apply(lambda v: f"{v:,.0f}")
-            cattxn_wide_display_cols[f"{g} · {cattxn_wide_cur_year}년"] = cattxn_wide_df[f"{g} · {cattxn_wide_cur_year}년"].apply(lambda v: f"{v:,.0f}")
+            prev_col, cur_col = f"{g} · {cattxn_wide_prev_year}년", f"{g} · {cattxn_wide_cur_year}년"
+            cattxn_wide_display_cols[prev_col] = cattxn_wide_df[prev_col].apply(lambda v: f"{_wide_scaled(v, True):,.0f}")
+            cattxn_wide_display_cols[cur_col] = cattxn_wide_df[cur_col].apply(lambda v: f"{_wide_scaled(v, False):,.0f}")
             pct_col = f"{g} · 전년비"
             cattxn_wide_display_cols[pct_col] = cattxn_wide_df[pct_col].apply(format_delta_text)
             cattxn_wide_pct_cols.append(pct_col)
@@ -2137,7 +2151,7 @@ elif menu == "카테고리별 실적":
             use_container_width=True, hide_index=True,
             height=min(35 * (len(cattxn_wide_display) + 1) + 3, 560),
         )
-        st.caption("💡 맨 왼쪽 \"합계\" 열 = 정상+이월+입점 합산(행 합계) · 맨 아래 \"합계(전체)\" 행 = 전체 카테고리 합산(열 합계)")
+        st.caption("💡 맨 왼쪽 \"합계\" 열 = 정상+이월+입점 합산 · 맨 위 \"합계(전체)\" 행 = 전체 카테고리 합산")
         st.download_button(
             "📥 Excel 다운로드",
             data=to_excel_bytes(cattxn_wide_df),
