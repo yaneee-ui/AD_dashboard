@@ -365,6 +365,52 @@ def inject_css(pin_filters: bool = True):
 
     /* 상단 필터 영역 고정 여부 (사이드바 "필터 고정" 토글로 전환) */
     {pin_css}
+
+    /* 비교표(render_comparison_table) — st.dataframe은 셀 일부만 스타일링을 못 해서
+    (예: "▲21.4% (48.2백만)"에서 %만 색칠, 괄호값은 회색) raw HTML 테이블로 대체 */
+    .dtbl-wrap {{
+        overflow-x: auto;
+        margin-bottom: 8px;
+        border: 1px solid #E5E9F0;
+        border-radius: 10px;
+    }}
+    table.dtbl {{
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.84rem;
+    }}
+    table.dtbl thead th {{
+        background: #F8FAFC;
+        color: #475569;
+        font-weight: 600;
+        text-align: left;
+        padding: 8px 12px;
+        border-bottom: 1px solid #E5E9F0;
+        white-space: nowrap;
+    }}
+    table.dtbl tbody td {{
+        padding: 7px 12px;
+        border-bottom: 1px solid #F1F5F9;
+        color: #0F172A;
+        white-space: nowrap;
+    }}
+    table.dtbl tbody tr:last-child td {{
+        border-bottom: none;
+    }}
+    table.dtbl tbody tr.dtbl-bold td {{
+        font-weight: 700;
+        background: #F1F5F9;
+    }}
+    .dtbl-delta {{
+        font-weight: 600;
+    }}
+    .dtbl-delta.up {{ color: {UP_COLOR}; }}
+    .dtbl-delta.down {{ color: {DOWN_COLOR}; }}
+    .dtbl-delta.flat {{ color: #64748B; font-weight: 400; }}
+    .dtbl-ref {{
+        color: #94A3B8;
+        font-weight: 400;
+    }}
     </style>
     """), unsafe_allow_html=True)
 
@@ -646,6 +692,49 @@ def format_delta_text(delta) -> str:
     if delta < 0:
         return f"▼{abs(delta):.1f}%"
     return "0.0%"
+
+
+def render_comparison_table(df: pd.DataFrame, delta_cols: list, bold_rows: set = None):
+    """비교(전년비/전월비 등) 컬럼과 그 옆의 "{컬럼명} 값"(비교대상 실제값) 컬럼을 한 셀로
+    합쳐서 raw HTML 테이블로 렌더링한다 — st.dataframe(Styler)은 셀 안 일부만 스타일링을
+    못 해서, 지금까지는 "전년비" | "전년비 값" 두 컬럼으로 쪼개 보여줬는데, EP_dashboard의
+    render_bpu_comparison_table 방식(raw HTML 테이블)을 가져와 "▲21.4% (48.2백만)"처럼
+    한 셀에 색상+회색 참고값을 같이 넣는다.
+
+    df: 이미 표시용으로 포맷된 문자열 컬럼들로 구성 (숫자 포맷/▲▼ 기호 처리는 호출부에서 끝낸 상태).
+    delta_cols: "▲21.4%" 같은 문자열이 든 컬럼명 리스트. 같은 이름 뒤에 " 값"이 붙은 컬럼이
+        df에 있으면 그 값을 괄호로 묶어 같은 셀에 회색으로 붙이고, 그 " 값" 컬럼 자체는
+        별도 열로는 표시하지 않는다.
+    bold_rows: 첫 번째 표시 컬럼 값이 이 set에 있는 행을 볼드+음영 처리(예: "합계" 행 강조).
+    """
+    value_cols = {d: f"{d} 값" for d in delta_cols if f"{d} 값" in df.columns}
+    display_cols = [c for c in df.columns if c not in value_cols.values()]
+
+    def _delta_cell(pct_str, val_str) -> str:
+        pct_str = "-" if pct_str is None or (isinstance(pct_str, float) and pd.isna(pct_str)) else str(pct_str)
+        cls = "up" if pct_str.startswith("▲") else ("down" if pct_str.startswith("▼") else "flat")
+        has_val = val_str is not None and not (isinstance(val_str, float) and pd.isna(val_str)) and str(val_str) != "-"
+        ref = f' <span class="dtbl-ref">({val_str})</span>' if has_val else ""
+        return f'<span class="dtbl-delta {cls}">{pct_str}</span>{ref}'
+
+    header_html = "".join(f"<th>{c}</th>" for c in display_cols)
+    body_rows = []
+    for _, row in df.iterrows():
+        is_bold = bold_rows is not None and row[display_cols[0]] in bold_rows
+        tr_cls = ' class="dtbl-bold"' if is_bold else ""
+        cells = []
+        for c in display_cols:
+            if c in value_cols:
+                cells.append(f"<td>{_delta_cell(row[c], row[value_cols[c]])}</td>")
+            else:
+                cells.append(f"<td>{row[c]}</td>")
+        body_rows.append(f"<tr{tr_cls}>{''.join(cells)}</tr>")
+
+    st.markdown(
+        f'<div class="dtbl-wrap"><table class="dtbl"><thead><tr>{header_html}</tr></thead>'
+        f'<tbody>{"".join(body_rows)}</tbody></table></div>',
+        unsafe_allow_html=True,
+    )
 
 
 def delta_cell_style(val: str) -> str:

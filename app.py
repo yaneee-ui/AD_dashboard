@@ -24,6 +24,7 @@ from styles import (
     inject_css, render_kpi_cards, render_page_header, render_section_title,
     pct_change, format_delta_text, delta_cell_style, render_custom_funnel, render_insight_box,
     render_trend_card_header, render_trend_summary_boxes, render_colored_caption,
+    render_comparison_table,
 )
 
 st.set_page_config(page_title="쇼핑검색광고 실적 대시보드", layout="wide")
@@ -657,23 +658,15 @@ if menu == "쇼핑검색광고 실적":
                     imm_pct = pct_change(cur_v, imm_v) if imm_v is not None else None
                     cat_table_rows.append({
                         "카테고리": cname,
-                        "거래액": format_million(cur_v),
+                        "거래액": f"{cur_v:,.0f}",
                         "비중": f"{share:.1f}%" if share is not None else "-",
-                        "전년동요일비": format_delta_text(yoy_pct) if yoy_v is not None else "-",
-                        "전년동요일 값": format_million(yoy_v) if yoy_v is not None else "-",
+                        "전년동요일": format_delta_text(yoy_pct) if yoy_v is not None else "-",
+                        "전년동요일 값": f"{yoy_v:,.0f}" if yoy_v is not None else "-",
                         cat_immediate_label: format_delta_text(imm_pct) if imm_v is not None else "-",
-                        f"{cat_immediate_label} 값": format_million(imm_v) if imm_v is not None else "-",
+                        f"{cat_immediate_label} 값": f"{imm_v:,.0f}" if imm_v is not None else "-",
                     })
                 cat_table_df = pd.DataFrame(cat_table_rows)
-                # st.dataframe은 한 셀 안에서 일부만 다른 색/굵기로 못 칠해서(마크다운 **볼드**도
-                # 렌더링 안 됨) — 비교 기준값을 별도 회색·비볼드 컬럼으로 분리했다.
-                st.dataframe(
-                    cat_table_df.style.map(delta_cell_style, subset=["전년동요일비", cat_immediate_label])
-                        .set_properties(subset=["전년동요일 값", f"{cat_immediate_label} 값"],
-                                        **{"color": "#94A3B8", "font-weight": "400"}),
-                    use_container_width=True, hide_index=True,
-                    height=min(35 * (len(cat_table_df) + 1) + 3, 360),
-                )
+                render_comparison_table(cat_table_df, delta_cols=["전년동요일", cat_immediate_label])
             cat_comp_strs = [
                 f"{lbl} = {p[0].date()} ~ {p[1].date()}" if p else f"{lbl} = 데이터 없음"
                 for lbl, p in [(cat_immediate_label, cat_comp_periods.get(cat_immediate_label)),
@@ -1955,22 +1948,14 @@ elif menu == "카테고리별 실적":
                 "비중": cattxn_cat_yoy["비중"].apply(lambda v: f"{v:.1f}%"),
             }
             comp_pct_cols = []
-            cat_yoy_value_cols = []
             for lbl in cattxn_comp_periods:
                 cat_yoy_cols[lbl] = cattxn_cat_yoy[f"{lbl}(%)"].apply(format_delta_text)
                 comp_pct_cols.append(lbl)
-                value_col = f"{lbl} 값"
-                cat_yoy_cols[value_col] = cattxn_cat_yoy[f"{lbl}_이전값"].apply(
+                cat_yoy_cols[f"{lbl} 값"] = cattxn_cat_yoy[f"{lbl}_이전값"].apply(
                     lambda v: format_million(v / cattxn_cur_days) if cattxn_mode == "일평균" and cattxn_cur_days else format_million(v)
                 )
-                cat_yoy_value_cols.append(value_col)
             cat_yoy_display = pd.DataFrame(cat_yoy_cols)
-            st.dataframe(
-                cat_yoy_display.style.map(delta_cell_style, subset=comp_pct_cols)
-                    .set_properties(subset=cat_yoy_value_cols, **{"color": "#94A3B8", "font-weight": "400"}),
-                use_container_width=True, hide_index=True,
-                height=min(35 * (len(cat_yoy_display) + 1) + 3, 460),
-            )
+            render_comparison_table(cat_yoy_display, delta_cols=comp_pct_cols)
             st.caption(f"📅 전년비 기준: 전년 동요일비(364일=52주 전, 요일 정렬) · 거래액은 {cattxn_cat_yoy_channel} 기준입니다.")
             st.caption("📅 비교대상 기간 — " + " · ".join(cattxn_comp_strs))
             st.caption("📁 데이터 출처: category_brand_txn_daily.csv ← 정상이월입점_RAW.xlsx (01·02페이지 태블로 원본과는 별도 집계)")
@@ -2049,21 +2034,14 @@ elif menu == "카테고리별 실적":
                 "비중": cattxn_brand_yoy["비중"].apply(lambda v: f"{v:.1f}%"),
             }
             brand_comp_pct_cols = []
-            brand_yoy_value_cols = []
             for lbl in cattxn_comp_periods:
                 brand_yoy_cols[lbl] = cattxn_brand_yoy[f"{lbl}(%)"].apply(format_delta_text)
                 brand_comp_pct_cols.append(lbl)
-                value_col = f"{lbl} 값"
-                brand_yoy_cols[value_col] = cattxn_brand_yoy[f"{lbl}_이전값"].apply(
+                brand_yoy_cols[f"{lbl} 값"] = cattxn_brand_yoy[f"{lbl}_이전값"].apply(
                     lambda v: format_million(v / cattxn_cur_days) if cattxn_mode == "일평균" and cattxn_cur_days else format_million(v)
                 )
-                brand_yoy_value_cols.append(value_col)
             brand_yoy_display = pd.DataFrame(brand_yoy_cols)
-            st.dataframe(
-                brand_yoy_display.style.map(delta_cell_style, subset=brand_comp_pct_cols)
-                    .set_properties(subset=brand_yoy_value_cols, **{"color": "#94A3B8", "font-weight": "400"}),
-                use_container_width=True, hide_index=True, height=420,
-            )
+            render_comparison_table(brand_yoy_display, delta_cols=brand_comp_pct_cols)
             st.caption(f"※ 전체 {len(brand_yoy_display)}개 브랜드입니다. "
                       f"📅 전년비 기준: 전년 동요일비(364일=52주 전, 요일 정렬) · 거래액은 {cattxn_brand_yoy_channel} 기준입니다.")
             st.caption("📅 비교대상 기간 — " + " · ".join(cattxn_comp_strs))
@@ -2167,23 +2145,14 @@ elif menu == "카테고리별 실적":
         cattxn_wide_pct_cols = []
         for g in cattxn_wide_groups:
             prev_col, cur_col = f"{g} · {cattxn_wide_prev_year}년", f"{g} · {cattxn_wide_cur_year}년"
-            cattxn_wide_display_cols[prev_col] = cattxn_wide_df[prev_col].apply(lambda v: f"{_wide_scaled(v, True):,.0f}")
-            cattxn_wide_display_cols[cur_col] = cattxn_wide_df[cur_col].apply(lambda v: f"{_wide_scaled(v, False):,.0f}")
             pct_col = f"{g} · 전년비"
+            cattxn_wide_display_cols[cur_col] = cattxn_wide_df[cur_col].apply(lambda v: f"{_wide_scaled(v, False):,.0f}")
             cattxn_wide_display_cols[pct_col] = cattxn_wide_df[pct_col].apply(format_delta_text)
+            cattxn_wide_display_cols[f"{pct_col} 값"] = cattxn_wide_df[prev_col].apply(lambda v: f"{_wide_scaled(v, True):,.0f}")
             cattxn_wide_pct_cols.append(pct_col)
         cattxn_wide_display = pd.DataFrame(cattxn_wide_display_cols)
 
-        def _bold_cattxn_total_row(row):
-            is_total = row["카테고리"] == "합계(전체)"
-            return ["font-weight: 700; background-color: #F1F5F9;" if is_total else "" for _ in row]
-
-        st.dataframe(
-            cattxn_wide_display.style.map(delta_cell_style, subset=cattxn_wide_pct_cols)
-                .apply(_bold_cattxn_total_row, axis=1),
-            use_container_width=True, hide_index=True,
-            height=min(35 * (len(cattxn_wide_display) + 1) + 3, 560),
-        )
+        render_comparison_table(cattxn_wide_display, delta_cols=cattxn_wide_pct_cols, bold_rows={"합계(전체)"})
         st.caption("💡 맨 왼쪽 \"합계\" 열 = 정상+이월+입점 합산 · 맨 위 \"합계(전체)\" 행 = 전체 카테고리 합산")
         st.caption("📁 데이터 출처: category_brand_txn_daily.csv ← 정상이월입점_RAW.xlsx (01·02페이지 태블로 원본과는 별도 집계)")
         st.download_button(
