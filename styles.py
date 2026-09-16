@@ -37,13 +37,13 @@ def inject_css(pin_filters: bool = True):
         box-shadow: 0 2px 6px rgba(15, 23, 42, 0.06);
     }
     div.st-key-page1_filters + div {
-        margin-top: 96px;
+        margin-top: 140px;
     }
     div.st-key-page3_filters + div {
-        margin-top: 172px;
+        margin-top: 210px;
     }
     div.st-key-page4_filters + div {
-        margin-top: 172px;
+        margin-top: 210px;
     }
     """) if pin_filters else ("""
     div.st-key-page1_filters, div.st-key-page3_filters, div.st-key-page4_filters {

@@ -385,8 +385,7 @@ if menu == "쇼핑검색광고 실적":
     render_kpi_cards(primary_cards, size="lg")
     st.markdown(
         '<div class="kpi-footnote">※ 광고비·거래액·ROAS는 쇼핑검색광고 핵심 지표이며, EP채널 거래액을 나란히 두어 '
-        '광고 흐름과 EP 흐름을 함께 볼 수 있게 했습니다. EP채널은 카테고리 데이터 기준(D-2 반영)이라 '
-        '나머지 01페이지 지표(D-1 반영)와 최신일자가 하루 다를 수 있습니다.</div>',
+        '광고 흐름과 EP 흐름을 함께 볼 수 있게 했습니다.</div>',
         unsafe_allow_html=True,
     )
 
@@ -1561,9 +1560,7 @@ elif menu == "카테고리별 실적":
         st.plotly_chart(fig_overview, use_container_width=True)
         st.caption(
             "📊 막대=광고비(우측 보조축, 전체채널) · SA 거래액 라인에 마우스를 올리면 해당 시점 ROAS%가 함께 표시됩니다 · "
-            "EP채널 거래액은 SA와 같은 좌측 축에서 나란히 비교합니다. "
-            f"⚠️ 광고비·ROAS는 {MAX_DATE} 기준(D-1), SA·EP 거래액은 {CATTXN_MAX_DATE} 기준(D-2)으로 "
-            "반영 시점이 하루 다를 수 있습니다."
+            "EP채널 거래액은 SA와 같은 좌측 축에서 나란히 비교합니다."
         )
 
         ad_vs_total_display = pd.DataFrame({
