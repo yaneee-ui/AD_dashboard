@@ -25,21 +25,9 @@ DATA_PATH = next((p for p in _CANDIDATE_PATHS if os.path.exists(p)), _CANDIDATE_
 _CATTXN_CANDIDATE_PATHS = [
     os.path.join(BASE_DIR, "data", "category_brand_txn_daily.csv"),
     os.path.join(BASE_DIR, "category_brand_txn_daily.csv"),
-    os.path.join(BASE_DIR, "data", "category_txn_daily.csv"),  # 브랜드 없던 구버전 (하위호환)
-    os.path.join(BASE_DIR, "category_txn_daily.csv"),
 ]
 CATTXN_DATA_PATH = next(
     (p for p in _CATTXN_CANDIDATE_PATHS if os.path.exists(p)), _CATTXN_CANDIDATE_PATHS[0]
-)
-
-# ── ① 쇼핑검색광고 리포트(NBOS 매칭) — 지금은 어느 페이지에서도 직접 쓰지 않지만,
-#     추후 상품/카테고리/브랜드 ROAS 매칭용으로 남겨둔 원본. 필요 시 load_ad_report_data()로 로드.
-_AD_REPORT_CANDIDATE_PATHS = [
-    os.path.join(BASE_DIR, "data", "shopping_ad_report_daily.csv"),
-    os.path.join(BASE_DIR, "shopping_ad_report_daily.csv"),
-]
-AD_REPORT_DATA_PATH = next(
-    (p for p in _AD_REPORT_CANDIDATE_PATHS if os.path.exists(p)), _AD_REPORT_CANDIDATE_PATHS[0]
 )
 
 _AD_PRODUCT_CANDIDATE_PATHS = [
@@ -56,22 +44,6 @@ _AD_PRODUCT_SPLIT_GLOBS = [
     os.path.join(BASE_DIR, "data", "ad_product_category_daily_*.csv"),
     os.path.join(BASE_DIR, "ad_product_category_daily_*.csv"),
 ]
-
-_CATEGORY_CANDIDATE_PATHS = [
-    os.path.join(BASE_DIR, "data", "category_daily.csv"),
-    os.path.join(BASE_DIR, "category_daily.csv"),
-]
-CATEGORY_DATA_PATH = next(
-    (p for p in _CATEGORY_CANDIDATE_PATHS if os.path.exists(p)), _CATEGORY_CANDIDATE_PATHS[0]
-)
-
-_FITFLOP_CANDIDATE_PATHS = [
-    os.path.join(BASE_DIR, "data", "fitflop_monthly.csv"),
-    os.path.join(BASE_DIR, "fitflop_monthly.csv"),
-]
-FITFLOP_DATA_PATH = next(
-    (p for p in _FITFLOP_CANDIDATE_PATHS if os.path.exists(p)), _FITFLOP_CANDIDATE_PATHS[0]
-)
 
 # ── 합산 가능한 base metric (분자/분모 원천값) ─────────────────────────
 BASE_METRICS = [
@@ -134,19 +106,6 @@ def load_data():
     df["연도"] = df["date"].dt.year
     df["월"] = df["date"].dt.month
     df["요일"] = df["date"].dt.dayofweek  # 0=월요일
-    return df
-
-
-@st.cache_data
-def load_ad_report_data():
-    """① 쇼핑검색광고 리포트(NBOS 매칭) 원본. 지금은 어느 페이지도 직접 쓰지 않지만,
-    추후 상품/카테고리/브랜드 ROAS 매칭 기능에 쓸 수 있도록 남겨둔 로더."""
-    if not os.path.exists(AD_REPORT_DATA_PATH):
-        return None
-    df = pd.read_csv(AD_REPORT_DATA_PATH, parse_dates=["date"], encoding="utf-8-sig")
-    df["연도"] = df["date"].dt.year
-    df["월"] = df["date"].dt.month
-    df["요일"] = df["date"].dt.dayofweek
     return df
 
 
@@ -432,191 +391,8 @@ def get_comparison_periods(ref_date, unit: str, min_date, max_date):
 
 
 # ════════════════════════════════════════════════════════════════
-# 카테고리별 실적 (쇼핑검색광고 vs EP채널 비교)
-# ════════════════════════════════════════════════════════════════
-CATEGORY_BASE_METRICS = ["광고_거래액", "EP_거래액"]
-
-# 거래유형(정상/이월/입점) 선택에 따라 어떤 원천 컬럼을 합산할지 매핑
-TXN_TYPE_OPTIONS = ["전체", "정상", "이월", "입점"]
-TXN_TYPE_COLS = {
-    "전체": ("광고_거래액", "EP_거래액"),
-    "정상": ("광고_정상", "EP_정상"),
-    "이월": ("광고_이월", "EP_이월"),
-    "입점": ("광고_입점", "EP_입점"),
-}
-
-
-@st.cache_data
-def load_category_data():
-    if not os.path.exists(CATEGORY_DATA_PATH):
-        st.error(
-            f"카테고리 데이터 파일을 찾을 수 없습니다.\n\n"
-            f"다음 경로를 확인했습니다:\n"
-            + "\n".join(f"- `{p}`" for p in _CATEGORY_CANDIDATE_PATHS)
-            + f"\n\nGitHub 리포지토리에 `category_daily.csv`가 실제로 커밋되어 있는지 확인해주세요."
-        )
-        st.stop()
-    df = pd.read_csv(CATEGORY_DATA_PATH, parse_dates=["date"], encoding="utf-8-sig")
-    for c in ["광고_이월", "광고_입점", "광고_정상", "EP_이월", "EP_입점", "EP_정상"]:
-        if c not in df.columns:
-            df[c] = 0
-        df[c] = df[c].fillna(0)
-    df["광고_거래액"] = df["광고_이월"] + df["광고_입점"] + df["광고_정상"]
-    df["EP_거래액"] = df["EP_이월"] + df["EP_입점"] + df["EP_정상"]
-    df["연도"] = df["date"].dt.year
-    return df
-
-
-def aggregate_category(df: pd.DataFrame, txn_type: str = "전체") -> dict:
-    """선택한 거래유형(전체/정상/이월/입점) 기준으로 광고_거래액/EP_거래액을 합산."""
-    ad_col, ep_col = TXN_TYPE_COLS[txn_type]
-    return {
-        "광고_거래액": df[ad_col].sum(),
-        "EP_거래액": df[ep_col].sum(),
-    }
-
-
-def aggregate_category_by(df: pd.DataFrame, group_col: str = "category", txn_type: str = "전체") -> pd.DataFrame:
-    """카테고리별로 선택한 거래유형 기준 광고_거래액/EP_거래액을 합산한 DataFrame 반환."""
-    ad_col, ep_col = TXN_TYPE_COLS[txn_type]
-    grouped = df.groupby(group_col)[[ad_col, ep_col]].sum().reset_index()
-    grouped.columns = [group_col, "광고_거래액", "EP_거래액"]
-    return grouped
-
-
-def category_txn_type_breakdown(df: pd.DataFrame) -> pd.DataFrame:
-    """선택된 기간(+카테고리 범위)에 대해 정상/이월/입점 유형별 광고·EP 거래액 구성을 반환."""
-    rows = []
-    for t in ["정상", "이월", "입점"]:
-        ad_col, ep_col = TXN_TYPE_COLS[t]
-        rows.append({"거래유형": t, "쇼핑검색광고 거래액": df[ad_col].sum(), "EP채널 거래액": df[ep_col].sum()})
-    return pd.DataFrame(rows)
-
-
-def category_bucket_yoy_series(df: pd.DataFrame, buckets, value_col: str, mode: str = "누계"):
-    """build_2026_buckets() 결과를 그대로 받아, 카테고리 데이터의 특정 합산 컬럼(광고_거래액/EP_거래액)에
-    대해 (labels, 올해값, 전년값)을 반환한다. mode='일평균'이면 버킷 일수로 나눈다."""
-    labels, cur_vals, prev_vals = [], [], []
-    for label, dates in buckets:
-        n_days = len(dates)
-        cur_val = df.loc[df["date"].isin(dates), value_col].sum()
-        prev_dates = [pd.Timestamp(d) - pd.Timedelta(days=364) for d in dates]
-        prev_mask = df["date"].isin(prev_dates)
-        prev_val = df.loc[prev_mask, value_col].sum() if prev_mask.any() else None
-
-        if mode == "일평균" and n_days:
-            cur_val = cur_val / n_days
-            if prev_val is not None:
-                prev_val = prev_val / n_days
-
-        labels.append(label)
-        cur_vals.append(cur_val)
-        prev_vals.append(prev_val)
-    return labels, cur_vals, prev_vals
-
-
-def category_dual_channel_series(df: pd.DataFrame, buckets, txn_type: str = "전체", mode: str = "누계"):
-    """동일 기간에 대해 쇼핑검색광고 거래액 흐름과 EP채널 거래액 흐름을 나란히 비교하기 위한
-    (labels, 광고값, EP값) 튜플 반환. 전년비 없이 같은 기간의 두 채널만 비교한다."""
-    ad_col, ep_col = TXN_TYPE_COLS[txn_type]
-    labels, ad_vals, ep_vals = [], [], []
-    for label, dates in buckets:
-        n_days = len(dates)
-        mask = df["date"].isin(dates)
-        ad_val = df.loc[mask, ad_col].sum()
-        ep_val = df.loc[mask, ep_col].sum()
-        if mode == "일평균" and n_days:
-            ad_val = ad_val / n_days
-            ep_val = ep_val / n_days
-        labels.append(label)
-        ad_vals.append(ad_val)
-        ep_vals.append(ep_val)
-    return labels, ad_vals, ep_vals
-
-
-# ════════════════════════════════════════════════════════════════
-# 핏플랍(브랜드) 영향 제외 비교
-# ════════════════════════════════════════════════════════════════
-@st.cache_data
-def load_fitflop_data():
-    """월별 자사(정상+이월) 거래액/광고비 vs 핏플랍 거래액/광고비, 핏플랍 제외 값까지 포함된 데이터."""
-    if not os.path.exists(FITFLOP_DATA_PATH):
-        st.error(
-            f"핏플랍 비교 데이터 파일을 찾을 수 없습니다.\n\n"
-            f"다음 경로를 확인했습니다:\n"
-            + "\n".join(f"- `{p}`" for p in _FITFLOP_CANDIDATE_PATHS)
-            + f"\n\nGitHub 리포지토리에 `fitflop_monthly.csv`가 실제로 커밋되어 있는지 확인해주세요."
-        )
-        st.stop()
-    df = pd.read_csv(FITFLOP_DATA_PATH, dtype={"ym": str}, encoding="utf-8-sig")
-    df["ym_label"] = df["ym"].str[:4] + "년 " + df["ym"].str[4:6].astype(int).astype(str) + "월"
-    return df
-
-
-def fitflop_roas(row, col_ad, col_cost):
-    cost = row[col_cost]
-    if pd.isna(cost) or cost == 0:
-        return None
-    return row[col_ad] / cost
-
-
-def fitflop_yoy_table(ff_df: pd.DataFrame, metric: str) -> pd.DataFrame:
-    """metric in {거래액, 광고비, ROAS}에 대해 월별로 (올해/전년/전년비)를
-    포함(자사 전체)과 제외(핏플랍 제외) 두 기준으로 나란히 계산한 표를 반환.
-    2026년 각 월과 전년 동월(2025)이 모두 있는 월만 포함."""
-    all_col = {"거래액": "자사_거래액", "광고비": "자사_광고비"}
-    ex_col = {"거래액": "핏플랍제외_거래액", "광고비": "핏플랍제외_광고비"}
-
-    by_ym = ff_df.set_index("ym")
-    rows = []
-    for m in range(1, 13):
-        cur_ym, prev_ym = f"2026{m:02d}", f"2025{m:02d}"
-        if cur_ym not in by_ym.index or prev_ym not in by_ym.index:
-            continue
-        cur, prev = by_ym.loc[cur_ym], by_ym.loc[prev_ym]
-
-        if metric == "ROAS":
-            cur_all = fitflop_roas(cur, "자사_거래액", "자사_광고비")
-            prev_all = fitflop_roas(prev, "자사_거래액", "자사_광고비")
-            cur_ex = fitflop_roas(cur, "핏플랍제외_거래액", "핏플랍제외_광고비")
-            prev_ex = fitflop_roas(prev, "핏플랍제외_거래액", "핏플랍제외_광고비")
-        else:
-            cur_all, prev_all = cur[all_col[metric]], prev[all_col[metric]]
-            cur_ex, prev_ex = cur[ex_col[metric]], prev[ex_col[metric]]
-
-        def _yoy(c, p):
-            if c is None or p is None or pd.isna(c) or pd.isna(p) or p == 0:
-                return None
-            return (c - p) / abs(p) * 100
-
-        rows.append({
-            "월": f"{m}월",
-            "포함_올해": cur_all, "포함_전년": prev_all, "포함_전년비": _yoy(cur_all, prev_all),
-            "제외_올해": cur_ex, "제외_전년": prev_ex, "제외_전년비": _yoy(cur_ex, prev_ex),
-        })
-    return pd.DataFrame(rows)
-
-
-# ════════════════════════════════════════════════════════════════
 # EP 상관관계 분석 (쇼핑검색광고 확대 → EP 거래액 동반 상승 카테고리 점검)
 # ════════════════════════════════════════════════════════════════
-def category_weekly_changes(cat_df: pd.DataFrame) -> pd.DataFrame:
-    """카테고리별 주간(월요일 시작) 광고_거래액/EP_거래액 합계와 전주 대비 증감률(%)을 반환.
-    광고_거래액은 카테고리별 실제 광고비 원본이 없을 때 '얼마나 밀었는지'의 대리지표로 사용.
-    직전 주 값이 0이라 증감률이 무한대(inf)가 되는 경우는 NaN 처리해 상관계수 계산에서 제외한다."""
-    import numpy as np
-    df = cat_df.copy()
-    df["_wk"] = df["date"] - pd.to_timedelta(df["date"].dt.weekday, unit="D")
-    weekly = df.groupby(["category", "_wk"])[["광고_거래액", "EP_거래액"]].sum().reset_index()
-    weekly = weekly.sort_values(["category", "_wk"]).reset_index(drop=True)
-    weekly["광고_증감률"] = weekly.groupby("category")["광고_거래액"].pct_change() * 100
-    weekly["EP_증감률"] = weekly.groupby("category")["EP_거래액"].pct_change() * 100
-    weekly[["광고_증감률", "EP_증감률"]] = weekly[["광고_증감률", "EP_증감률"]].replace(
-        [np.inf, -np.inf], np.nan
-    )
-    return weekly
-
-
 def category_lag_correlation(weekly_df: pd.DataFrame, max_lag: int = 2, min_samples: int = 4) -> pd.DataFrame:
     """카테고리별로 '광고 증감률(t) vs EP 증감률(t+lag)' 상관계수를 lag 0~max_lag까지 계산.
     표본이 min_samples 미만이면 해당 lag는 None. best_lag/best_corr은 절댓값 기준 최고 상관 lag."""
