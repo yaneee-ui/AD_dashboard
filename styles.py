@@ -37,13 +37,10 @@ def inject_css(pin_filters: bool = True):
         box-shadow: 0 2px 6px rgba(15, 23, 42, 0.06);
     }
     div.st-key-page1_filters + div {
-        margin-top: 140px;
+        margin-top: 130px;
     }
-    div.st-key-page3_filters + div {
-        margin-top: 210px;
-    }
-    div.st-key-page4_filters + div {
-        margin-top: 210px;
+    div.st-key-page3_filters + div, div.st-key-page4_filters + div {
+        margin-top: 205px;
     }
     """) if pin_filters else ("""
     div.st-key-page1_filters, div.st-key-page3_filters, div.st-key-page4_filters {
@@ -361,6 +358,22 @@ def inject_css(pin_filters: bool = True):
         border-left: 4px solid {ACCENT};
         padding-left: 8px;
         margin: 22px 0 10px 0;
+    }}
+
+    /* 필터 영역 안 st.columns() 행이 좁은 화면에서 줄바꿈되면(1줄→2~3줄) 박스 높이가
+    늘어나서, 고정(fixed) 모드일 때 아래 margin-top과 안 맞아 본문과 겹치는 문제가 있었다.
+    각 필터 행을 항상 한 줄로 고정(필요하면 가로 스크롤)해서 높이를 예측 가능하게 만든다. */
+    div.st-key-page1_filters [data-testid="stHorizontalBlock"],
+    div.st-key-page3_filters [data-testid="stHorizontalBlock"],
+    div.st-key-page4_filters [data-testid="stHorizontalBlock"] {{
+        flex-wrap: nowrap !important;
+        overflow-x: auto;
+    }}
+    div.st-key-page1_filters [data-testid="stColumn"],
+    div.st-key-page3_filters [data-testid="stColumn"],
+    div.st-key-page4_filters [data-testid="stColumn"] {{
+        flex-shrink: 0;
+        min-width: fit-content;
     }}
 
     /* 상단 필터 영역 고정 여부 (사이드바 "필터 고정" 토글로 전환) */
