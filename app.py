@@ -24,7 +24,7 @@ from styles import (
     inject_css, render_kpi_cards, render_page_header, render_section_title,
     pct_change, format_delta_text, delta_cell_style, render_custom_funnel, render_insight_box,
     render_trend_card_header, render_trend_summary_boxes, render_colored_caption,
-    render_comparison_table,
+    render_comparison_table, render_monthly_comparison_table,
 )
 
 st.set_page_config(page_title="쇼핑검색광고 실적 대시보드", layout="wide")
@@ -802,7 +802,7 @@ elif menu == "전년비교":
         f"📅 전년비 비교는 전년 동요일(364일 전, 요일 정렬) 기준입니다 · "
         f"데이터는 {MAX_DATE}까지 반영되어 있습니다 (그 이후 실적은 아직 집계 전)."
     )
-    tab1, tab2 = st.tabs(["일자별 YoY (전년 동요일)", f"{unit} 종합 YoY"])
+    tab1, tab2, tab3 = st.tabs(["일자별 YoY (전년 동요일)", f"{unit} 종합 YoY", "📆 월별 실적 비교 (연간)"])
 
     # ── TAB 1: 일자별 YoY ──
     with tab1:
@@ -1019,6 +1019,14 @@ elif menu == "전년비교":
                     f"📅 전년비 비교 기준: {wide_yoy_basis} · 비율지표(ROAS·CTR·CR·객단가·순결제비중)는 "
                     "일자별 값을 평균내지 않고 분자/분모를 합산한 뒤 재계산한 값입니다."
                 )
+
+    # ── TAB 3: 월별 실적 비교 (연간, 26년|전년비|25년 매트릭스) ──
+    with tab3:
+        render_section_title("📆 월별 실적 비교 (연간)")
+        render_monthly_comparison_table(
+            df[["date", "거래액", "광고비", "UV", "결제고객수"]], "전체",
+        )
+        st.caption("📁 데이터 출처: tableau_daily.csv (01페이지와 동일 소스)")
 
 
 # ════════════════════════════════════════════════════════════════

@@ -7,6 +7,7 @@ import re
 import textwrap
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 ACCENT = "#2563EB"
 SIDEBAR_BG = "#0F172A"
@@ -748,6 +749,199 @@ def render_comparison_table(df: pd.DataFrame, delta_cols: list, bold_rows: set =
         f'<tbody>{"".join(body_rows)}</tbody></table></div>',
         unsafe_allow_html=True,
     )
+
+
+# 월별 실적 비교(연간) 표 기본 지표 세트: (라벨, 분자컬럼, 분모컬럼, 비율여부, 배율, %표시여부, 백만단위여부)
+# 비율지표(ROAS/CR/객단가)는 일별 값을 평균하지 않고, 그 달의 분자/분모를 각각 합산한 뒤
+# 재계산한다(대시보드 전체에서 쓰는 원칙과 동일).
+DEFAULT_MONTHLY_METRICS = [
+    ("거래액", "거래액", None, False, 1.0, False, True),
+    ("광고비", "광고비", None, False, 1.0, False, True),
+    ("ROAS", "거래액", "광고비", True, 100.0, True, False),
+    ("UV", "UV", None, False, 1.0, False, False),
+    ("결제고객수", "결제고객수", None, False, 1.0, False, False),
+    ("CR", "결제고객수", "UV", True, 100.0, True, False),
+    ("객단가", "거래액", "결제고객수", True, 1.0, False, False),
+]
+
+
+def render_monthly_comparison_table(df: pd.DataFrame, title: str, metric_defs: list = None, caption_extra: str = ""):
+    """올해(1월~최신월) | 전년비 | 전년 월별 실적 비교 매트릭스 (지표×월).
+    df: "date" 컬럼 + metric_defs가 참조하는 원본(분자/분모) 컬럼을 가진 일별 데이터
+    (이미 원하는 범위로 필터링된 상태여야 함 — 이 함수는 그대로 월별로 합산만 한다).
+    진행 중인 당월은 실제 날짜까지의 값만 쓰고, 그 달의 전년비만 '동요일 매칭'
+    (올해 실제 존재하는 날짜들을 364일씩 당겨 전년의 그 날짜들만 비교)으로 공정하게 계산한다.
+    EP_dashboard의 render_bpu_comparison_table/월별 실적 비교 표와 같은 방식으로, 행을
+    클릭하면 강조되는 인터랙션까지 포함해서 iframe(components.html)으로 렌더링한다 —
+    부모 문서 CSS를 상속받지 않으므로 필요한 스타일을 이 안에 그대로 넣는다."""
+    if metric_defs is None:
+        metric_defs = DEFAULT_MONTHLY_METRICS
+
+    st.markdown(f"**{title}**")
+    if df is None or df.empty:
+        st.info("데이터가 없습니다.")
+        return
+
+    d = df.copy()
+    d["date"] = pd.to_datetime(d["date"])
+    abs_last = d["date"].max()
+    cur_year, prev_year, cur_month = abs_last.year, abs_last.year - 1, abs_last.month
+
+    def _monthly_actual(year, num_col, den_col, is_ratio, scale):
+        vals = []
+        for m in range(1, 13):
+            m_start = pd.Timestamp(year, m, 1)
+            m_end = (m_start + pd.offsets.MonthBegin(1)) - pd.Timedelta(days=1)
+            if m_start > abs_last:
+                vals.append(None)
+                continue
+            md = d[(d["date"] >= m_start) & (d["date"] <= min(m_end, abs_last))]
+            if md.empty:
+                vals.append(None)
+                continue
+            if is_ratio:
+                den_sum = md[den_col].sum()
+                vals.append((md[num_col].sum() / den_sum * scale) if den_sum else None)
+            else:
+                vals.append(md[num_col].sum())
+        return vals
+
+    def _cur_month_yoy_matched(num_col, den_col, is_ratio, scale):
+        cur_start = pd.Timestamp(cur_year, cur_month, 1)
+        cur_dates = d[(d["date"] >= cur_start) & (d["date"] <= abs_last)]["date"].unique()
+        if len(cur_dates) == 0:
+            return None, []
+        matched = [pd.Timestamp(x) - pd.Timedelta(days=364) for x in cur_dates]
+        md = d[d["date"].isin(matched)]
+        if md.empty:
+            return None, matched
+        if is_ratio:
+            den_sum = md[den_col].sum()
+            return ((md[num_col].sum() / den_sum * scale) if den_sum else None), matched
+        return md[num_col].sum(), matched
+
+    def _fmt(v, is_pct, is_million):
+        if v is None or pd.isna(v):
+            return "-"
+        if is_pct:
+            return f"{v:.1f}%"
+        if is_million:
+            return f"{v / 1_000_000:,.1f}백만"
+        return f"{v:,.0f}"
+
+    def _delta_span(v):
+        if v is None or pd.isna(v):
+            return "<span class='delta neutral'>-</span>"
+        if v > 0:
+            return f"<span class='delta up'>▲{v:.1f}%</span>"
+        if v < 0:
+            return f"<span class='delta down'>▼{abs(v):.1f}%</span>"
+        return "<span class='delta neutral'>0.0%</span>"
+
+    last_day_label = f"~{abs_last.month}/{abs_last.day}"
+    CUR_HL = "border-left:2px solid #F59E0B;border-right:2px solid #F59E0B;"
+    CUR_HL_TOP = CUR_HL + "border-top:4px solid #F59E0B;"
+    CUR_HL_BOTTOM = CUR_HL + "border-bottom:4px solid #F59E0B;"
+
+    _, matched_dates = _cur_month_yoy_matched(metric_defs[0][1], metric_defs[0][2], metric_defs[0][3], metric_defs[0][4])
+    if matched_dates:
+        p_start, p_end = min(matched_dates), max(matched_dates)
+        prev_day_label = f"{p_start.month}/{p_start.day}~{p_end.month}/{p_end.day}"
+    else:
+        prev_day_label = last_day_label
+
+    def _th(m, day_label=None):
+        dl = day_label if day_label is not None else last_day_label
+        hl = CUR_HL_TOP if m == cur_month else ""
+        lbl = f"{m}월{f'({dl})' if m == cur_month else ''}"
+        return f"<th style='white-space:nowrap;{hl}'>{lbl}</th>"
+
+    headers_cur = "".join(_th(m) for m in range(1, cur_month + 1))
+    headers_yoy = "".join(_th(m) for m in range(1, cur_month + 1))
+    headers_prev = "".join(_th(m, prev_day_label) for m in range(1, cur_month + 1))
+
+    def _td(v, m, is_pct=False, is_million=False, is_delta=False, is_last_row=False):
+        if m == cur_month:
+            hl = CUR_HL_BOTTOM if is_last_row else CUR_HL
+        else:
+            hl = ""
+        content = _delta_span(v) if is_delta else _fmt(v, is_pct, is_million)
+        return f"<td style='text-align:right;white-space:nowrap;{hl}'>{content}</td>"
+
+    rows_html = ""
+    for i, (label, num_col, den_col, is_ratio, scale, is_pct, is_million) in enumerate(metric_defs):
+        is_last = i == len(metric_defs) - 1
+        v_cur = _monthly_actual(cur_year, num_col, den_col, is_ratio, scale)
+        v_prev = _monthly_actual(prev_year, num_col, den_col, is_ratio, scale)
+        v_prev[cur_month - 1], _ = _cur_month_yoy_matched(num_col, den_col, is_ratio, scale)
+        cells_cur = "".join(_td(v_cur[m - 1], m, is_pct, is_million, is_last_row=is_last) for m in range(1, cur_month + 1))
+        cells_prev = "".join(_td(v_prev[m - 1], m, is_pct, is_million, is_last_row=is_last) for m in range(1, cur_month + 1))
+        cells_yoy = "".join(
+            _td(pct_change(v_cur[m - 1], v_prev[m - 1]) if v_cur[m - 1] is not None else None,
+                m, is_delta=True, is_last_row=is_last)
+            for m in range(1, cur_month + 1)
+        )
+        rows_html += (
+            f"<tr class='mc-row' data-i='{i}'><td class='m' style='white-space:nowrap;'>{label}</td>"
+            f"{cells_cur}{cells_yoy}{cells_prev}</tr>"
+        )
+
+    n_rows = len(metric_defs)
+    frame_h = 76 + n_rows * 30
+
+    doc = f"""
+<html><head><style>
+  body {{ margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }}
+  .mtbl {{ min-width:100%; width:max-content; border-collapse:collapse; font-size:0.72rem;
+    background:#fff; border:1px solid #E5E9F0; border-radius:8px; overflow:hidden; table-layout:auto; }}
+  .mtbl thead th {{ background:#F8FAFC; color:#475569; font-weight:600; text-align:left;
+    padding:4px 6px; border-bottom:1px solid #E5E9F0; font-size:0.66rem; white-space:nowrap; }}
+  .mtbl tbody td {{ padding:4px 6px; border-bottom:1px solid #F1F5F9; color:#0F172A; white-space:nowrap; }}
+  .mtbl tbody tr:last-child td {{ border-bottom:none; }}
+  .mtbl td.m {{ font-weight:500; }}
+  .delta.up {{ color:{UP_COLOR}; font-weight:600; }}
+  .delta.down {{ color:{DOWN_COLOR}; font-weight:600; }}
+  .delta.neutral {{ color:#9ca3af; font-weight:600; }}
+  .mc-row {{ cursor:pointer; transition:background .15s; }}
+  .mc-row:hover {{ background:#F8FAFC; }}
+  .mc-row.sel {{ background:#EFF6FF; }}
+  .mc-row.sel td.m {{ color:{ACCENT}; font-weight:700; }}
+</style></head><body>
+  <div style="overflow-x:auto;"><table class="mtbl">
+    <thead>
+      <tr><th rowspan="2" style="white-space:nowrap;">구분</th>
+      <th colspan="{cur_month}" style="text-align:center;background:#EEF2FF;white-space:nowrap;">{cur_year}년</th>
+      <th colspan="{cur_month}" style="text-align:center;background:#FEF3C7;white-space:nowrap;">전년비</th>
+      <th colspan="{cur_month}" style="text-align:center;background:#F3F4F6;white-space:nowrap;">{prev_year}년</th></tr>
+      <tr>{headers_cur}{headers_yoy}{headers_prev}</tr>
+    </thead>
+    <tbody>{rows_html}</tbody>
+  </table></div>
+<script>
+(function() {{
+  var rows = Array.prototype.slice.call(document.querySelectorAll('.mc-row'));
+  rows.forEach(function(r) {{
+    r.addEventListener('click', function() {{ r.classList.toggle('sel'); }});
+  }});
+  function _resizeToContent() {{
+    var h = document.body.scrollHeight;
+    if (window.frameElement) {{
+      window.frameElement.style.height = h + 'px';
+      window.frameElement.setAttribute('height', h);
+    }}
+  }}
+  _resizeToContent();
+  window.addEventListener('load', _resizeToContent);
+  setTimeout(_resizeToContent, 100);
+}})();
+</script>
+</body></html>
+"""
+    components.html(doc, height=frame_h, scrolling=False)
+    cap = "일할계산(마감예상) 없이, 진행 중인 달은 있는 날짜까지의 실제값만 보여줘요. 행을 클릭하면 강조됩니다."
+    if caption_extra:
+        cap += f" {caption_extra}"
+    st.caption(cap)
 
 
 def delta_cell_style(val: str) -> str:
