@@ -1008,7 +1008,7 @@ def ad_product_group_compare(df: pd.DataFrame, group_col: str, cur_start, cur_en
         row["CVR_증감"] = _pct_change_simple(c["CVR"] if c is not None else None,
                                             p["CVR"] if p is not None else None)
         row["CVR_전기"] = p["CVR"] if p is not None else 0
-        row["성과"] = classify_ad_product_performance(row["판매액_증감"], row["ROAS_증감"], row["구매수량"])
+        row["성과"] = classify_ad_product_performance(row["판매액_증감"], row["ROAS_증감"], row["구매수량"], cur_roas=row["ROAS"])
         rows.append(row)
 
     if not rows:
@@ -1024,19 +1024,25 @@ def ad_product_group_compare(df: pd.DataFrame, group_col: str, cur_start, cur_en
     return pd.DataFrame(rows)
 
 
-def classify_ad_product_performance(sale_pct, roas_pct, cur_purchases: float = None,
-                                    min_purchases: int = 1, threshold: float = 5.0):
+def classify_ad_product_performance(sale_pct, roas_pct, cur_purchases: float = None, cur_roas: float = None,
+                                    min_purchases: int = 1, threshold: float = 5.0, min_roas_for_increase: float = 7.0):
     """판매액 증감 x ROAS 증감 조합으로 카테고리/브랜드 성과를 분류.
     threshold(%p) 이내는 '변화 미미'로 취급. 04페이지 랭킹표에서 액션 우선순위를
     한눈에 보기 위한 배지.
     cur_purchases(이번 기간 구매수량)가 min_purchases 미만이면 등락률이 아무리 커도
     "🟢 우수"/"🔴 부진"으로 분류하지 않는다 — 예: 지난주 1건→이번주 2건처럼 표본이 극히
-    작을 때 +100%처럼 과장된 등락률만 보고 우수/부진으로 잘못 판단하는 걸 막기 위함."""
+    작을 때 +100%처럼 과장된 등락률만 보고 우수/부진으로 잘못 판단하는 걸 막기 위함.
+    cur_roas(이번 기간 절대 ROAS, 배수 — 7.0=700%)가 min_roas_for_increase 미만이면
+    판매액·ROAS가 둘 다 개선 중이어도 "🟢 우수(증액 검토)"로 분류하지 않는다 — 추세는
+    좋아도 절대 효율이 아직 기준(700%) 밑이면 증액 대상에서 제외하기 위함(ROAS 상태
+    컬럼의 "효율개선 필요" 기준과 동일한 700%를 쓴다)."""
     if sale_pct is None or roas_pct is None or pd.isna(sale_pct) or pd.isna(roas_pct):
         return "-"
     if cur_purchases is not None and cur_purchases < min_purchases:
         return "⚪ 표본 부족(구매 거의 없음)"
     if sale_pct > threshold and roas_pct > threshold:
+        if cur_roas is not None and cur_roas < min_roas_for_increase:
+            return "🟠 개선 중(ROAS 700%↓·증액 보류)"
         return "🟢 우수(증액 검토)"
     if sale_pct > threshold and roas_pct < -threshold:
         return "🟡 물량↑효율↓(점검 필요)"

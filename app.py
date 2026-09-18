@@ -2520,7 +2520,17 @@ elif menu == "상품군 효율":
         ap_rank = ap_rank[ap_rank["성과"] == "🔴 부진(축소·재검토)"]
 
     ap_sort_col = "판매액_증감" if ap_sort_metric == "판매액 증감률" else ap_sort_metric
-    ap_rank = ap_rank.sort_values(ap_sort_col, ascending=False, na_position="last")
+    if ap_sort_metric == "ROAS":
+        # 광고비가 거의 0에 가까우면(예: 769원) 판매액이 조금만 잡혀도 ROAS가 수백~수천%로
+        # 튀어서 정렬 최상단을 차지한다 — 분모가 너무 작아 통계적으로 불안정한 값이라, 정렬
+        # 순위에서는 "광고비 최소 기준" 미달 항목을 뒤로 미룬다(값 자체는 그대로 보여준다).
+        AP_MIN_AD_COST_FOR_ROAS_SORT = 10_000
+        ap_roas_unreliable = ap_rank["광고비"] < AP_MIN_AD_COST_FOR_ROAS_SORT
+        ap_reliable_rank = ap_rank[~ap_roas_unreliable].sort_values("ROAS", ascending=False, na_position="last")
+        ap_unreliable_rank = ap_rank[ap_roas_unreliable].sort_values("ROAS", ascending=False, na_position="last")
+        ap_rank = pd.concat([ap_reliable_rank, ap_unreliable_rank])
+    else:
+        ap_rank = ap_rank.sort_values(ap_sort_col, ascending=False, na_position="last")
     ap_rank_total = len(ap_rank)
     if ap_group_col == "브랜드명":
         ap_rank = ap_rank.head(20)
@@ -2565,7 +2575,9 @@ elif menu == "상품군 효율":
     st.caption(
         f"📅 비교기준: {ap_immediate_label} = {ap_prev_label_str}  ·  "
         + (f"※ 전체 {ap_rank_total}개 브랜드 중 {ap_sort_metric} 상위 20개만 표시합니다.  ·  " if ap_group_col == "브랜드명" else "")
-        + "💡 🟢 우수(판매액·ROAS 동반상승)=증액 검토 · 🟡 물량↑효율↓=소재/입찰 점검 · "
+        + ("※ ROAS 정렬은 광고비 1만원 미만(분모가 작아 ROAS가 비정상적으로 튀는 항목) 순위를 뒤로 미룹니다.  ·  " if ap_sort_metric == "ROAS" else "")
+        + "💡 🟢 우수(판매액·ROAS 동반상승, ROAS 700%↑)=증액 검토 · 🟠 개선 중(추세는 좋지만 ROAS 700%↓)=증액 보류 · "
+          "🟡 물량↑효율↓=소재/입찰 점검 · "
           "🔵 효율 개선=회복 여지 · 🔴 부진(둘 다 하락)=축소·재검토 대상입니다. (±5%p 이내 변화는 ⚫ 변화 미미로 취급) · "
           "ROAS 상태: ROAS 700% 미만이면 '효율개선 필요'로 표시합니다."
     )
