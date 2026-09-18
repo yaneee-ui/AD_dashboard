@@ -2514,6 +2514,11 @@ elif menu == "상품군 효율":
             ).to_dict()
             ap_rank["대카테고리"] = ap_rank["중카테고리"].map(_midcat_map)
 
+    # 광고비가 거의 0에 가까우면(예: 769원) 판매액이 조금만 잡혀도 ROAS가 수백~수천%로 튀는데
+    # (분모가 너무 작아 통계적으로 불안정) — ROAS 정렬에서는 이런 항목을 뒤로 미루고, 표에도
+    # "광고비 소액(참고용)" 표시를 같이 달아서 "정렬이 갑자기 튀는" 것처럼 보이지 않게 한다.
+    AP_MIN_AD_COST_FOR_ROAS_SORT = 10_000
+
     if ap_perf_filter == "🟢 우수만":
         ap_rank = ap_rank[ap_rank["성과"] == "🟢 우수(증액 검토)"]
     elif ap_perf_filter == "🔴 부진만":
@@ -2521,10 +2526,6 @@ elif menu == "상품군 효율":
 
     ap_sort_col = "판매액_증감" if ap_sort_metric == "판매액 증감률" else ap_sort_metric
     if ap_sort_metric == "ROAS":
-        # 광고비가 거의 0에 가까우면(예: 769원) 판매액이 조금만 잡혀도 ROAS가 수백~수천%로
-        # 튀어서 정렬 최상단을 차지한다 — 분모가 너무 작아 통계적으로 불안정한 값이라, 정렬
-        # 순위에서는 "광고비 최소 기준" 미달 항목을 뒤로 미룬다(값 자체는 그대로 보여준다).
-        AP_MIN_AD_COST_FOR_ROAS_SORT = 10_000
         ap_roas_unreliable = ap_rank["광고비"] < AP_MIN_AD_COST_FOR_ROAS_SORT
         ap_reliable_rank = ap_rank[~ap_roas_unreliable].sort_values("ROAS", ascending=False, na_position="last")
         ap_unreliable_rank = ap_rank[ap_roas_unreliable].sort_values("ROAS", ascending=False, na_position="last")
@@ -2554,7 +2555,11 @@ elif menu == "상품군 효율":
             f"ROAS (이전)": ap_rank["ROAS_전기"].apply(lambda v: f"{v * 100:,.0f}%"),
             f"ROAS (현재)": ap_rank["ROAS"].apply(lambda v: f"{v * 100:,.0f}%"),
             f"ROAS {ap_immediate_label}": ap_rank["ROAS_증감"].apply(format_delta_text),
-            "ROAS 상태": ap_rank["ROAS"].apply(lambda v: "▼ 효율개선 필요" if pd.notna(v) and v < 7.0 else "-"),
+            "ROAS 상태": ap_rank.apply(
+                lambda r: "⚠ 광고비 소액(참고용, 순위 밀림)" if r["광고비"] < AP_MIN_AD_COST_FOR_ROAS_SORT
+                          else ("▼ 효율개선 필요" if pd.notna(r["ROAS"]) and r["ROAS"] < 7.0 else "-"),
+                axis=1,
+            ),
             f"CR(구매/클릭) (이전)": ap_rank["CVR_전기"].apply(lambda v: f"{v * 100:.2f}%"),
             f"CR(구매/클릭) (현재)": ap_rank["CVR"].apply(lambda v: f"{v * 100:.2f}%"),
             f"CR {ap_immediate_label}": ap_rank["CVR_증감"].apply(format_delta_text),
@@ -2575,7 +2580,9 @@ elif menu == "상품군 효율":
     st.caption(
         f"📅 비교기준: {ap_immediate_label} = {ap_prev_label_str}  ·  "
         + (f"※ 전체 {ap_rank_total}개 브랜드 중 {ap_sort_metric} 상위 20개만 표시합니다.  ·  " if ap_group_col == "브랜드명" else "")
-        + ("※ ROAS 정렬은 광고비 1만원 미만(분모가 작아 ROAS가 비정상적으로 튀는 항목) 순위를 뒤로 미룹니다.  ·  " if ap_sort_metric == "ROAS" else "")
+        + (f"※ 광고비 {AP_MIN_AD_COST_FOR_ROAS_SORT:,}원 미만인 항목은 ROAS가 분모(광고비)가 작아 비정상적으로 튀기 쉬워서, "
+           "ROAS 정렬 시 순위를 뒤로 미루고 표에는 'ROAS 상태'에 '광고비 소액(참고용)'으로 표시합니다(그래서 정렬이 중간에 튀는 것처럼 보일 수 있어요).  ·  "
+           if ap_sort_metric == "ROAS" else "")
         + "💡 🟢 우수(판매액·ROAS 동반상승, ROAS 700%↑)=증액 검토 · 🟠 개선 중(추세는 좋지만 ROAS 700%↓)=증액 보류 · "
           "🟡 물량↑효율↓=소재/입찰 점검 · "
           "🔵 효율 개선=회복 여지 · 🔴 부진(둘 다 하락)=축소·재검토 대상입니다. (±5%p 이내 변화는 ⚫ 변화 미미로 취급) · "
