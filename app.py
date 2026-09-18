@@ -2544,6 +2544,7 @@ elif menu == "상품군 효율":
             f"ROAS (이전)": ap_rank["ROAS_전기"].apply(lambda v: f"{v * 100:,.0f}%"),
             f"ROAS (현재)": ap_rank["ROAS"].apply(lambda v: f"{v * 100:,.0f}%"),
             f"ROAS {ap_immediate_label}": ap_rank["ROAS_증감"].apply(format_delta_text),
+            "ROAS 상태": ap_rank["ROAS"].apply(lambda v: "▼ 효율개선 필요" if pd.notna(v) and v < 7.0 else "-"),
             f"CR(구매/클릭) (이전)": ap_rank["CVR_전기"].apply(lambda v: f"{v * 100:.2f}%"),
             f"CR(구매/클릭) (현재)": ap_rank["CVR"].apply(lambda v: f"{v * 100:.2f}%"),
             f"CR {ap_immediate_label}": ap_rank["CVR_증감"].apply(format_delta_text),
@@ -2555,7 +2556,7 @@ elif menu == "상품군 효율":
             ap_display.style.map(
                 delta_cell_style,
                 subset=[f"판매액 {ap_immediate_label}", f"광고비 {ap_immediate_label}",
-                        f"ROAS {ap_immediate_label}", f"CR {ap_immediate_label}"],
+                        f"ROAS {ap_immediate_label}", f"CR {ap_immediate_label}", "ROAS 상태"],
             ).set_properties(subset=ap_current_cols, **{"font-weight": "700", "color": "#0F172A"}),
             use_container_width=True, hide_index=True,
             height=min(35 * (len(ap_display) + 1) + 3, 560),
@@ -2565,5 +2566,6 @@ elif menu == "상품군 효율":
         f"📅 비교기준: {ap_immediate_label} = {ap_prev_label_str}  ·  "
         + (f"※ 전체 {ap_rank_total}개 브랜드 중 {ap_sort_metric} 상위 20개만 표시합니다.  ·  " if ap_group_col == "브랜드명" else "")
         + "💡 🟢 우수(판매액·ROAS 동반상승)=증액 검토 · 🟡 물량↑효율↓=소재/입찰 점검 · "
-          "🔵 효율 개선=회복 여지 · 🔴 부진(둘 다 하락)=축소·재검토 대상입니다. (±5%p 이내 변화는 ⚫ 변화 미미로 취급)"
+          "🔵 효율 개선=회복 여지 · 🔴 부진(둘 다 하락)=축소·재검토 대상입니다. (±5%p 이내 변화는 ⚫ 변화 미미로 취급) · "
+          "ROAS 상태: ROAS 700% 미만이면 '효율개선 필요'로 표시합니다."
     )
