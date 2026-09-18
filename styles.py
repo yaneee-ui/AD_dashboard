@@ -27,14 +27,16 @@ def inject_css(pin_filters: bool = True):
     div.st-key-page1_filters, div.st-key-page3_filters, div.st-key-page4_filters {
         position: fixed !important;
         top: 3.7rem;
-        left: 22rem;
-        right: 5rem;
+        left: 0;
+        right: 0;
         width: auto !important;
+        padding-left: 22rem;
         z-index: 999;
         background: """ + PAGE_BG + """;
-        padding: 10px 14px 8px 14px;
+        padding-top: 10px;
+        padding-bottom: 8px;
+        padding-right: 5rem;
         border-bottom: 1px solid #E5E9F0;
-        border-radius: 0 0 8px 8px;
         box-shadow: 0 2px 6px rgba(15, 23, 42, 0.06);
     }
     div.st-key-page1_filters + div {

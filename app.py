@@ -752,9 +752,11 @@ if menu == "쇼핑검색광고 실적":
                 yaxis2=dict(**_money_axis("광고비"), overlaying="y", side="right", showgrid=False),
                 hovermode="closest",
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+                dragmode="pan",
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True})
             st.caption("📊 막대=광고비(우측 보조축) · 거래액 라인에 마우스를 올리면 해당 시점 ROAS%가 함께 표시됩니다."
+                      + (" 마우스 스크롤로 확대/축소, 클릭한 채로 드래그하면 좌우 이동됩니다." if use_date_axis else "")
                       + (" 위쪽 버튼으로 기간(1주/1개월/3개월/6개월/전체)을 바꿔볼 수 있습니다." if use_date_axis else ""))
         else:
             cur_plot = _to_million(cur_vals) if is_million_metric else cur_vals
@@ -779,11 +781,13 @@ if menu == "쇼핑검색광고 실적":
                 xaxis_title=None,
                 xaxis=_trend_xaxis(x_vals, use_date_axis, "%m/%d"),
                 hovermode="closest",
+                dragmode="pan",
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True})
             if use_date_axis:
                 default_window_note = "최근 90일" if is_daily else "최근 약 12주"
-                st.caption(f"💡 기본으로 {default_window_note}만 보여줍니다 — 위쪽 버튼으로 1주/1개월/3개월/6개월/전체 기간을 바로 바꿔볼 수 있습니다.")
+                st.caption(f"💡 기본으로 {default_window_note}만 보여줍니다 — 마우스 스크롤로 확대/축소, "
+                           "클릭한 채로 드래그하면 좌우 이동됩니다. 위쪽 버튼으로 1주/1개월/3개월/6개월/전체 기간을 바로 바꿔볼 수 있습니다.")
 
         yoy_basis = "정확히 12개월 전 같은 달(마감 실적 기준)" if unit == "월마감" else "전년 동요일비(364일=52주 전, 요일 정렬)"
         st.caption(f"📅 전년비 비교 기준: {yoy_basis}")
