@@ -913,8 +913,9 @@ elif menu == "전년비교":
                 fig2.update_layout(
                     height=420, margin=dict(t=20, b=20, l=10, r=10),
                     xaxis=xaxis2, yaxis=_money_axis(metric_choice2, is_million2), hovermode="closest",
+                    dragmode="pan",
                 )
-                st.plotly_chart(fig2, use_container_width=True)
+                st.plotly_chart(fig2, use_container_width=True, config={"scrollZoom": True})
 
             with st.container(key="card_yoy1_table"):
                 render_section_title("📋 일자별 상세")
@@ -1309,11 +1310,11 @@ elif menu == "카테고리별 실적":
                                       line=dict(width=2, color="#93C5FD")))
         layout = dict(height=440, margin=dict(t=20, b=20, l=10, r=10),
                       yaxis=_money_axis(f"{channel_label} {metric_label}", is_money),
-                      xaxis_title=None, hovermode="closest")
+                      xaxis_title=None, hovermode="closest", dragmode="pan")
         if x_categorical:
             layout["xaxis"] = dict(type="category")
         fig.update_layout(**layout)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True})
 
     def _render_compare_trend(x_vals, ad_vals, ep_vals, metric_label, x_categorical, normalize=False):
         if normalize:
@@ -1327,11 +1328,12 @@ elif menu == "카테고리별 실적":
                 height=440, margin=dict(t=20, b=20, l=10, r=10),
                 yaxis_title="지수 (시작 시점=100)", xaxis_title=None, hovermode="closest",
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+                dragmode="pan",
             )
             if x_categorical:
                 layout["xaxis"] = dict(type="category")
             fig.update_layout(**layout)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True})
             st.caption("💡 두 채널을 시작 시점=100으로 지수화해서 같은 축에 겹쳐 그렸습니다 — "
                       "선이 비슷하게 움직이면 흐름이 유사한 것이고, 벌어지면 다르게 움직이는 것입니다.")
         else:
@@ -1349,11 +1351,12 @@ elif menu == "카테고리별 실적":
                 yaxis2=dict(**_money_axis(f"EP채널 {metric_label}", is_money), overlaying="y", side="right"),
                 xaxis_title=None, hovermode="closest",
                 legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+                dragmode="pan",
             )
             if x_categorical:
                 layout["xaxis"] = dict(type="category")
             fig.update_layout(**layout)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True})
             st.caption("📊 두 채널의 규모 차이가 커서 좌/우 보조축으로 나눠 표시했습니다 — "
                       "절대값 그대로 비교하고 싶을 때 사용하세요 (흐름 패턴 비교는 '지수화' 옵션을 추천합니다).")
 
@@ -1527,8 +1530,9 @@ elif menu == "카테고리별 실적":
             xaxis=dict(type="category", title=None), yaxis=dict(title="비중 (%)", range=[0, 100]),
             hovermode="closest",
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+            dragmode="pan",
         )
-        st.plotly_chart(fig_share, use_container_width=True)
+        st.plotly_chart(fig_share, use_container_width=True, config={"scrollZoom": True})
         st.caption(f"📅 {share_labels[0]} ~ {share_labels[-1]}  ·  SA와 EP를 합쳐 100%로 보고 비중 변화를 봅니다. "
                   f"SA 비중이 늘고 있다면 광고 의존도가 커지고 있다는 뜻이고, 줄고 있다면 EP가 상대적으로 더 크고 있다는 뜻입니다.")
 
@@ -1561,8 +1565,9 @@ elif menu == "카테고리별 실적":
             yaxis2=dict(**_money_axis("광고비(일평균)"), overlaying="y", side="right", showgrid=False),
             hovermode="closest",
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+            dragmode="pan",
         )
-        st.plotly_chart(fig_overview, use_container_width=True)
+        st.plotly_chart(fig_overview, use_container_width=True, config={"scrollZoom": True})
         st.caption(
             "📊 막대=광고비(우측 보조축, 전체채널) · SA 거래액 라인에 마우스를 올리면 해당 시점 ROAS%가 함께 표시됩니다 · "
             "EP채널 거래액은 SA와 같은 좌측 축에서 나란히 비교합니다."
@@ -1698,8 +1703,9 @@ elif menu == "카테고리별 실적":
                     xaxis_title="쇼핑검색광고 거래액 증감률 (%, 전주비)",
                     yaxis_title=f"EP 거래액 증감률 (%, {'동주' if syn_lag == 0 else f'{syn_lag}주 후'})",
                     hovermode="closest",
+                    dragmode="pan",
                 )
-                st.plotly_chart(fig_syn, use_container_width=True)
+                st.plotly_chart(fig_syn, use_container_width=True, config={"scrollZoom": True})
                 st.caption(
                     f"상관계수 r = {syn_r:.2f} · 표본 {len(syn_scatter)}개 주 · {syn_pick}, "
                     f"{'동주' if syn_lag == 0 else f'{syn_lag}주 후'} 기준 — "
@@ -1791,8 +1797,9 @@ elif menu == "카테고리별 실적":
                     yaxis=_money_axis("거래액"), xaxis_title=None,
                     hovermode="closest",
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+                    dragmode="pan",
                 )
-                st.plotly_chart(fig_trend, use_container_width=True)
+                st.plotly_chart(fig_trend, use_container_width=True, config={"scrollZoom": True})
                 if boundary_date is not None:
                     st.caption(f"📅 실제: {trend_forecast[trend_cat_pick[0]]['actual_dates'][0].date()} ~ "
                               f"{boundary_date.date()}  ·  예측: {boundary_date.date()} ~ {forecast_end.date()} "
@@ -1918,8 +1925,9 @@ elif menu == "카테고리별 실적":
             barmode="group", height=420, margin=dict(t=20, b=20, l=10, r=10),
             yaxis=_money_axis(f"{cattxn_rank_metric} ({cattxn_mode})" if cattxn_is_million else "객단가", cattxn_is_million),
             hovermode="closest",
+            dragmode="pan",
         )
-        st.plotly_chart(fig_cattxn, use_container_width=True)
+        st.plotly_chart(fig_cattxn, use_container_width=True, config={"scrollZoom": True})
 
         cattxn_table_display = pd.DataFrame({
             "카테고리": cattxn_rank["category"],
@@ -2003,8 +2011,9 @@ elif menu == "카테고리별 실적":
             barmode="group", height=420, margin=dict(t=20, b=20, l=10, r=10),
             yaxis=_money_axis(f"{cattxn_brand_rank_metric} ({cattxn_mode})" if brand_is_million else "객단가", brand_is_million),
             xaxis=dict(type="category"), hovermode="closest",
+            dragmode="pan",
         )
-        st.plotly_chart(fig_brand, use_container_width=True)
+        st.plotly_chart(fig_brand, use_container_width=True, config={"scrollZoom": True})
         st.caption(f"※ 전체 {len(cattxn_brand_rank)}개 브랜드 중 상위 15개만 차트에 표시합니다. 전체 목록은 아래 표·다운로드에서 확인하세요.")
 
         cattxn_brand_table_display = pd.DataFrame({
