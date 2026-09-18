@@ -7,10 +7,18 @@ category_brand_txn_daily.csv 갱신 스크립트.
     행1: "광고" / "EP" (각각 거래액·주문고객수 두 컬럼씩 아래에 붙음)
     행2: 정상이월구분명 / 영업상품카테고리명 / SAP대표브랜드코드 / 결제_일자(YYYYMMDD) /
          거래액 / 주문고객수 / 거래액 / 주문고객수   (광고·EP 둘 다 "거래액"/"주문고객수"라
-         이름이 겹쳐서, 헤더 이름이 아니라 컬럼 위치로 골라낸다)
-그리고 "정상이월구분명"/"영업상품카테고리명"/"SAP대표브랜드코드" 세 컬럼은 그룹의 첫
-행에만 값이 있고 나머지 행은 비어있다(병합 셀 내보내기 특유의 패턴) — 그룹 내 다음
-행들에 값을 그대로 채워 넣는(forward-fill) 전처리가 필요하다.
+         이름이 겹쳐서, 그 4개는 헤더 이름이 아니라 뒤에서부터 위치로 골라낸다)
+앞 4개(정상이월구분명/영업상품카테고리명/SAP대표브랜드코드/결제_일자)는 이름으로 찾는다 —
+내보낼 때마다 이 4개의 순서가 바뀌는 경우가 있었다(2026-09-18: 결제_일자가 맨 앞으로
+이동). 뒤 4개(거래액·주문고객수 x2, 광고→EP 순)는 이름이 겹쳐서 그럴 수 없지만, 항상
+앞 4개 다음의 마지막 4자리라는 구조 자체는 안 바뀌어서 위치로 골라내도 안전하다.
+
+그리고 병합 셀 내보내기라 "그룹의 첫 행에만 값이 있고 나머지 행은 비어있는" 컬럼이
+있다 — 그룹 내 다음 행들에 값을 그대로 채워 넣는(forward-fill) 전처리가 필요하다.
+어떤 컬럼이 그 대상인지는 내보내기마다 다를 수 있어서(2026-09-18: 이전엔 SAP대표
+브랜드코드가 그 대상이고 결제_일자는 매 행 채워져 있었는데, 이번엔 반대로 결제_일자/
+정상이월구분명/영업상품카테고리명이 그 대상이고 SAP대표브랜드코드가 매 행 채워져
+있음), 결측치가 있는 컬럼만 그때그때 자동으로 골라 ffill한다.
 
 사용법:
     python build_category_brand_revenue.py <원본.xlsx> [--out category_brand_txn_daily.csv]
@@ -26,24 +34,46 @@ import sys
 import pandas as pd
 
 EXPECTED_NCOLS = 8
-OUT_COLS = ["txn_type", "category", "brand", "date", "ad_거래액", "ad_주문고객수", "ep_거래액", "ep_주문고객수"]
+ID_COLS = ["정상이월구분명", "영업상품카테고리명", "SAP대표브랜드코드", "결제_일자(YYYYMMDD)"]
+VALUE_OUT_COLS = ["ad_거래액", "ad_주문고객수", "ep_거래액", "ep_주문고객수"]
 
 
 def convert(raw_path: str, out_path: str):
     print(f"원본 로드 중: {raw_path}")
-    df = pd.read_excel(raw_path, header=2)
+    raw = pd.read_excel(raw_path, header=2)
 
-    if df.shape[1] != EXPECTED_NCOLS:
-        print(f"[오류] 예상한 컬럼 수({EXPECTED_NCOLS})와 다릅니다: {df.shape[1]}개\n"
-              f"실제 컬럼: {list(df.columns)}")
+    if raw.shape[1] != EXPECTED_NCOLS:
+        print(f"[오류] 예상한 컬럼 수({EXPECTED_NCOLS})와 다릅니다: {raw.shape[1]}개\n"
+              f"실제 컬럼: {list(raw.columns)}")
         sys.exit(1)
-    df.columns = OUT_COLS
+    missing_id = [c for c in ID_COLS if c not in raw.columns]
+    if missing_id:
+        print(f"[오류] 다음 컬럼을 찾을 수 없습니다: {missing_id}\n"
+              f"실제 컬럼: {list(raw.columns)}")
+        sys.exit(1)
 
-    # 병합 셀 내보내기라 그룹 헤더(txn_type/category/brand)가 그룹 첫 행에만 있다 —
-    # 다음 행들에 그대로 채워 넣는다.
-    df[["txn_type", "category", "brand"]] = df[["txn_type", "category", "brand"]].ffill()
+    df = pd.DataFrame({
+        "txn_type": raw["정상이월구분명"],
+        "category": raw["영업상품카테고리명"],
+        "brand": raw["SAP대표브랜드코드"],
+        "date": raw["결제_일자(YYYYMMDD)"],
+    })
+    for out_name, col_pos in zip(VALUE_OUT_COLS, range(EXPECTED_NCOLS - 4, EXPECTED_NCOLS)):
+        df[out_name] = raw.iloc[:, col_pos]
 
-    df["date"] = pd.to_datetime(df["date"].astype(str), format="%Y%m%d", errors="coerce")
+    # 병합 셀 내보내기라 일부 컬럼(어느 컬럼인지는 내보내기마다 다름)이 그룹 첫 행에만
+    # 값이 있다 — 결측치가 있는 식별 컬럼만 그대로 채워 넣는다(위 docstring 참고).
+    blank_id_cols = [c for c in ["date", "txn_type", "category", "brand"] if df[c].isna().any()]
+    if blank_id_cols:
+        df[blank_id_cols] = df[blank_id_cols].ffill()
+
+    # 날짜 컬럼이 문자열("20250101")로 올 때도, 숫자(20250101.0)로 올 때도 있어(엑셀 셀
+    # 서식 차이) 숫자 경유로 통일한 뒤 파싱한다 — astype(str)을 바로 쓰면 float일 때
+    # "20250101.0"이 돼서 %Y%m%d 파싱이 전부 실패(NaT)한다.
+    df["date"] = pd.to_datetime(
+        pd.to_numeric(df["date"], errors="coerce").astype("Int64").astype(str),
+        format="%Y%m%d", errors="coerce",
+    )
     before = len(df)
     df = df[df["date"].notna()].copy()
     dropped = before - len(df)
