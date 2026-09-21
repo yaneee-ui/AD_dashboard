@@ -2445,7 +2445,12 @@ elif menu == "상품군 효율":
         # 대/중카테고리 필터는 무시(카테고리를 굳이 안 좁혀도 전체를 훑어보려는 패널의 목적과
         # 맞지 않으므로)하지만, 자사/입점은 "보고 있는 관점" 자체를 바꾸는 선택이라 반영한다.
         # (정렬 기준 알약 버튼은 위쪽 섹션 타이틀 옆으로 이동 — ap_diag_metric은 거기서 정의됨)
-        ap_diag_sort_col = "CVR_증감" if ap_diag_metric == "구매전환" else "판매액_증감"
+        # 판매액 모드는 %증감이 아니라 증감액(원) 기준으로 순위를 매긴다 — 기존 베이스가
+        # 거의 0인 카테고리(예: 0.3백만→0.0백만)가 "▼100.0%"로 항상 부진 TOP에 끼는 것과
+        # 달리, 실제 금액 임팩트가 큰 카테고리가 위로 오게 된다. 구매전환(CVR)은 금액
+        # 개념이 없어 그대로 %증감 기준을 쓴다.
+        ap_diag_is_amount = ap_diag_metric != "구매전환"
+        ap_diag_sort_col = "CVR_증감" if ap_diag_metric == "구매전환" else "판매액_증감액"
         ap_diag_label = "CVR" if ap_diag_metric == "구매전환" else "판매액"
         ap_diag_other_col = "판매액_증감" if ap_diag_metric == "구매전환" else "CVR_증감"
         ap_diag_other_label = "판매액" if ap_diag_metric == "구매전환" else "CVR"
@@ -2469,8 +2474,14 @@ elif menu == "상품군 효율":
                     f" ({ap_format_value(ap_diag_label, prev_v)} → {ap_format_value(ap_diag_label, cur_v)})"
                     if prev_v is not None and cur_v is not None else ""
                 )
+                if ap_diag_is_amount:
+                    amt = row[ap_diag_sort_col]
+                    arrow = "▲" if amt > 0 else ("▼" if amt < 0 else "")
+                    diag_delta_display = f"{arrow}{format_million(abs(amt))}"
+                else:
+                    diag_delta_display = format_delta_text(row[ap_diag_sort_col])
                 lines.append(
-                    f"**{row['대카테고리']}** — {ap_diag_label} {format_delta_text(row[ap_diag_sort_col])}"
+                    f"**{row['대카테고리']}** — {ap_diag_label} {diag_delta_display}"
                     f"{change_str} · {ap_diag_other_label} {format_delta_text(row[ap_diag_other_col])}"
                 )
             return lines
