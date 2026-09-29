@@ -886,9 +886,13 @@ def render_monthly_comparison_table(df: pd.DataFrame, title: str, metric_defs: l
         return "<span class='delta neutral'>0.0%</span>"
 
     last_day_label = f"~{abs_last.month}/{abs_last.day}"
-    CUR_HL = "border-left:2px solid #F59E0B;border-right:2px solid #F59E0B;"
-    CUR_HL_TOP = CUR_HL + "border-top:4px solid #F59E0B;"
-    CUR_HL_BOTTOM = CUR_HL + "border-bottom:4px solid #F59E0B;"
+    # border-left/right를 셀마다 따로 주면 table의 border-collapse:collapse 때문에 옆 셀
+    # 테두리와 겹쳐 합쳐지면서(브라우저의 테두리 충돌 해소 규칙) 행 경계에서 끊겨 보인다 —
+    # box-shadow(inset)는 border-collapse의 영향을 안 받아서 셀마다 그대로 그려지고, 위/아래로
+    # 이어붙이면 열 전체를 감싸는 끊김 없는 테두리가 된다.
+    CUR_HL = "box-shadow:inset 2px 0 0 #F59E0B, inset -2px 0 0 #F59E0B;"
+    CUR_HL_TOP = "box-shadow:inset 2px 0 0 #F59E0B, inset -2px 0 0 #F59E0B, inset 0 4px 0 #F59E0B;"
+    CUR_HL_BOTTOM = "box-shadow:inset 2px 0 0 #F59E0B, inset -2px 0 0 #F59E0B, inset 0 -4px 0 #F59E0B;"
 
     _, matched_dates = _cur_month_yoy_matched(metric_defs[0][1], metric_defs[0][2], metric_defs[0][3], metric_defs[0][4])
     if matched_dates:
