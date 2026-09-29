@@ -7,7 +7,6 @@ import re
 import textwrap
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
 
 ACCENT = "#2563EB"
 SIDEBAR_BG = "#0F172A"
@@ -427,6 +426,51 @@ def inject_css(pin_filters: bool = True):
         color: #94A3B8;
         font-weight: 400;
     }}
+
+    /* 월별 실적 비교(render_monthly_comparison_table) — 원래 iframe(components.html)으로
+    행 클릭 강조까지 지원했는데, 배포 환경에서 iframe이 빈 화면으로 뜨는 문제가 있어
+    다른 표들과 같은 raw HTML 방식으로 바꿨다(클릭 강조 기능은 그래서 뺐다). */
+    .mtbl-wrap {{
+        margin-bottom: 4px;
+    }}
+    table.mtbl {{
+        min-width: 100%;
+        width: max-content;
+        border-collapse: collapse;
+        font-size: 0.78rem;
+        background: {CARD_BG};
+        border: 1px solid #E5E9F0;
+        border-radius: 8px;
+        overflow: hidden;
+    }}
+    table.mtbl thead th {{
+        background: #F8FAFC;
+        color: #475569;
+        font-weight: 600;
+        text-align: left;
+        padding: 5px 8px;
+        border-bottom: 1px solid #E5E9F0;
+        font-size: 0.72rem;
+        white-space: nowrap;
+    }}
+    table.mtbl tbody td {{
+        padding: 5px 8px;
+        border-bottom: 1px solid #F1F5F9;
+        color: #0F172A;
+        white-space: nowrap;
+    }}
+    table.mtbl tbody tr:last-child td {{
+        border-bottom: none;
+    }}
+    table.mtbl tbody tr:hover {{
+        background: #F8FAFC;
+    }}
+    table.mtbl td.m {{
+        font-weight: 500;
+    }}
+    table.mtbl .delta.up {{ color: {UP_COLOR}; font-weight: 600; }}
+    table.mtbl .delta.down {{ color: {DOWN_COLOR}; font-weight: 600; }}
+    table.mtbl .delta.neutral {{ color: #9CA3AF; font-weight: 600; }}
     </style>
     """), unsafe_allow_html=True)
 
@@ -773,9 +817,10 @@ def render_monthly_comparison_table(df: pd.DataFrame, title: str, metric_defs: l
     (이미 원하는 범위로 필터링된 상태여야 함 — 이 함수는 그대로 월별로 합산만 한다).
     진행 중인 당월은 실제 날짜까지의 값만 쓰고, 그 달의 전년비만 '동요일 매칭'
     (올해 실제 존재하는 날짜들을 364일씩 당겨 전년의 그 날짜들만 비교)으로 공정하게 계산한다.
-    EP_dashboard의 render_bpu_comparison_table/월별 실적 비교 표와 같은 방식으로, 행을
-    클릭하면 강조되는 인터랙션까지 포함해서 iframe(components.html)으로 렌더링한다 —
-    부모 문서 CSS를 상속받지 않으므로 필요한 스타일을 이 안에 그대로 넣는다."""
+    다른 표들(render_comparison_table 등)과 동일하게 raw HTML 테이블을 st.markdown으로
+    렌더링한다 — 처음엔 components.html(iframe) + 행 클릭 강조 JS로 만들었으나, 배포
+    환경(Streamlit Cloud)에서 iframe이 빈 화면으로 뜨는 문제가 있어(로컬에서는 재현 안 됨 —
+    아마 iframe sandboxing/CSP 차이) 안정성을 위해 다른 표들과 같은 방식으로 통일했다."""
     if metric_defs is None:
         metric_defs = DEFAULT_MONTHLY_METRICS
 
@@ -884,63 +929,24 @@ def render_monthly_comparison_table(df: pd.DataFrame, title: str, metric_defs: l
             for m in range(1, cur_month + 1)
         )
         rows_html += (
-            f"<tr class='mc-row' data-i='{i}'><td class='m' style='white-space:nowrap;'>{label}</td>"
+            f"<tr><td class='m' style='white-space:nowrap;'>{label}</td>"
             f"{cells_cur}{cells_yoy}{cells_prev}</tr>"
         )
 
-    n_rows = len(metric_defs)
-    frame_h = 76 + n_rows * 30
-
-    doc = f"""
-<html><head><style>
-  body {{ margin:0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }}
-  .mtbl {{ min-width:100%; width:max-content; border-collapse:collapse; font-size:0.72rem;
-    background:#fff; border:1px solid #E5E9F0; border-radius:8px; overflow:hidden; table-layout:auto; }}
-  .mtbl thead th {{ background:#F8FAFC; color:#475569; font-weight:600; text-align:left;
-    padding:4px 6px; border-bottom:1px solid #E5E9F0; font-size:0.66rem; white-space:nowrap; }}
-  .mtbl tbody td {{ padding:4px 6px; border-bottom:1px solid #F1F5F9; color:#0F172A; white-space:nowrap; }}
-  .mtbl tbody tr:last-child td {{ border-bottom:none; }}
-  .mtbl td.m {{ font-weight:500; }}
-  .delta.up {{ color:{UP_COLOR}; font-weight:600; }}
-  .delta.down {{ color:{DOWN_COLOR}; font-weight:600; }}
-  .delta.neutral {{ color:#9ca3af; font-weight:600; }}
-  .mc-row {{ cursor:pointer; transition:background .15s; }}
-  .mc-row:hover {{ background:#F8FAFC; }}
-  .mc-row.sel {{ background:#EFF6FF; }}
-  .mc-row.sel td.m {{ color:{ACCENT}; font-weight:700; }}
-</style></head><body>
-  <div style="overflow-x:auto;"><table class="mtbl">
-    <thead>
-      <tr><th rowspan="2" style="white-space:nowrap;">구분</th>
-      <th colspan="{cur_month}" style="text-align:center;background:#EEF2FF;white-space:nowrap;">{cur_year}년</th>
-      <th colspan="{cur_month}" style="text-align:center;background:#FEF3C7;white-space:nowrap;">전년비</th>
-      <th colspan="{cur_month}" style="text-align:center;background:#F3F4F6;white-space:nowrap;">{prev_year}년</th></tr>
-      <tr>{headers_cur}{headers_yoy}{headers_prev}</tr>
-    </thead>
-    <tbody>{rows_html}</tbody>
-  </table></div>
-<script>
-(function() {{
-  var rows = Array.prototype.slice.call(document.querySelectorAll('.mc-row'));
-  rows.forEach(function(r) {{
-    r.addEventListener('click', function() {{ r.classList.toggle('sel'); }});
-  }});
-  function _resizeToContent() {{
-    var h = document.body.scrollHeight;
-    if (window.frameElement) {{
-      window.frameElement.style.height = h + 'px';
-      window.frameElement.setAttribute('height', h);
-    }}
-  }}
-  _resizeToContent();
-  window.addEventListener('load', _resizeToContent);
-  setTimeout(_resizeToContent, 100);
-}})();
-</script>
-</body></html>
-"""
-    components.html(doc, height=frame_h, scrolling=False)
-    cap = "일할계산(마감예상) 없이, 진행 중인 달은 있는 날짜까지의 실제값만 보여줘요. 행을 클릭하면 강조됩니다."
+    st.markdown(
+        '<div class="mtbl-wrap" style="overflow-x:auto;"><table class="mtbl">'
+        '<thead>'
+        '<tr><th rowspan="2" style="white-space:nowrap;">구분</th>'
+        f'<th colspan="{cur_month}" style="text-align:center;background:#EEF2FF;white-space:nowrap;">{cur_year}년</th>'
+        f'<th colspan="{cur_month}" style="text-align:center;background:#FEF3C7;white-space:nowrap;">전년비</th>'
+        f'<th colspan="{cur_month}" style="text-align:center;background:#F3F4F6;white-space:nowrap;">{prev_year}년</th></tr>'
+        f'<tr>{headers_cur}{headers_yoy}{headers_prev}</tr>'
+        '</thead>'
+        f'<tbody>{rows_html}</tbody>'
+        '</table></div>',
+        unsafe_allow_html=True,
+    )
+    cap = "일할계산(마감예상) 없이, 진행 중인 달은 있는 날짜까지의 실제값만 보여줘요."
     if caption_extra:
         cap += f" {caption_extra}"
     st.caption(cap)
