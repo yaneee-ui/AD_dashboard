@@ -235,6 +235,137 @@ def _trend_xaxis(x_vals, is_daily: bool, tickformat: str = "%m/%d") -> dict:
     )
 
 
+def _render_category_mix_section(start_ts, end_ts, ref_date, unit, mode, key_prefix):
+    """카테고리별 거래액 비중(도넛+표) + 전년비 증감 인사이트. 01·02페이지에서 재사용
+    (key_prefix로 위젯 key를 구분해서 두 페이지에 동시에 떠도 충돌 안 나게 한다).
+    cattxn_df(카테고리·브랜드 정상/이월/입점, D-2 반영) 기준 — 01·02페이지의 메인
+    지표(태블로 원본, D-1)와는 별도 집계."""
+    render_section_title(f"카테고리별 거래액 비중 (쇼핑검색광고) · {mode}")
+    cat_txn_filter = st.radio(
+        "정상/이월/입점", CATTXN_TXN_TYPE_OPTIONS, horizontal=True, key=f"{key_prefix}_cat_txn_filter",
+    )
+
+    cat_start = max(start_ts, pd.Timestamp(CATTXN_MIN_DATE))
+    cat_end = min(end_ts, pd.Timestamp(CATTXN_MAX_DATE))
+    if cat_start > cat_end:
+        st.info(f"이 기간에는 카테고리별 데이터가 아직 없습니다 (카테고리 데이터 최신일자: {CATTXN_MAX_DATE}).")
+        return
+
+    cat_view = cattxn_df[(cattxn_df["date"] >= cat_start) & (cattxn_df["date"] <= cat_end)]
+    cat_rank = aggregate_cattxn_by(cat_view, group_col="category", txn_type=cat_txn_filter)
+    cat_rank = cat_rank[cat_rank["쇼핑검색광고_거래액"] > 0].sort_values(
+        "쇼핑검색광고_거래액", ascending=False
+    ).reset_index(drop=True)
+
+    if cat_rank.empty:
+        st.info("카테고리별 쇼핑검색광고 거래액 데이터가 없습니다.")
+        return
+
+    cat_total = cat_rank["쇼핑검색광고_거래액"].sum()
+
+    # 비교기간(직전기간 + 전년비)도 cattxn 자체 날짜범위 안에서 별도 산출
+    cat_comp_periods = get_comparison_periods(ref_date, unit, CATTXN_MIN_DATE, CATTXN_MAX_DATE)
+    cat_immediate_label = next(iter(cat_comp_periods.keys()))
+
+    def _cat_period_series(period):
+        if period is None:
+            return None
+        p_start = max(period[0], pd.Timestamp(CATTXN_MIN_DATE))
+        p_end = min(period[1], pd.Timestamp(CATTXN_MAX_DATE))
+        if p_start > p_end:
+            return None
+        p_view = cattxn_df[(cattxn_df["date"] >= p_start) & (cattxn_df["date"] <= p_end)]
+        if p_view.empty:
+            return None
+        return aggregate_cattxn_by(p_view, group_col="category", txn_type=cat_txn_filter).set_index("category")[
+            "쇼핑검색광고_거래액"
+        ]
+
+    cat_yoy_series = _cat_period_series(cat_comp_periods.get("전년비"))
+    cat_imm_series = _cat_period_series(cat_comp_periods.get(cat_immediate_label))
+
+    CAT_TOP_N = 8
+    CAT_DONUT_COLORS = ["#1E40AF", "#2563EB", "#3B82F6", "#60A5FA", "#7DD3FC",
+                         "#93C5FD", "#0EA5E9", "#0284C7", "#CBD5E1"]
+    top_rows = cat_rank.head(CAT_TOP_N)
+    rest_sum = cat_rank["쇼핑검색광고_거래액"].iloc[CAT_TOP_N:].sum()
+    rest_n = len(cat_rank) - CAT_TOP_N
+
+    donut_labels = top_rows["category"].tolist()
+    donut_values = top_rows["쇼핑검색광고_거래액"].tolist()
+    if rest_sum > 0:
+        donut_labels.append(f"기타 ({rest_n}개)")
+        donut_values.append(rest_sum)
+
+    col_donut, col_table = st.columns([1, 1.6])
+    with col_donut:
+        fig_cat_donut = go.Figure(go.Pie(
+            labels=donut_labels, values=donut_values, hole=0.62,
+            marker=dict(colors=CAT_DONUT_COLORS[:len(donut_labels)]),
+            textinfo="none", sort=False,
+        ))
+        fig_cat_donut.update_layout(
+            height=320, margin=dict(t=10, b=10, l=10, r=10),
+            legend=dict(orientation="v", yanchor="middle", y=0.5, xanchor="left", x=1.02, font=dict(size=11)),
+            annotations=[dict(
+                text=f"총 거래액<br><b>{format_million(cat_total)}</b>",
+                x=0.5, y=0.5, showarrow=False, font=dict(size=13),
+            )],
+        )
+        st.plotly_chart(fig_cat_donut, use_container_width=True)
+
+    yoy_pct_by_cat = {}
+    with col_table:
+        cat_table_rows = []
+        for _, r in cat_rank.iterrows():
+            cname = r["category"]
+            cur_v = r["쇼핑검색광고_거래액"]
+            share = (cur_v / cat_total * 100) if cat_total else None
+            yoy_v = cat_yoy_series.loc[cname] if cat_yoy_series is not None and cname in cat_yoy_series.index else None
+            imm_v = cat_imm_series.loc[cname] if cat_imm_series is not None and cname in cat_imm_series.index else None
+            yoy_pct = pct_change(cur_v, yoy_v) if yoy_v is not None else None
+            imm_pct = pct_change(cur_v, imm_v) if imm_v is not None else None
+            if yoy_pct is not None:
+                yoy_pct_by_cat[cname] = (yoy_pct, cur_v, yoy_v)
+            cat_table_rows.append({
+                "카테고리": cname,
+                "거래액": f"{cur_v:,.0f}",
+                "비중": f"{share:.1f}%" if share is not None else "-",
+                "전년동요일": format_delta_text(yoy_pct) if yoy_v is not None else "-",
+                "전년동요일 값": f"{yoy_v:,.0f}" if yoy_v is not None else "-",
+                cat_immediate_label: format_delta_text(imm_pct) if imm_v is not None else "-",
+                f"{cat_immediate_label} 값": f"{imm_v:,.0f}" if imm_v is not None else "-",
+            })
+        cat_table_df = pd.DataFrame(cat_table_rows)
+        render_comparison_table(cat_table_df, delta_cols=["전년동요일", cat_immediate_label])
+    cat_comp_strs = [
+        f"{lbl} = {p[0].date()} ~ {p[1].date()}" if p else f"{lbl} = 데이터 없음"
+        for lbl, p in [(cat_immediate_label, cat_comp_periods.get(cat_immediate_label)),
+                       ("전년비", cat_comp_periods.get("전년비"))]
+    ]
+    st.caption(
+        f"ℹ️ 이 표는 2일 전 실적까지 반영됩니다 (최신일자: {CATTXN_MAX_DATE}) "
+        f"· 집계기간: {cat_start.date()} ~ {cat_end.date()} · 비교대상 기간 — {' · '.join(cat_comp_strs)}"
+    )
+    st.caption("📁 데이터 출처: category_brand_txn_daily.csv ← 정상이월입점_RAW.xlsx (01·02페이지 태블로 원본과는 별도 집계)")
+
+    if yoy_pct_by_cat:
+        best_cat = max(yoy_pct_by_cat, key=lambda c: yoy_pct_by_cat[c][0])
+        worst_cat = min(yoy_pct_by_cat, key=lambda c: yoy_pct_by_cat[c][0])
+        best_pct, best_cur, best_prev = yoy_pct_by_cat[best_cat]
+        worst_pct, worst_cur, worst_prev = yoy_pct_by_cat[worst_cat]
+        insight_lines = [
+            f"📈 전년 대비 거래액이 가장 크게 **늘어난** 카테고리: **{best_cat}** "
+            f"{format_delta_text(best_pct)} ({best_prev:,.0f} → {best_cur:,.0f})",
+        ]
+        if worst_cat != best_cat:
+            insight_lines.append(
+                f"📉 전년 대비 거래액이 가장 크게 **줄어든** 카테고리: **{worst_cat}** "
+                f"{format_delta_text(worst_pct)} ({worst_prev:,.0f} → {worst_cur:,.0f})"
+            )
+        render_insight_box(insight_lines, title="카테고리별 전년비 인사이트")
+
+
 # ════════════════════════════════════════════════════════════════
 # PAGE 1: 쇼핑검색광고 실적
 # ════════════════════════════════════════════════════════════════
@@ -574,109 +705,7 @@ if menu == "쇼핑검색광고 실적":
     )
 
     # ── 카테고리별 거래액 비중 (쇼핑검색광고) — cattxn_df 기준, D-2 반영 ──
-    render_section_title(f"카테고리별 거래액 비중 (쇼핑검색광고) · {mode}")
-    cat_txn_filter = st.radio(
-        "정상/이월/입점", CATTXN_TXN_TYPE_OPTIONS, horizontal=True, key="page1_cat_txn_filter",
-    )
-
-    cat_start = max(start_ts, pd.Timestamp(CATTXN_MIN_DATE))
-    cat_end = min(end_ts, pd.Timestamp(CATTXN_MAX_DATE))
-    if cat_start > cat_end:
-        st.info(f"이 기간에는 카테고리별 데이터가 아직 없습니다 (카테고리 데이터 최신일자: {CATTXN_MAX_DATE}).")
-    else:
-        cat_view = cattxn_df[(cattxn_df["date"] >= cat_start) & (cattxn_df["date"] <= cat_end)]
-        cat_rank = aggregate_cattxn_by(cat_view, group_col="category", txn_type=cat_txn_filter)
-        cat_rank = cat_rank[cat_rank["쇼핑검색광고_거래액"] > 0].sort_values(
-            "쇼핑검색광고_거래액", ascending=False
-        ).reset_index(drop=True)
-
-        if cat_rank.empty:
-            st.info("카테고리별 쇼핑검색광고 거래액 데이터가 없습니다.")
-        else:
-            cat_total = cat_rank["쇼핑검색광고_거래액"].sum()
-
-            # 비교기간(직전기간 + 전년비)도 cattxn 자체 날짜범위 안에서 별도 산출
-            cat_comp_periods = get_comparison_periods(ref_date, unit, CATTXN_MIN_DATE, CATTXN_MAX_DATE)
-            cat_immediate_label = next(iter(cat_comp_periods.keys()))
-
-            def _cat_period_series(period):
-                if period is None:
-                    return None
-                p_start = max(period[0], pd.Timestamp(CATTXN_MIN_DATE))
-                p_end = min(period[1], pd.Timestamp(CATTXN_MAX_DATE))
-                if p_start > p_end:
-                    return None
-                p_view = cattxn_df[(cattxn_df["date"] >= p_start) & (cattxn_df["date"] <= p_end)]
-                if p_view.empty:
-                    return None
-                return aggregate_cattxn_by(p_view, group_col="category", txn_type=cat_txn_filter).set_index("category")[
-                    "쇼핑검색광고_거래액"
-                ]
-
-            cat_yoy_series = _cat_period_series(cat_comp_periods.get("전년비"))
-            cat_imm_series = _cat_period_series(cat_comp_periods.get(cat_immediate_label))
-
-            CAT_TOP_N = 8
-            CAT_DONUT_COLORS = ["#1E40AF", "#2563EB", "#3B82F6", "#60A5FA", "#7DD3FC",
-                                 "#93C5FD", "#0EA5E9", "#0284C7", "#CBD5E1"]
-            top_rows = cat_rank.head(CAT_TOP_N)
-            rest_sum = cat_rank["쇼핑검색광고_거래액"].iloc[CAT_TOP_N:].sum()
-            rest_n = len(cat_rank) - CAT_TOP_N
-
-            donut_labels = top_rows["category"].tolist()
-            donut_values = top_rows["쇼핑검색광고_거래액"].tolist()
-            if rest_sum > 0:
-                donut_labels.append(f"기타 ({rest_n}개)")
-                donut_values.append(rest_sum)
-
-            col_donut, col_table = st.columns([1, 1.6])
-            with col_donut:
-                fig_cat_donut = go.Figure(go.Pie(
-                    labels=donut_labels, values=donut_values, hole=0.62,
-                    marker=dict(colors=CAT_DONUT_COLORS[:len(donut_labels)]),
-                    textinfo="none", sort=False,
-                ))
-                fig_cat_donut.update_layout(
-                    height=320, margin=dict(t=10, b=10, l=10, r=10),
-                    legend=dict(orientation="v", yanchor="middle", y=0.5, xanchor="left", x=1.02, font=dict(size=11)),
-                    annotations=[dict(
-                        text=f"총 거래액<br><b>{format_million(cat_total)}</b>",
-                        x=0.5, y=0.5, showarrow=False, font=dict(size=13),
-                    )],
-                )
-                st.plotly_chart(fig_cat_donut, use_container_width=True)
-
-            with col_table:
-                cat_table_rows = []
-                for _, r in cat_rank.iterrows():
-                    cname = r["category"]
-                    cur_v = r["쇼핑검색광고_거래액"]
-                    share = (cur_v / cat_total * 100) if cat_total else None
-                    yoy_v = cat_yoy_series.loc[cname] if cat_yoy_series is not None and cname in cat_yoy_series.index else None
-                    imm_v = cat_imm_series.loc[cname] if cat_imm_series is not None and cname in cat_imm_series.index else None
-                    yoy_pct = pct_change(cur_v, yoy_v) if yoy_v is not None else None
-                    imm_pct = pct_change(cur_v, imm_v) if imm_v is not None else None
-                    cat_table_rows.append({
-                        "카테고리": cname,
-                        "거래액": f"{cur_v:,.0f}",
-                        "비중": f"{share:.1f}%" if share is not None else "-",
-                        "전년동요일": format_delta_text(yoy_pct) if yoy_v is not None else "-",
-                        "전년동요일 값": f"{yoy_v:,.0f}" if yoy_v is not None else "-",
-                        cat_immediate_label: format_delta_text(imm_pct) if imm_v is not None else "-",
-                        f"{cat_immediate_label} 값": f"{imm_v:,.0f}" if imm_v is not None else "-",
-                    })
-                cat_table_df = pd.DataFrame(cat_table_rows)
-                render_comparison_table(cat_table_df, delta_cols=["전년동요일", cat_immediate_label])
-            cat_comp_strs = [
-                f"{lbl} = {p[0].date()} ~ {p[1].date()}" if p else f"{lbl} = 데이터 없음"
-                for lbl, p in [(cat_immediate_label, cat_comp_periods.get(cat_immediate_label)),
-                               ("전년비", cat_comp_periods.get("전년비"))]
-            ]
-            st.caption(
-                f"ℹ️ 이 표는 2일 전 실적까지 반영됩니다 (최신일자: {CATTXN_MAX_DATE}) "
-                f"· 집계기간: {cat_start.date()} ~ {cat_end.date()} · 비교대상 기간 — {' · '.join(cat_comp_strs)}"
-            )
-            st.caption("📁 데이터 출처: category_brand_txn_daily.csv ← 정상이월입점_RAW.xlsx (01·02페이지 태블로 원본과는 별도 집계)")
+    _render_category_mix_section(start_ts, end_ts, ref_date, unit, mode, key_prefix="page1")
 
     # ── 추이 차트: 2026년 기준 + 전년비 비교선 (조회단위별 집계) ──
     render_section_title(f"2026년 추이 (전년비 비교) · {mode}")
@@ -806,7 +835,9 @@ elif menu == "전년비교":
         f"📅 전년비 비교는 전년 동요일(364일 전, 요일 정렬) 기준입니다 · "
         f"데이터는 {MAX_DATE}까지 반영되어 있습니다 (그 이후 실적은 아직 집계 전)."
     )
-    tab1, tab2, tab3 = st.tabs(["일자별 YoY (전년 동요일)", f"{unit} 종합 YoY", "📆 월별 실적 비교 (연간)"])
+    tab1, tab2, tab3, tab4 = st.tabs([
+        "일자별 YoY (전년 동요일)", f"{unit} 종합 YoY", "📆 월별 실적 비교 (연간)", "📦 카테고리별 거래액 비중",
+    ])
 
     # ── TAB 1: 일자별 YoY ──
     with tab1:
@@ -1032,6 +1063,27 @@ elif menu == "전년비교":
             df[["date", "거래액", "광고비", "UV", "결제고객수"]], "전체",
         )
         st.caption("📁 데이터 출처: tableau_daily.csv (01페이지와 동일 소스)")
+
+    # ── TAB 4: 카테고리별 거래액 비중 (01페이지와 동일 섹션 + 전년비 인사이트) ──
+    with tab4:
+        c2_ref, c2_mode = st.columns([2, 1.3])
+        with c2_ref:
+            if unit == "일별":
+                _ensure_default_date("page2_cat_ref_date", CATTXN_MAX_DATE, CATTXN_MIN_DATE, CATTXN_MAX_DATE)
+                cat2_ref_date = st.date_input("기준일자", min_value=CATTXN_MIN_DATE, max_value=CATTXN_MAX_DATE,
+                                               key="page2_cat_ref_date")
+            else:
+                cat2_ref_options = build_ref_options(unit, CATTXN_MIN_DATE, CATTXN_MAX_DATE)
+                cat2_label_to_date = dict(cat2_ref_options)
+                picker_label = "기준 주차" if unit == "주별" else "기준 월"
+                _ensure_valid_select("page2_cat_ref_select", list(cat2_label_to_date.keys()))
+                cat2_chosen = st.selectbox(picker_label, list(cat2_label_to_date.keys()), key="page2_cat_ref_select")
+                cat2_ref_date = cat2_label_to_date[cat2_chosen]
+        with c2_mode:
+            cat2_mode = st.radio("표시방식", ["누계", "일평균"], horizontal=True, index=1, key="page2_cat_mode")
+
+        cat2_start_ts, cat2_end_ts = get_period_bounds(cat2_ref_date, unit, CATTXN_MIN_DATE, CATTXN_MAX_DATE)
+        _render_category_mix_section(cat2_start_ts, cat2_end_ts, cat2_ref_date, unit, cat2_mode, key_prefix="page2")
 
 
 # ════════════════════════════════════════════════════════════════
