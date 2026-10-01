@@ -146,15 +146,20 @@ def convert(raw_paths: list, out_path: str):
 
 def _write_year_splits(merged: pd.DataFrame, out_path: str):
     """GitHub은 파일당 100MB 제한이 있어(이 데이터는 합쳐서 100MB를 넘음) 배포 환경(Streamlit
-    Cloud 등)에서는 이 합본 CSV를 커밋할 수 없다. 연도별로 쪼갠 CSV를 같이 저장해두면
+    Cloud 등)에서는 이 합본 CSV를 커밋할 수 없다. 반기별로 쪼갠 CSV를 같이 저장해두면
     utils.load_ad_product_data()가 합본이 없을 때 이 조각들을 대신 읽어 합친다 — 로컬은
-    합본(빠름), 배포는 조각(용량 제한 통과) 파일을 쓰는 구조."""
+    합본(빠름), 배포는 조각(용량 제한 통과) 파일을 쓰는 구조.
+    연도별(ad_product_category_daily_2026.csv)로 쪼개면 그 해 마지막 달쯤엔 50MB(GitHub
+    권장 상한)를 넘어서는 패턴이 반복돼 반기별(_2026H1/_2026H2)로 더 잘게 쪼갠다 — 파일명에
+    연도만 들어가던 걸 "YYYYH1"/"YYYYH2"로 바꾸는 것뿐이라 glob 패턴(ad_product_category_daily_*.csv)
+    쪽은 그대로 호환된다."""
     stem, ext = os.path.splitext(out_path)
-    for year, g in merged.groupby(merged["date"].dt.year):
-        split_path = f"{stem}_{year}{ext}"
+    half = merged["date"].dt.month.apply(lambda m: "H1" if m <= 6 else "H2")
+    for (year, h), g in merged.groupby([merged["date"].dt.year, half]):
+        split_path = f"{stem}_{year}{h}{ext}"
         g.to_csv(split_path, index=False, encoding="utf-8-sig")
         size_mb = os.path.getsize(split_path) / 1_000_000
-        print(f"  연도별 분할 저장: {split_path} ({len(g):,}행, {size_mb:.1f}MB)")
+        print(f"  반기별 분할 저장: {split_path} ({len(g):,}행, {size_mb:.1f}MB)")
 
 
 if __name__ == "__main__":

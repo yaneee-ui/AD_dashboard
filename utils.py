@@ -38,7 +38,7 @@ AD_PRODUCT_DATA_PATH = next(
     (p for p in _AD_PRODUCT_CANDIDATE_PATHS if os.path.exists(p)), _AD_PRODUCT_CANDIDATE_PATHS[0]
 )
 # 합본 CSV(124MB+)는 GitHub 100MB 파일당 제한 때문에 배포 저장소에는 못 올린다 — 대신
-# build_ad_product_daily.py가 같이 만들어두는 연도별 조각(ad_product_category_daily_2025.csv 등)을
+# build_ad_product_daily.py가 같이 만들어두는 반기별 조각(ad_product_category_daily_2026H1.csv 등)을
 # 배포 환경에서 찾아 합쳐 쓴다. 로컬은 합본이 있으니 그쪽을 그대로 쓰고, 빠르다.
 _AD_PRODUCT_SPLIT_GLOBS = [
     os.path.join(BASE_DIR, "data", "ad_product_category_daily_*.csv"),
