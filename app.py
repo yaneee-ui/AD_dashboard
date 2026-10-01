@@ -350,18 +350,28 @@ def _render_category_mix_section(start_ts, end_ts, ref_date, unit, mode, key_pre
     st.caption("📁 데이터 출처: category_brand_txn_daily.csv ← 정상이월입점_RAW.xlsx (01·02페이지 태블로 원본과는 별도 집계)")
 
     if yoy_pct_by_cat:
-        best_cat = max(yoy_pct_by_cat, key=lambda c: yoy_pct_by_cat[c][0])
-        worst_cat = min(yoy_pct_by_cat, key=lambda c: yoy_pct_by_cat[c][0])
-        best_pct, best_cur, best_prev = yoy_pct_by_cat[best_cat]
-        worst_pct, worst_cur, worst_prev = yoy_pct_by_cat[worst_cat]
+        TOP_N_INSIGHT = 3
+        ranked = sorted(yoy_pct_by_cat.items(), key=lambda kv: kv[1][0], reverse=True)
+        top_gainers = ranked[:TOP_N_INSIGHT]
+        top_decliners = list(reversed(ranked[-TOP_N_INSIGHT:])) if len(ranked) > TOP_N_INSIGHT else list(reversed(ranked))
+        # 카테고리 수가 적어 상승/하락 TOP3가 겹치면, 겹치는 항목은 하락 쪽에서 빼서 중복 표시를 막는다.
+        gainer_cats = {c for c, _ in top_gainers}
+        top_decliners = [item for item in top_decliners if item[0] not in gainer_cats]
+
         insight_lines = [
-            f"📈 전년 대비 거래액이 가장 크게 **늘어난** 카테고리: **{best_cat}** "
-            f"{format_delta_text(best_pct)} ({best_prev:,.0f} → {best_cur:,.0f})",
+            f"📈 전년 대비 거래액이 가장 크게 **늘어난** 카테고리 TOP{len(top_gainers)}: "
+            + " · ".join(
+                f"**{cat}** {format_delta_text(pct)} ({prev:,.0f} → {cur:,.0f})"
+                for cat, (pct, cur, prev) in top_gainers
+            ),
         ]
-        if worst_cat != best_cat:
+        if top_decliners:
             insight_lines.append(
-                f"📉 전년 대비 거래액이 가장 크게 **줄어든** 카테고리: **{worst_cat}** "
-                f"{format_delta_text(worst_pct)} ({worst_prev:,.0f} → {worst_cur:,.0f})"
+                f"📉 전년 대비 거래액이 가장 크게 **줄어든** 카테고리 TOP{len(top_decliners)}: "
+                + " · ".join(
+                    f"**{cat}** {format_delta_text(pct)} ({prev:,.0f} → {cur:,.0f})"
+                    for cat, (pct, cur, prev) in top_decliners
+                )
             )
         render_insight_box(insight_lines, title="카테고리별 전년비 인사이트")
 
