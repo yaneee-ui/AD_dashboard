@@ -2109,6 +2109,7 @@ elif menu == "카테고리별 실적":
                     top_products_display = pd.DataFrame({
                         "순위": range(1, len(top_products) + 1),
                         "상품명": top_products["product_name"],
+                        "상품코드": top_products["product_code"],
                         "카테고리": top_products["category"],
                         "브랜드": top_products["brand"],
                         "거래액": top_products["거래액"].apply(lambda v: f"{v:,.0f}"),
