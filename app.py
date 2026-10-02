@@ -252,8 +252,8 @@ def _render_category_mix_section(start_ts, end_ts, ref_date, unit, mode, key_pre
         return
 
     cat_view = cattxn_df[(cattxn_df["date"] >= cat_start) & (cattxn_df["date"] <= cat_end)]
-    cat_rank = aggregate_cattxn_by(cat_view, group_col="category", txn_type=cat_txn_filter)
-    cat_rank = cat_rank[cat_rank["쇼핑검색광고_거래액"] > 0].sort_values(
+    cat_rank_all = aggregate_cattxn_by(cat_view, group_col="category", txn_type=cat_txn_filter)
+    cat_rank = cat_rank_all[cat_rank_all["쇼핑검색광고_거래액"] > 0].sort_values(
         "쇼핑검색광고_거래액", ascending=False
     ).reset_index(drop=True)
 
@@ -267,7 +267,7 @@ def _render_category_mix_section(start_ts, end_ts, ref_date, unit, mode, key_pre
     cat_comp_periods = get_comparison_periods(ref_date, unit, CATTXN_MIN_DATE, CATTXN_MAX_DATE)
     cat_immediate_label = next(iter(cat_comp_periods.keys()))
 
-    def _cat_period_series(period):
+    def _cat_period_series(period, metric_col="쇼핑검색광고_거래액"):
         if period is None:
             return None
         p_start = max(period[0], pd.Timestamp(CATTXN_MIN_DATE))
@@ -278,11 +278,13 @@ def _render_category_mix_section(start_ts, end_ts, ref_date, unit, mode, key_pre
         if p_view.empty:
             return None
         return aggregate_cattxn_by(p_view, group_col="category", txn_type=cat_txn_filter).set_index("category")[
-            "쇼핑검색광고_거래액"
+            metric_col
         ]
 
     cat_yoy_series = _cat_period_series(cat_comp_periods.get("전년비"))
     cat_imm_series = _cat_period_series(cat_comp_periods.get(cat_immediate_label))
+    ep_yoy_series = _cat_period_series(cat_comp_periods.get("전년비"), metric_col="EP채널_거래액")
+    ep_imm_series = _cat_period_series(cat_comp_periods.get(cat_immediate_label), metric_col="EP채널_거래액")
 
     CAT_TOP_N = 8
     CAT_DONUT_COLORS = ["#1E40AF", "#2563EB", "#3B82F6", "#60A5FA", "#7DD3FC",
@@ -374,6 +376,41 @@ def _render_category_mix_section(start_ts, end_ts, ref_date, unit, mode, key_pre
                 )
             )
         render_insight_box(insight_lines, title="카테고리별 전년비 인사이트")
+
+    # ── EP채널 거래액 (참고용) — 광고 반응은 낮지만 EP(오가닉)에서 반응 좋은 카테고리를
+    # 찾아 광고 확대 후보를 가늠해볼 수 있도록, 광고 거래액 유무와 무관하게 EP 거래액
+    # 기준으로 별도 집계한다.
+    ep_rank = cat_rank_all[cat_rank_all["EP채널_거래액"] > 0].sort_values(
+        "EP채널_거래액", ascending=False
+    ).reset_index(drop=True)
+    if not ep_rank.empty:
+        st.divider()
+        render_section_title(f"EP채널 거래액 비중 (참고용) · {mode}")
+        ep_total = ep_rank["EP채널_거래액"].sum()
+        ep_table_rows = []
+        for _, r in ep_rank.iterrows():
+            cname = r["category"]
+            cur_v = r["EP채널_거래액"]
+            share = (cur_v / ep_total * 100) if ep_total else None
+            yoy_v = ep_yoy_series.loc[cname] if ep_yoy_series is not None and cname in ep_yoy_series.index else None
+            imm_v = ep_imm_series.loc[cname] if ep_imm_series is not None and cname in ep_imm_series.index else None
+            yoy_pct = pct_change(cur_v, yoy_v) if yoy_v is not None else None
+            imm_pct = pct_change(cur_v, imm_v) if imm_v is not None else None
+            ep_table_rows.append({
+                "카테고리": cname,
+                "EP 거래액": f"{cur_v:,.0f}",
+                "비중": f"{share:.1f}%" if share is not None else "-",
+                "전년동요일": format_delta_text(yoy_pct) if yoy_v is not None else "-",
+                "전년동요일 값": f"{yoy_v:,.0f}" if yoy_v is not None else "-",
+                cat_immediate_label: format_delta_text(imm_pct) if imm_v is not None else "-",
+                f"{cat_immediate_label} 값": f"{imm_v:,.0f}" if imm_v is not None else "-",
+            })
+        ep_table_df = pd.DataFrame(ep_table_rows)
+        render_comparison_table(ep_table_df, delta_cols=["전년동요일", cat_immediate_label])
+        st.caption(
+            "💡 EP(오가닉) 채널 거래액이 높은 카테고리는 광고 반응 가능성이 있는 확대 후보로 "
+            "참고할 수 있습니다 (광고 집행 여부와 무관하게 EP 거래액 기준으로 집계)."
+        )
 
 
 # ════════════════════════════════════════════════════════════════
