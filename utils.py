@@ -45,6 +45,15 @@ _AD_PRODUCT_SPLIT_GLOBS = [
     os.path.join(BASE_DIR, "ad_product_category_daily_*.csv"),
 ]
 
+# ── 상품별 정상/이월/입점 (카테고리·브랜드와 같은 소스, 상품명 단위 — 2026년부터만 보유) ──
+_PRODUCT_TXN_CANDIDATE_PATHS = [
+    os.path.join(BASE_DIR, "data", "product_txn_daily.csv"),
+    os.path.join(BASE_DIR, "product_txn_daily.csv"),
+]
+PRODUCT_TXN_DATA_PATH = next(
+    (p for p in _PRODUCT_TXN_CANDIDATE_PATHS if os.path.exists(p)), _PRODUCT_TXN_CANDIDATE_PATHS[0]
+)
+
 # ── 합산 가능한 base metric (분자/분모 원천값) ─────────────────────────
 BASE_METRICS = [
     "노출수", "클릭수", "UV", "광고비",
@@ -468,6 +477,45 @@ def load_cattxn_data():
         df["brand"] = "전체"  # 구버전(브랜드 없는) 파일 하위호환
     df["연도"] = df["date"].dt.year
     return df
+
+
+@st.cache_data
+def load_product_txn_data():
+    """상품명 단위 정상/이월/입점 데이터(2026년부터만 보유, 03페이지 TOP20 상품 표 전용).
+    파일이 아직 없을 수도 있는 선택적 데이터라 cattxn_data와 달리 없어도 앱을 멈추지
+    않고 None을 반환한다 — 호출부에서 None이면 안내 문구만 보여주고 넘어간다."""
+    if not os.path.exists(PRODUCT_TXN_DATA_PATH):
+        return None
+    df = pd.read_csv(PRODUCT_TXN_DATA_PATH, parse_dates=["date"], encoding="utf-8-sig")
+    for c in ["ad_거래액", "ad_주문고객수", "ep_거래액", "ep_주문고객수"]:
+        df[c] = df[c].fillna(0)
+    return df
+
+
+def top_products_by_revenue(df: pd.DataFrame, start_ts, end_ts, txn_type: str = "전체",
+                            category: str = "전체", brand: str = "전체", channel: str = "합계",
+                            top_n: int = 20) -> pd.DataFrame:
+    """선택한 기간/카테고리/브랜드/거래유형 안에서 상품명 단위 거래액 TOP N 랭킹.
+    channel: '쇼핑검색광고' | 'EP채널' | '합계'(광고+EP) 기준으로 정렬."""
+    scope = df[(df["date"] >= start_ts) & (df["date"] <= end_ts)]
+    scope = _cattxn_scope(scope, txn_type, category, brand)
+    if scope.empty:
+        return pd.DataFrame(columns=["product_name", "product_code", "category", "brand",
+                                      "거래액", "주문고객수"])
+    grouped = scope.groupby(["product_name", "product_code", "category", "brand"], as_index=False)[
+        ["ad_거래액", "ad_주문고객수", "ep_거래액", "ep_주문고객수"]
+    ].sum()
+    if channel == "쇼핑검색광고":
+        grouped["거래액"] = grouped["ad_거래액"]
+        grouped["주문고객수"] = grouped["ad_주문고객수"]
+    elif channel == "EP채널":
+        grouped["거래액"] = grouped["ep_거래액"]
+        grouped["주문고객수"] = grouped["ep_주문고객수"]
+    else:
+        grouped["거래액"] = grouped["ad_거래액"] + grouped["ep_거래액"]
+        grouped["주문고객수"] = grouped["ad_주문고객수"] + grouped["ep_주문고객수"]
+    grouped = grouped[grouped["거래액"] > 0].sort_values("거래액", ascending=False).head(top_n)
+    return grouped.reset_index(drop=True)
 
 
 def _cattxn_scope(df: pd.DataFrame, txn_type: str = "전체", category: str = "전체", brand: str = "전체") -> pd.DataFrame:

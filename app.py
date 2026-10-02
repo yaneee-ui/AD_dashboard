@@ -19,6 +19,7 @@ from utils import (
     load_ad_product_data, aggregate_ad_product, ad_product_group_compare,
     AD_PRODUCT_OWN_OPTIONS, AD_PRODUCT_BASE_METRICS,
     CATTXN_TXN_TYPE_OPTIONS, CATTXN_CHANNEL_OPTIONS, CATTXN_METRIC_OPTIONS,
+    load_product_txn_data, top_products_by_revenue,
 )
 from styles import (
     inject_css, render_kpi_cards, render_page_header, render_section_title,
@@ -62,6 +63,11 @@ cattxn_df = load_cattxn_data()
 CATTXN_MIN_DATE, CATTXN_MAX_DATE = cattxn_df["date"].min().date(), cattxn_df["date"].max().date()
 CATTXN_CATEGORY_LIST = sorted(cattxn_df["category"].unique())
 CATTXN_BRAND_LIST = sorted(cattxn_df["brand"].unique())
+
+product_txn_df = load_product_txn_data()
+if product_txn_df is not None:
+    PRODUCT_TXN_MIN_DATE = product_txn_df["date"].min().date()
+    PRODUCT_TXN_MAX_DATE = product_txn_df["date"].max().date()
 
 # ── 쇼핑검색광고 리포트(NBOS 매칭, 대/중카테고리·브랜드 단위) — 있으면만 로드, 없어도 나머지 페이지는 정상 동작 ──
 ad_product_df = load_ad_product_data()
@@ -2078,6 +2084,41 @@ elif menu == "카테고리별 실적":
             st.caption(f"📅 전년비 기준: 전년 동요일비(364일=52주 전, 요일 정렬) · 거래액은 {cattxn_cat_yoy_channel} 기준입니다.")
             st.caption("📅 비교대상 기간 — " + " · ".join(cattxn_comp_strs))
             st.caption("📁 데이터 출처: category_brand_txn_daily.csv ← 정상이월입점_RAW.xlsx (01·02페이지 태블로 원본과는 별도 집계)")
+
+        # ── 거래액 TOP20 상품 (상품명 단위, 2026년부터만 보유) ──
+        render_section_title(f"거래액 TOP20 상품{cattxn_cat_suffix}{cattxn_brand_suffix}{cattxn_txn_suffix}")
+        if product_txn_df is None:
+            st.info("상품명 단위 데이터가 아직 없습니다 (product_txn_daily.csv 미존재).")
+        else:
+            prod_start = max(cattxn_start_ts, pd.Timestamp(PRODUCT_TXN_MIN_DATE))
+            prod_end = min(cattxn_end_ts, pd.Timestamp(PRODUCT_TXN_MAX_DATE))
+            if prod_start > prod_end:
+                st.info(f"이 기간에는 상품명 단위 데이터가 아직 없습니다 (보유 범위: {PRODUCT_TXN_MIN_DATE} ~ {PRODUCT_TXN_MAX_DATE}).")
+            else:
+                prod_channel = st.radio(
+                    "채널", ["합계", "쇼핑검색광고", "EP채널"], horizontal=True, key="cattxn_top_products_channel",
+                )
+                top_products = top_products_by_revenue(
+                    product_txn_df, prod_start, prod_end, cattxn_txn_filter,
+                    cattxn_category_filter, cattxn_brand_filter, channel=prod_channel, top_n=20,
+                )
+                if top_products.empty:
+                    st.info("조건에 맞는 상품 거래액 데이터가 없습니다.")
+                else:
+                    top_products_display = pd.DataFrame({
+                        "순위": range(1, len(top_products) + 1),
+                        "상품명": top_products["product_name"],
+                        "카테고리": top_products["category"],
+                        "브랜드": top_products["brand"],
+                        "거래액": top_products["거래액"].apply(lambda v: f"{v:,.0f}"),
+                        "주문고객수": top_products["주문고객수"].apply(lambda v: f"{v:,.0f}"),
+                    })
+                    st.dataframe(top_products_display, use_container_width=True, hide_index=True)
+                    st.caption(
+                        f"📅 집계기간: {prod_start.date()} ~ {prod_end.date()} · 채널: {prod_channel} "
+                        f"(상품명 단위 데이터는 {PRODUCT_TXN_MIN_DATE} 이후만 보유 — 기간 중 그 이전 구간은 제외됩니다)"
+                    )
+                    st.caption("📁 데이터 출처: product_txn_daily.csv ← 정상이월입점_RAW.xlsx(상품명 포함) (카테고리·브랜드 집계와 별도 소스)")
 
     # ══════════════════════════════════════════════════════════
     # 탭 3: 브랜드별 상세
