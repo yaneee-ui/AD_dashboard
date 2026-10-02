@@ -2096,7 +2096,8 @@ elif menu == "카테고리별 실적":
                 st.info(f"이 기간에는 상품명 단위 데이터가 아직 없습니다 (보유 범위: {PRODUCT_TXN_MIN_DATE} ~ {PRODUCT_TXN_MAX_DATE}).")
             else:
                 prod_channel = st.radio(
-                    "채널", ["합계", "쇼핑검색광고", "EP채널"], horizontal=True, key="cattxn_top_products_channel",
+                    "채널", ["합계", "쇼핑검색광고", "EP채널"], horizontal=True, index=2,
+                    key="cattxn_top_products_channel",
                 )
                 top_products = top_products_by_revenue(
                     product_txn_df, prod_start, prod_end, cattxn_txn_filter,
