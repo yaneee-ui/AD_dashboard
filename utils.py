@@ -484,6 +484,29 @@ def load_cattxn_data():
     return df
 
 
+_BRAND_NAMES_CANDIDATE_PATHS = [
+    os.path.join(BASE_DIR, "data", "brand_names.csv"),
+    os.path.join(BASE_DIR, "brand_names.csv"),
+]
+
+
+@st.cache_data
+def load_brand_names() -> dict:
+    """SAP대표브랜드코드 -> 한글 브랜드명 (brand_names.csv: 코드,브랜드명). 파일이 없으면 빈 dict."""
+    path = next((p for p in _BRAND_NAMES_CANDIDATE_PATHS if os.path.exists(p)), None)
+    if path is None:
+        return {}
+    df = pd.read_csv(path, encoding="utf-8-sig", dtype=str)
+    return dict(zip(df["코드"].str.strip(), df["브랜드명"].str.strip()))
+
+
+def brand_label(code) -> str:
+    """표시용 브랜드명: 'DD (더블플래그)'. 매핑에 없는 코드는 코드 그대로 반환.
+    데이터/필터의 실제 값은 코드 그대로 두고 화면에 보이는 문자열에만 쓴다."""
+    name = load_brand_names().get(str(code).strip())
+    return f"{code} ({name})" if name else str(code)
+
+
 @st.cache_data
 def load_product_txn_data():
     """상품명 단위 정상/이월/입점 데이터(2026년부터만 보유, 03페이지 TOP20 상품 표 전용).

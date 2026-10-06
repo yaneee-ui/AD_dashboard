@@ -19,7 +19,7 @@ from utils import (
     load_ad_product_data, aggregate_ad_product, ad_product_group_compare,
     AD_PRODUCT_OWN_OPTIONS, AD_PRODUCT_BASE_METRICS,
     CATTXN_TXN_TYPE_OPTIONS, CATTXN_CHANNEL_OPTIONS, CATTXN_METRIC_OPTIONS,
-    load_product_txn_data, top_products_by_revenue,
+    load_product_txn_data, top_products_by_revenue, brand_label,
 )
 from styles import (
     inject_css, render_kpi_cards, render_page_header, render_section_title,
@@ -44,6 +44,11 @@ def style_channel_columns(styler, columns):
     if ep_cols:
         styler = styler.set_properties(subset=ep_cols, **{"color": EP_COL_COLOR, "font-weight": "600"})
     return styler
+
+
+def _disp_group(series, group_by):
+    """그룹 기준이 브랜드일 때만 코드를 '코드 (한글명)'으로 바꿔 표시용 Series를 만든다."""
+    return series.map(brand_label) if group_by == "brand" else series
 
 
 def style_channel_rows(row, label_col="지표"):
@@ -1170,13 +1175,16 @@ elif menu == "카테고리별 실적":
         with c_cat:
             cattxn_category_filter = st.selectbox("카테고리", ["전체"] + CATTXN_CATEGORY_LIST, key="cattxn_cat_filter")
         with c_brand:
-            cattxn_brand_filter = st.selectbox("브랜드", ["전체"] + CATTXN_BRAND_LIST, key="cattxn_brand_filter")
+            cattxn_brand_filter = st.selectbox(
+                "브랜드", ["전체"] + CATTXN_BRAND_LIST, key="cattxn_brand_filter",
+                format_func=lambda b: b if b == "전체" else brand_label(b),
+            )
 
     cattxn_start_ts, cattxn_end_ts = get_period_bounds(cattxn_ref_date, unit, CATTXN_MIN_DATE, CATTXN_MAX_DATE)
     cattxn_cur_label = period_label(cattxn_start_ts, cattxn_end_ts, unit)
     cattxn_cur_days = days_in_period(cattxn_start_ts, cattxn_end_ts)
     cattxn_cat_suffix = f" · {cattxn_category_filter}" if cattxn_category_filter != "전체" else ""
-    cattxn_brand_suffix = f" · {cattxn_brand_filter}" if cattxn_brand_filter != "전체" else ""
+    cattxn_brand_suffix = f" · {brand_label(cattxn_brand_filter)}" if cattxn_brand_filter != "전체" else ""
     cattxn_txn_suffix = f" · {cattxn_txn_filter}" if cattxn_txn_filter != "전체" else ""
 
     render_page_header(
@@ -1734,7 +1742,7 @@ elif menu == "카테고리별 실적":
         latest_moves = latest_moves.sort_values("광고_증감률", ascending=False)
 
         comove_display = pd.DataFrame({
-            syn_group_label: latest_moves["category"],
+            syn_group_label: _disp_group(latest_moves["category"], syn_group_by),
             "SA 매출 증감": latest_moves["광고_증감률"].apply(format_delta_text),
             "EP 매출 증감": latest_moves["EP_증감률"].apply(format_delta_text),
             "분류": latest_moves["분류"],
@@ -1759,7 +1767,10 @@ elif menu == "카테고리별 실적":
         else:
             sc1, sc2 = st.columns([2, 2])
             with sc1:
-                syn_pick = st.selectbox(syn_group_label, syn_valid_items, index=0, key="syn_pick")
+                syn_pick = st.selectbox(
+                    syn_group_label, syn_valid_items, index=0, key="syn_pick",
+                    format_func=lambda v: brand_label(v) if syn_group_by == "brand" else v,
+                )
             default_syn_lag = int(syn_corr.loc[syn_corr["category"] == syn_pick, "best_lag"].iloc[0])
             with sc2:
                 syn_lag = st.radio(
@@ -1797,7 +1808,8 @@ elif menu == "카테고리별 실적":
                 )
                 st.plotly_chart(fig_syn, use_container_width=True, config={"scrollZoom": True})
                 st.caption(
-                    f"상관계수 r = {syn_r:.2f} · 표본 {len(syn_scatter)}개 주 · {syn_pick}, "
+                    f"상관계수 r = {syn_r:.2f} · 표본 {len(syn_scatter)}개 주 · "
+                    f"{brand_label(syn_pick) if syn_group_by == 'brand' else syn_pick}, "
                     f"{'동주' if syn_lag == 0 else f'{syn_lag}주 후'} 기준 — "
                     f"r이 클수록(0.5 이상) 광고 확대가 EP 반응과 같이 움직이는(시너지) 경향이 강합니다."
                 )
@@ -1971,7 +1983,7 @@ elif menu == "카테고리별 실적":
             )
             latest_col_label = "최근 일평균 거래액" if cattxn_mode == "일평균" else "최근 거래액"
             trend_display = pd.DataFrame({
-                flow_group_label: trend_table["group"],
+                flow_group_label: _disp_group(trend_table["group"], flow_group_by),
                 "추이": trend_table["trend"],
                 latest_col_label: trend_table["latest"],
                 "직전 대비": trend_table["delta_pct"],
@@ -2096,7 +2108,7 @@ elif menu == "카테고리별 실적":
                         "상품명": top_products["product_name"],
                         "상품코드": top_products["product_code"],
                         "카테고리": top_products["category"],
-                        "브랜드": top_products["brand"],
+                        "브랜드": top_products["brand"].map(brand_label),
                         "거래액": top_products["거래액"].apply(lambda v: f"{v:,.0f}"),
                         "주문고객수": top_products["주문고객수"].apply(lambda v: f"{v:,.0f}"),
                     })
@@ -2127,11 +2139,11 @@ elif menu == "카테고리별 실적":
         brand_is_million = cattxn_brand_rank_metric == "거래액"
         fig_brand = go.Figure()
         fig_brand.add_trace(go.Bar(
-            x=cattxn_brand_rank_top["brand"],
+            x=cattxn_brand_rank_top["brand"].map(brand_label),
             y=_to_million(cattxn_brand_rank_top[brand_ep_col]) if brand_is_million else cattxn_brand_rank_top[brand_ep_col],
             name="EP채널", marker_color="#CBD5E1"))
         fig_brand.add_trace(go.Bar(
-            x=cattxn_brand_rank_top["brand"],
+            x=cattxn_brand_rank_top["brand"].map(brand_label),
             y=_to_million(cattxn_brand_rank_top[brand_ad_col]) if brand_is_million else cattxn_brand_rank_top[brand_ad_col],
             name="쇼핑검색광고", marker_color="#2563EB"))
         fig_brand.update_layout(
@@ -2144,7 +2156,7 @@ elif menu == "카테고리별 실적":
         st.caption(f"※ 전체 {len(cattxn_brand_rank)}개 브랜드 중 상위 15개만 차트에 표시합니다. 전체 목록은 아래 표·다운로드에서 확인하세요.")
 
         cattxn_brand_table_display = pd.DataFrame({
-            "브랜드": cattxn_brand_rank["brand"],
+            "브랜드": cattxn_brand_rank["brand"].map(brand_label),
             f"쇼핑검색광고 {cattxn_brand_rank_metric}": cattxn_brand_rank[brand_ad_col].apply(lambda v: format_cattxn_table_value(cattxn_brand_rank_metric, v)),
             f"EP채널 {cattxn_brand_rank_metric}": cattxn_brand_rank[brand_ep_col].apply(lambda v: format_cattxn_table_value(cattxn_brand_rank_metric, v)),
         })
@@ -2155,7 +2167,7 @@ elif menu == "카테고리별 실적":
 
         st.download_button(
             "📥 Excel 다운로드",
-            data=to_excel_bytes(cattxn_brand_rank),
+            data=to_excel_bytes(cattxn_brand_rank.assign(brand=cattxn_brand_rank["brand"].map(brand_label))),
             file_name=f"브랜드별실적_{cattxn_start_ts.date()}_{cattxn_end_ts.date()}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             key="dl_cattxn_brand_rank",
@@ -2175,7 +2187,7 @@ elif menu == "카테고리별 실적":
             st.info("표시할 데이터가 없습니다.")
         else:
             brand_yoy_cols = {
-                "브랜드": cattxn_brand_yoy["brand"],
+                "브랜드": cattxn_brand_yoy["brand"].map(brand_label),
                 "거래액": cattxn_brand_yoy["거래액"].apply(
                     lambda v: format_million(v / cattxn_cur_days) if cattxn_mode == "일평균" and cattxn_cur_days else format_million(v)
                 ),
