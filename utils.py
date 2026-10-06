@@ -1063,8 +1063,13 @@ def ad_product_group_compare(df: pd.DataFrame, group_col: str, cur_start, cur_en
     cur = scope[(scope["date"] >= pd.Timestamp(cur_start)) & (scope["date"] <= pd.Timestamp(cur_end))]
     prev = scope[(scope["date"] >= pd.Timestamp(prev_start)) & (scope["date"] <= pd.Timestamp(prev_end))]
 
+    # 같은 이름의 중카테고리(점퍼/티셔츠/가디건 등)가 여러 대카테고리(남성·여성·공용 등)에 걸쳐
+    # 있어서(전체 중카테고리 이름의 약 1/5, 최근 판매액의 80%+), 이름만으로 묶으면 서로 다른
+    # 대카테고리가 한 줄로 합쳐진다 — 중카테고리 기준일 땐 (대카테고리, 중카테고리) 쌍으로 묶는다.
+    group_cols = ["대카테고리", "중카테고리"] if group_col == "중카테고리" else [group_col]
+
     def _agg_by(sub: pd.DataFrame) -> pd.DataFrame:
-        g = sub.groupby(group_col)[AD_PRODUCT_BASE_METRICS].sum()
+        g = sub.groupby(group_cols)[AD_PRODUCT_BASE_METRICS].sum()
         g["ROAS"] = g.apply(lambda r: (r["판매액"] / r["광고비"]) if r["광고비"] else 0, axis=1)
         g["CTR"] = g.apply(lambda r: (r["클릭수"] / r["노출수"]) if r["노출수"] else 0, axis=1)
         g["CVR"] = g.apply(lambda r: (r["구매수량"] / r["클릭수"]) if r["클릭수"] else 0, axis=1)
@@ -1079,7 +1084,7 @@ def ad_product_group_compare(df: pd.DataFrame, group_col: str, cur_start, cur_en
     for g in all_groups:
         c = cur_g.loc[g] if g in cur_g.index else None
         p = prev_g.loc[g] if g in prev_g.index else None
-        row = {group_col: g}
+        row = dict(zip(group_cols, g if isinstance(g, tuple) else (g,)))
         for metric in AD_PRODUCT_BASE_METRICS + ["ROAS", "CTR", "CVR", "객단가"]:
             row[metric] = c[metric] if c is not None else 0
         row["판매액_증감"] = _pct_change_simple(c["판매액"] if c is not None else None,
@@ -1102,7 +1107,7 @@ def ad_product_group_compare(df: pd.DataFrame, group_col: str, cur_start, cur_en
         # 해당 기간·필터 조합에 데이터가 전혀 없으면 rows=[]가 되는데, pd.DataFrame([])는
         # 컬럼이 아예 없는(0x0) 프레임이 돼서 이후 .sort_values("판매액_증감", ...) 등에서
         # KeyError가 난다 — 빈 데이터라도 항상 같은 컬럼 스키마를 갖도록 명시한다.
-        cols = [group_col] + AD_PRODUCT_BASE_METRICS + [
+        cols = group_cols + AD_PRODUCT_BASE_METRICS + [
             "ROAS", "CTR", "CVR", "객단가", "판매액_증감", "판매액_증감액", "판매액_전기",
             "광고비_증감", "광고비_전기",
             "ROAS_증감", "ROAS_전기", "CVR_증감", "CVR_전기", "성과",

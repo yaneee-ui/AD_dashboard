@@ -2653,17 +2653,6 @@ elif menu == "상품군 효율":
         ap_own, ap_large, ap_mid,
     ) if ap_group_col != "대카테고리" else ap_default_rank.copy()
 
-    # 중카테고리는 대카테고리 하위 분류라 부모가 뭔지 같이 안 보이면 헷갈린다 — 대카테고리 필터가
-    # 특정 카테고리로 좁혀져 있으면 전부 그 값, "전체"면 원본에서 최빈 대카테고리를 찾아 붙인다.
-    if ap_group_col == "중카테고리":
-        if ap_large != "전체":
-            ap_rank["대카테고리"] = ap_large
-        else:
-            _midcat_map = ad_product_df.groupby("중카테고리")["대카테고리"].agg(
-                lambda s: s.mode().iat[0] if len(s.mode()) else s.iloc[0]
-            ).to_dict()
-            ap_rank["대카테고리"] = ap_rank["중카테고리"].map(_midcat_map)
-
     # 광고비가 거의 0에 가까우면(예: 769원) 판매액이 조금만 잡혀도 ROAS가 수백~수천%로 튀는데
     # (분모가 너무 작아 통계적으로 불안정) — ROAS 정렬에서는 이런 항목을 뒤로 미루고, 표에도
     # "광고비 소액(참고용)" 표시를 같이 달아서 "정렬이 갑자기 튀는" 것처럼 보이지 않게 한다.
