@@ -3,6 +3,7 @@
 *.xlsx
 *.xls
 ad_product_category_daily.csv
+product_txn_daily.csv
 
 # Python
 __pycache__/

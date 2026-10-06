@@ -131,6 +131,20 @@ def convert(raw_path: str, out_path: str):
     merged.to_csv(out_path, index=False, encoding="utf-8-sig")
     print(f"저장 완료: {out_path} (전체 날짜 범위: {merged['date'].min()} ~ {merged['date'].max()})")
 
+    _write_half_splits(merged, out_path)
+
+
+def _write_half_splits(merged: pd.DataFrame, out_path: str):
+    """합본이 GitHub 권장 상한(50MB)을 넘기 쉬워 합본은 .gitignore하고, 반기별 조각
+    (product_txn_daily_2026H1.csv 등)을 커밋한다 — utils.load_product_txn_data()가 합본이
+    없으면(배포 환경) 조각을 합쳐서 읽는다."""
+    stem, ext = os.path.splitext(out_path)
+    half = merged["date"].dt.month.apply(lambda m: "H1" if m <= 6 else "H2")
+    for (year, h), g in merged.groupby([merged["date"].dt.year, half]):
+        split_path = f"{stem}_{year}{h}{ext}"
+        g.to_csv(split_path, index=False, encoding="utf-8-sig")
+        print(f"  반기별 분할 저장: {split_path} ({len(g):,}행, {os.path.getsize(split_path) / 1_000_000:.1f}MB)")
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)

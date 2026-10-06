@@ -53,6 +53,11 @@ _PRODUCT_TXN_CANDIDATE_PATHS = [
 PRODUCT_TXN_DATA_PATH = next(
     (p for p in _PRODUCT_TXN_CANDIDATE_PATHS if os.path.exists(p)), _PRODUCT_TXN_CANDIDATE_PATHS[0]
 )
+# 합본(50MB 초과)은 커밋하지 않고 build_product_revenue.py가 같이 만드는 반기별 조각만 커밋한다.
+_PRODUCT_TXN_SPLIT_GLOBS = [
+    os.path.join(BASE_DIR, "data", "product_txn_daily_*.csv"),
+    os.path.join(BASE_DIR, "product_txn_daily_*.csv"),
+]
 
 # ── 합산 가능한 base metric (분자/분모 원천값) ─────────────────────────
 BASE_METRICS = [
@@ -484,9 +489,20 @@ def load_product_txn_data():
     """상품명 단위 정상/이월/입점 데이터(2026년부터만 보유, 03페이지 TOP20 상품 표 전용).
     파일이 아직 없을 수도 있는 선택적 데이터라 cattxn_data와 달리 없어도 앱을 멈추지
     않고 None을 반환한다 — 호출부에서 None이면 안내 문구만 보여주고 넘어간다."""
-    if not os.path.exists(PRODUCT_TXN_DATA_PATH):
-        return None
-    df = pd.read_csv(PRODUCT_TXN_DATA_PATH, parse_dates=["date"], encoding="utf-8-sig")
+    if os.path.exists(PRODUCT_TXN_DATA_PATH):
+        df = pd.read_csv(PRODUCT_TXN_DATA_PATH, parse_dates=["date"], encoding="utf-8-sig")
+    else:
+        split_paths = []
+        for pattern in _PRODUCT_TXN_SPLIT_GLOBS:
+            split_paths = sorted(glob.glob(pattern))
+            if split_paths:
+                break
+        if not split_paths:
+            return None
+        df = pd.concat(
+            [pd.read_csv(p, parse_dates=["date"], encoding="utf-8-sig") for p in split_paths],
+            ignore_index=True,
+        )
     for c in ["ad_거래액", "ad_주문고객수", "ep_거래액", "ep_주문고객수"]:
         df[c] = df[c].fillna(0)
     return df
