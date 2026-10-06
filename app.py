@@ -1724,21 +1724,6 @@ elif menu == "카테고리별 실적":
         )
         syn_corr = category_lag_correlation(syn_weekly, max_lag=2, min_samples=4)
 
-        render_section_title(f"{syn_group_label}별 시차 상관관계 랭킹")
-        st.caption("lag0=같은 주, lag1=1주 후, lag2=2주 후 EP 반응. '최고 시점'은 절댓값 기준 가장 강한 상관관계가 나타난 시차입니다.")
-
-        syn_corr_display = pd.DataFrame({
-            syn_group_label: syn_corr["category"],
-            "lag0(동주)": syn_corr["lag0"].apply(lambda v: f"{v:.2f}" if pd.notna(v) else "-"),
-            "lag1(1주후)": syn_corr["lag1"].apply(lambda v: f"{v:.2f}" if pd.notna(v) else "-"),
-            "lag2(2주후)": syn_corr["lag2"].apply(lambda v: f"{v:.2f}" if pd.notna(v) else "-"),
-            "최고 시점": syn_corr["best_lag"].apply(lambda v: "동주" if v == 0 else f"{v}주 후"),
-            "최고 상관계수": syn_corr["best_corr"].apply(lambda v: f"{v:.2f}" if pd.notna(v) else "-"),
-            "표본수(주)": syn_corr["best_n"],
-        })
-        st.dataframe(syn_corr_display, use_container_width=True, hide_index=True,
-                    height=min(35 * (len(syn_corr_display) + 1) + 3, 460))
-
         render_section_title(f"{syn_group_label}별 SA↔EP 동행 분석 (최근 완결 주 기준)")
         latest_moves = syn_weekly.sort_values("_wk").groupby("category").tail(1)[
             ["category", "광고_증감률", "EP_증감률"]
