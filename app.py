@@ -2734,7 +2734,14 @@ elif menu == "상품군 효율":
     render_section_title("광고비 조정 후보 · 줄일 후보 / 늘릴 후보")
     adj_g1, adj_g2, adj_g3, adj_g4 = st.columns([2.2, 1.3, 1.3, 1.6])
     with adj_g1:
-        ap_adj_group_label = st.radio("분석 단위", ["중카테고리", "브랜드"], horizontal=True, key="adprod_adj_group")
+        ap_adj_group_label = st.radio(
+            "분석 단위", ["중카테고리", "브랜드", "자사/입점"], horizontal=True, key="adprod_adj_group",
+        )
+        ap_adj_split_own = st.checkbox(
+            "자사/입점 구분해서 보기", value=False, key="adprod_adj_split_own",
+            disabled=ap_adj_group_label == "자사/입점",
+            help="켜면 중카테고리·브랜드를 자사/입점 별개 행으로 나눠서 계산합니다.",
+        ) and ap_adj_group_label != "자사/입점"
     with adj_g2:
         ap_adj_low = st.number_input("줄일 후보: ROAS(%) 미만", min_value=100, max_value=3000, value=700, step=50,
                                      key="adprod_adj_low")
@@ -2744,12 +2751,12 @@ elif menu == "상품군 효율":
     with adj_g4:
         ap_adj_min_daily = st.number_input("최소 광고비 (일평균, 원)", min_value=0, max_value=1_000_000, value=20_000,
                                            step=5_000, key="adprod_adj_min_daily")
-    ap_adj_group_col = "중카테고리" if ap_adj_group_label == "중카테고리" else "브랜드명"
+    ap_adj_group_col = {"중카테고리": "중카테고리", "브랜드": "브랜드명", "자사/입점": "자사/입점"}[ap_adj_group_label]
     ap_adj_min_cost = ap_adj_min_daily * ap_cur_days
 
     ap_adj_all = ad_product_group_compare(
         ad_product_df, ap_adj_group_col, ap_start_ts, ap_end_ts, ap_prev_start, ap_prev_end,
-        ap_own, ap_large, ap_mid,
+        ap_own, ap_large, ap_mid, split_own=ap_adj_split_own,
     )
     ap_adj_total_cost = ap_adj_all["광고비"].sum() if not ap_adj_all.empty else 0
     ap_adj_valid = ap_adj_all[ap_adj_all["광고비"] >= ap_adj_min_cost] if not ap_adj_all.empty else ap_adj_all
@@ -2794,7 +2801,7 @@ elif menu == "상품군 효율":
             )
         else:
             ap_adj_lines.append(f"🔺 ROAS {ap_adj_high}% 이상이면서 최소 광고비 이상인 항목이 없습니다.")
-        if ap_own == "전체":
+        if ap_own == "전체" and ap_adj_group_col != "자사/입점":
             ap_own_scope = ad_product_df[(ad_product_df["date"] >= ap_start_ts) & (ad_product_df["date"] <= ap_end_ts)]
             if ap_large != "전체":
                 ap_own_scope = ap_own_scope[ap_own_scope["대카테고리"] == ap_large]
@@ -2811,8 +2818,10 @@ elif menu == "상품군 효율":
                 )
         render_insight_box(ap_adj_lines, title="광고비 조정 요약")
 
-        ap_adj_cols_head = ["대카테고리"] if ap_adj_group_col == "중카테고리" else []
-        ap_adj_name_label = "중카테고리" if ap_adj_group_col == "중카테고리" else "브랜드"
+        ap_adj_cols_head = (["자사/입점"] if ap_adj_split_own else []) + (
+            ["대카테고리"] if ap_adj_group_col == "중카테고리" else []
+        )
+        ap_adj_name_label = {"중카테고리": "중카테고리", "브랜드명": "브랜드", "자사/입점": "자사/입점"}[ap_adj_group_col]
         ap_adj_roas_delta_col = f"ROAS {ap_immediate_label}"
 
         st.markdown("**🔻 줄일 후보** — 초과 광고비(목표 ROAS 대비)가 큰 순")

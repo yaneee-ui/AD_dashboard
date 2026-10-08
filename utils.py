@@ -1055,7 +1055,8 @@ def _pct_change_simple(cur, prev):
 
 
 def ad_product_group_compare(df: pd.DataFrame, group_col: str, cur_start, cur_end, prev_start, prev_end,
-                             own: str = "전체", large_cat: str = "전체", mid_cat: str = "전체") -> pd.DataFrame:
+                             own: str = "전체", large_cat: str = "전체", mid_cat: str = "전체",
+                             split_own: bool = False) -> pd.DataFrame:
     """group_col(대카테고리/중카테고리/브랜드명) 기준으로 현재기간 vs 비교기간의
     판매액/광고비/ROAS/CTR/CVR을 나란히 계산하고, 판매액·ROAS·CVR 증감률(%)을 덧붙인다.
     카테고리별 액션(광고비 증액/점검) 판단을 위한 랭킹 표에 쓴다."""
@@ -1067,6 +1068,9 @@ def ad_product_group_compare(df: pd.DataFrame, group_col: str, cur_start, cur_en
     # 있어서(전체 중카테고리 이름의 약 1/5, 최근 판매액의 80%+), 이름만으로 묶으면 서로 다른
     # 대카테고리가 한 줄로 합쳐진다 — 중카테고리 기준일 땐 (대카테고리, 중카테고리) 쌍으로 묶는다.
     group_cols = ["대카테고리", "중카테고리"] if group_col == "중카테고리" else [group_col]
+    # split_own=True면 자사/입점까지 키에 넣어 같은 그룹을 자사·입점 별개 행으로 나눈다.
+    if split_own and group_col != "자사/입점":
+        group_cols = ["자사/입점"] + group_cols
 
     def _agg_by(sub: pd.DataFrame) -> pd.DataFrame:
         g = sub.groupby(group_cols)[AD_PRODUCT_BASE_METRICS].sum()
