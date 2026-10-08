@@ -2639,19 +2639,28 @@ elif menu == "상품군 효율":
         )
 
     render_section_title("랭킹 · 직전기간 대비 증감")
-    ap_r1, ap_r2, ap_r3 = st.columns([2.2, 2.5, 2])
+    ap_r1, ap_r2, ap_r3, ap_r4 = st.columns([2.2, 2.3, 1.9, 2.4])
     with ap_r1:
         ap_group_label = st.radio("기준", ["대카테고리", "중카테고리", "브랜드"], horizontal=True, key="adprod_group")
+        ap_split_own = st.checkbox(
+            "자사/입점 구분해서 보기", value=False, key="adprod_rank_split_own",
+            help="켜면 선택한 기준을 자사/입점 별개 행으로 나눠서 계산합니다 (브랜드는 원래 한쪽에만 속해 줄 수가 같습니다).",
+        )
     with ap_r2:
         ap_sort_metric = st.radio("정렬", ["판매액", "광고비", "ROAS", "판매액 증감률"], horizontal=True, key="adprod_sort")
     with ap_r3:
         ap_perf_filter = st.radio("성과 필터", ["전체", "🟢 우수만", "🔴 부진만"], horizontal=True, key="adprod_perf_filter")
+    with ap_r4:
+        ap_roas_status_filter = st.radio(
+            "ROAS 상태 필터", ["전체", "▼ 효율개선 필요", "⚠ 광고비 소액", "정상(700%↑)"],
+            horizontal=True, key="adprod_roas_status_filter",
+        )
     ap_group_col = {"대카테고리": "대카테고리", "중카테고리": "중카테고리", "브랜드": "브랜드명"}[ap_group_label]
 
     ap_rank = ad_product_group_compare(
         ad_product_df, ap_group_col, ap_start_ts, ap_end_ts, ap_prev_start, ap_prev_end,
-        ap_own, ap_large, ap_mid,
-    ) if ap_group_col != "대카테고리" else ap_default_rank.copy()
+        ap_own, ap_large, ap_mid, split_own=ap_split_own,
+    ) if (ap_group_col != "대카테고리" or ap_split_own) else ap_default_rank.copy()
 
     # 광고비가 거의 0에 가까우면(예: 769원) 판매액이 조금만 잡혀도 ROAS가 수백~수천%로 튀는데
     # (분모가 너무 작아 통계적으로 불안정) — ROAS 정렬에서는 이런 항목을 뒤로 미루고, 표에도
@@ -2662,6 +2671,19 @@ elif menu == "상품군 효율":
         ap_rank = ap_rank[ap_rank["성과"] == "🟢 우수(증액 검토)"]
     elif ap_perf_filter == "🔴 부진만":
         ap_rank = ap_rank[ap_rank["성과"] == "🔴 부진(축소·재검토)"]
+
+    # ROAS 상태: 광고비 소액 > 효율개선 필요(ROAS 700% 미만) > 정상 순으로 우선 적용 (표의 'ROAS 상태' 열과 동일)
+    ap_rank = ap_rank.copy()
+    ap_roas_status = pd.Series("-", index=ap_rank.index, dtype=object)
+    ap_roas_status[ap_rank["ROAS"] < 7.0] = "▼ 효율개선 필요"
+    ap_roas_status[ap_rank["광고비"] < AP_MIN_AD_COST_FOR_ROAS_SORT] = "⚠ 광고비 소액(참고용, 순위 밀림)"
+    ap_rank["ROAS 상태"] = ap_roas_status
+    if ap_roas_status_filter == "▼ 효율개선 필요":
+        ap_rank = ap_rank[ap_rank["ROAS 상태"] == "▼ 효율개선 필요"]
+    elif ap_roas_status_filter == "⚠ 광고비 소액":
+        ap_rank = ap_rank[ap_rank["ROAS 상태"].str.startswith("⚠")]
+    elif ap_roas_status_filter == "정상(700%↑)":
+        ap_rank = ap_rank[ap_rank["ROAS 상태"] == "-"]
 
     ap_sort_col = "판매액_증감" if ap_sort_metric == "판매액 증감률" else ap_sort_metric
     if ap_sort_metric == "ROAS":
@@ -2682,6 +2704,7 @@ elif menu == "상품군 효율":
         # 불가) "이전"/"현재"를 아예 별도 컬럼으로 나누고, "현재" 컬럼 전체에 Styler로
         # font-weight를 줘서 굵게 강조한다.
         ap_display = pd.DataFrame({
+            **({"자사/입점": ap_rank["자사/입점"]} if ap_split_own else {}),
             **({"대카테고리": ap_rank["대카테고리"]} if ap_group_col == "중카테고리" else {}),
             ap_group_label: ap_rank[ap_group_col],
             "성과": ap_rank["성과"],
@@ -2694,11 +2717,7 @@ elif menu == "상품군 효율":
             f"ROAS (이전)": ap_rank["ROAS_전기"].apply(lambda v: f"{v * 100:,.0f}%"),
             f"ROAS (현재)": ap_rank["ROAS"].apply(lambda v: f"{v * 100:,.0f}%"),
             f"ROAS {ap_immediate_label}": ap_rank["ROAS_증감"].apply(format_delta_text),
-            "ROAS 상태": ap_rank.apply(
-                lambda r: "⚠ 광고비 소액(참고용, 순위 밀림)" if r["광고비"] < AP_MIN_AD_COST_FOR_ROAS_SORT
-                          else ("▼ 효율개선 필요" if pd.notna(r["ROAS"]) and r["ROAS"] < 7.0 else "-"),
-                axis=1,
-            ),
+            "ROAS 상태": ap_rank["ROAS 상태"],
             f"CR(구매/클릭) (이전)": ap_rank["CVR_전기"].apply(lambda v: f"{v * 100:.2f}%"),
             f"CR(구매/클릭) (현재)": ap_rank["CVR"].apply(lambda v: f"{v * 100:.2f}%"),
             f"CR {ap_immediate_label}": ap_rank["CVR_증감"].apply(format_delta_text),
