@@ -2727,3 +2727,142 @@ elif menu == "상품군 효율":
           "🔵 효율 개선=회복 여지 · 🔴 부진(둘 다 하락)=축소·재검토 대상입니다. (±5%p 이내 변화는 ⚫ 변화 미미로 취급) · "
           "ROAS 상태: ROAS 700% 미만이면 '효율개선 필요'로 표시합니다."
     )
+
+    # ══════════════════════════════════════════════════════════
+    # 광고비 조정 후보 — 줄일 후보(저효율) / 늘릴 후보(고효율)
+    # ══════════════════════════════════════════════════════════
+    render_section_title("광고비 조정 후보 · 줄일 후보 / 늘릴 후보")
+    adj_g1, adj_g2, adj_g3, adj_g4 = st.columns([2.2, 1.3, 1.3, 1.6])
+    with adj_g1:
+        ap_adj_group_label = st.radio("분석 단위", ["중카테고리", "브랜드"], horizontal=True, key="adprod_adj_group")
+    with adj_g2:
+        ap_adj_low = st.number_input("줄일 후보: ROAS(%) 미만", min_value=100, max_value=3000, value=700, step=50,
+                                     key="adprod_adj_low")
+    with adj_g3:
+        ap_adj_high = st.number_input("늘릴 후보: ROAS(%) 이상", min_value=100, max_value=5000, value=1200, step=100,
+                                      key="adprod_adj_high")
+    with adj_g4:
+        ap_adj_min_daily = st.number_input("최소 광고비 (일평균, 원)", min_value=0, max_value=1_000_000, value=20_000,
+                                           step=5_000, key="adprod_adj_min_daily")
+    ap_adj_group_col = "중카테고리" if ap_adj_group_label == "중카테고리" else "브랜드명"
+    ap_adj_min_cost = ap_adj_min_daily * ap_cur_days
+
+    ap_adj_all = ad_product_group_compare(
+        ad_product_df, ap_adj_group_col, ap_start_ts, ap_end_ts, ap_prev_start, ap_prev_end,
+        ap_own, ap_large, ap_mid,
+    )
+    ap_adj_total_cost = ap_adj_all["광고비"].sum() if not ap_adj_all.empty else 0
+    ap_adj_valid = ap_adj_all[ap_adj_all["광고비"] >= ap_adj_min_cost] if not ap_adj_all.empty else ap_adj_all
+
+    if ap_adj_valid.empty or not ap_adj_total_cost:
+        st.info("선택한 기간·필터에서 기준(최소 광고비) 이상인 항목이 없습니다.")
+    else:
+        ap_adj_target = ap_adj_low / 100
+        ap_adj_cut = ap_adj_valid[ap_adj_valid["ROAS"] < ap_adj_target].copy()
+        ap_adj_boost = ap_adj_valid[ap_adj_valid["ROAS"] >= ap_adj_high / 100].copy()
+
+        # 진단 기준 = 선택 범위 전체의 평균 CTR/CVR/CPC (분자·분모 합산 후 재계산)
+        ap_adj_avg_ctr = ap_adj_all["클릭수"].sum() / ap_adj_all["노출수"].sum() if ap_adj_all["노출수"].sum() else 0
+        ap_adj_avg_cvr = ap_adj_all["구매수량"].sum() / ap_adj_all["클릭수"].sum() if ap_adj_all["클릭수"].sum() else 0
+        ap_adj_avg_cpc = ap_adj_all["광고비"].sum() / ap_adj_all["클릭수"].sum() if ap_adj_all["클릭수"].sum() else 0
+
+        def _ap_adj_diag(r):
+            if ap_adj_avg_cvr and r["CVR"] < ap_adj_avg_cvr * 0.7:
+                return "전환 낮음 → 상품·가격·결품·상세 점검"
+            if ap_adj_avg_ctr and r["CTR"] < ap_adj_avg_ctr * 0.7:
+                return "클릭률 낮음 → 소재·노출 점검"
+            cpc = r["광고비"] / r["클릭수"] if r["클릭수"] else 0
+            if ap_adj_avg_cpc and cpc > ap_adj_avg_cpc * 1.3:
+                return "클릭단가 높음 → 입찰 하향"
+            return "복합 요인 → 소재·입찰 함께 점검"
+
+        ap_adj_lines = []
+        if not ap_adj_cut.empty:
+            ap_adj_cut["초과광고비"] = ap_adj_cut["광고비"] - ap_adj_cut["판매액"] / ap_adj_target
+            ap_adj_lines.append(
+                f"🔻 줄일 후보 **{len(ap_adj_cut)}개** — 광고비 **{ap_adj_cut['광고비'].sum():,.0f}원** "
+                f"(전체의 {ap_adj_cut['광고비'].sum() / ap_adj_total_cost:.1%})이 ROAS {ap_adj_low}% 미만에서 쓰이고 있어요. "
+                f"ROAS {ap_adj_low}% 수준으로 맞추면 약 **{ap_adj_cut['초과광고비'].sum():,.0f}원** 절감 여지가 있습니다."
+            )
+        else:
+            ap_adj_lines.append(f"🔻 ROAS {ap_adj_low}% 미만이면서 최소 광고비 이상인 항목이 없습니다.")
+        if not ap_adj_boost.empty:
+            ap_adj_lines.append(
+                f"🔺 늘릴 후보 **{len(ap_adj_boost)}개** — 현재 광고비 비중은 "
+                f"**{ap_adj_boost['광고비'].sum() / ap_adj_total_cost:.1%}**에 그치지만 ROAS는 {ap_adj_high}% 이상입니다. "
+                "단계적으로(+20~30%) 올려보고 ROAS가 유지되는지 확인하세요."
+            )
+        else:
+            ap_adj_lines.append(f"🔺 ROAS {ap_adj_high}% 이상이면서 최소 광고비 이상인 항목이 없습니다.")
+        if ap_own == "전체":
+            ap_own_scope = ad_product_df[(ad_product_df["date"] >= ap_start_ts) & (ad_product_df["date"] <= ap_end_ts)]
+            if ap_large != "전체":
+                ap_own_scope = ap_own_scope[ap_own_scope["대카테고리"] == ap_large]
+            if ap_mid != "전체":
+                ap_own_scope = ap_own_scope[ap_own_scope["중카테고리"] == ap_mid]
+            ap_own_g = ap_own_scope.groupby("자사/입점")[["광고비", "판매액"]].sum()
+            if {"자사", "입점"} <= set(ap_own_g.index) and ap_own_g["광고비"].min() > 0:
+                ap_own_roas = ap_own_g["판매액"] / ap_own_g["광고비"]
+                ap_own_share = ap_own_g["광고비"] / ap_own_g["광고비"].sum()
+                ap_adj_lines.append(
+                    f"🏷️ 자사 ROAS **{ap_own_roas['자사'] * 100:,.0f}%** (광고비 {ap_own_share['자사']:.0%}) vs "
+                    f"입점 ROAS **{ap_own_roas['입점'] * 100:,.0f}%** (광고비 {ap_own_share['입점']:.0%}) — "
+                    "입점 쪽 효율 차이가 크면 입점 상품 선별·입찰 조정부터 보세요."
+                )
+        render_insight_box(ap_adj_lines, title="광고비 조정 요약")
+
+        ap_adj_cols_head = ["대카테고리"] if ap_adj_group_col == "중카테고리" else []
+        ap_adj_name_label = "중카테고리" if ap_adj_group_col == "중카테고리" else "브랜드"
+        ap_adj_roas_delta_col = f"ROAS {ap_immediate_label}"
+
+        st.markdown("**🔻 줄일 후보** — 초과 광고비(목표 ROAS 대비)가 큰 순")
+        if ap_adj_cut.empty:
+            st.info("해당 항목이 없습니다.")
+        else:
+            ap_adj_cut = ap_adj_cut.sort_values("초과광고비", ascending=False).head(15)
+            ap_adj_cut_display = pd.DataFrame({
+                **{c: ap_adj_cut[c] for c in ap_adj_cols_head},
+                ap_adj_name_label: ap_adj_cut[ap_adj_group_col],
+                "광고비": ap_adj_cut["광고비"].apply(lambda v: f"{v:,.0f}"),
+                "판매액": ap_adj_cut["판매액"].apply(lambda v: f"{v:,.0f}"),
+                "ROAS": ap_adj_cut["ROAS"].apply(lambda v: f"{v * 100:,.0f}%"),
+                ap_adj_roas_delta_col: ap_adj_cut["ROAS_증감"].apply(format_delta_text),
+                "CR(구매/클릭)": ap_adj_cut["CVR"].apply(lambda v: f"{v * 100:.2f}%"),
+                f"초과 광고비 (ROAS {ap_adj_low}% 기준)": ap_adj_cut["초과광고비"].apply(lambda v: f"{v:,.0f}"),
+                "진단": ap_adj_cut.apply(_ap_adj_diag, axis=1),
+            })
+            st.dataframe(
+                ap_adj_cut_display.style.map(delta_cell_style, subset=[ap_adj_roas_delta_col]),
+                use_container_width=True, hide_index=True,
+                height=min(35 * (len(ap_adj_cut_display) + 1) + 3, 560),
+            )
+
+        st.markdown("**🔺 늘릴 후보** — 판매액이 큰 순")
+        if ap_adj_boost.empty:
+            st.info("해당 항목이 없습니다.")
+        else:
+            ap_adj_boost = ap_adj_boost.sort_values("판매액", ascending=False).head(15)
+            ap_adj_boost_display = pd.DataFrame({
+                **{c: ap_adj_boost[c] for c in ap_adj_cols_head},
+                ap_adj_name_label: ap_adj_boost[ap_adj_group_col],
+                "광고비": ap_adj_boost["광고비"].apply(lambda v: f"{v:,.0f}"),
+                "광고비 비중": ap_adj_boost["광고비"].apply(lambda v: f"{v / ap_adj_total_cost:.1%}"),
+                "판매액": ap_adj_boost["판매액"].apply(lambda v: f"{v:,.0f}"),
+                "ROAS": ap_adj_boost["ROAS"].apply(lambda v: f"{v * 100:,.0f}%"),
+                ap_adj_roas_delta_col: ap_adj_boost["ROAS_증감"].apply(format_delta_text),
+                "CR(구매/클릭)": ap_adj_boost["CVR"].apply(lambda v: f"{v * 100:.2f}%"),
+                f"판매액 {ap_immediate_label}": ap_adj_boost["판매액_증감"].apply(format_delta_text),
+            })
+            st.dataframe(
+                ap_adj_boost_display.style.map(
+                    delta_cell_style, subset=[ap_adj_roas_delta_col, f"판매액 {ap_immediate_label}"]),
+                use_container_width=True, hide_index=True,
+                height=min(35 * (len(ap_adj_boost_display) + 1) + 3, 560),
+            )
+
+        st.caption(
+            f"📅 집계기간 {ap_start_ts.date()} ~ {ap_end_ts.date()} ({ap_cur_days}일) · 광고비·판매액은 누계 기준 · "
+            f"최소 광고비 = 일평균 {ap_adj_min_daily:,}원 × {ap_cur_days}일 = {ap_adj_min_cost:,.0f}원 이상만 대상 · "
+            "진단은 선택 범위 평균 대비 CR·CTR이 70% 미만, 클릭단가가 130% 초과인지로 판단한 참고용입니다. "
+            "ROAS가 낮아도 신규 노출·시즌 준비 목적일 수 있고, 짧은 기간은 변동이 커서 최소 1~2주 단위로 보길 권합니다."
+        )
