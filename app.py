@@ -20,6 +20,7 @@ from utils import (
     AD_PRODUCT_OWN_OPTIONS, AD_PRODUCT_BASE_METRICS,
     CATTXN_TXN_TYPE_OPTIONS, CATTXN_CHANNEL_OPTIONS, CATTXN_METRIC_OPTIONS,
     load_product_txn_data, top_products_by_revenue, brand_label,
+    load_event_calendar, event_period_metrics, event_category_compare, EVENT_AVG_METRICS,
 )
 from styles import (
     inject_css, render_kpi_cards, render_page_header, render_section_title,
@@ -893,8 +894,9 @@ elif menu == "전년비교":
         f"📅 전년비 비교는 전년 동요일(364일 전, 요일 정렬) 기준입니다 · "
         f"데이터는 {MAX_DATE}까지 반영되어 있습니다 (그 이후 실적은 아직 집계 전)."
     )
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "일자별 YoY (전년 동요일)", f"{unit} 종합 YoY", "📆 월별 실적 비교 (연간)", "📦 카테고리별 거래액 비중",
+        "🎉 행사기간 비교",
     ])
 
     # ── TAB 1: 일자별 YoY ──
@@ -1142,6 +1144,195 @@ elif menu == "전년비교":
 
         cat2_start_ts, cat2_end_ts = get_period_bounds(cat2_ref_date, unit, CATTXN_MIN_DATE, CATTXN_MAX_DATE)
         _render_category_mix_section(cat2_start_ts, cat2_end_ts, cat2_ref_date, unit, cat2_mode, key_prefix="page2")
+
+    # ── TAB 5: 행사기간 비교 (EP 대시보드 12번 페이지와 같은 방식 — 두 구간을 일평균으로 맞대본다) ──
+    with tab5:
+        render_section_title("🎉 행사기간 비교")
+        st.caption(
+            "행사 시작·종료일은 조회단위·전년 동요일(364일) 로직과 무관하게 해마다 며칠씩 밀리기 때문에, "
+            "'이번 행사'와 '비교할 행사'를 직접 골라 두 구간을 일평균으로 비교합니다."
+        )
+        ev_cal = load_event_calendar()
+        if not ev_cal.empty:
+            ev_cal = ev_cal[ev_cal["시작일"].dt.date <= MAX_DATE].reset_index(drop=True)
+        ev_labels = (
+            ev_cal.apply(
+                lambda r: f"{int(r['연도'])}.{int(r['월']):02d} · {r['행사명']} "
+                          f"({r['시작일']:%m/%d}~{r['종료일']:%m/%d})", axis=1,
+            ).tolist() if not ev_cal.empty else []
+        )
+        if not ev_labels:
+            st.warning("event_calendar.csv에서 행사 목록을 불러오지 못했어요 — 아래에서 기간을 직접 선택해주세요.")
+
+        ev_c1, ev_c2 = st.columns(2)
+        with ev_c1:
+            ev_b_label = st.selectbox(
+                "이번 행사", ev_labels, index=len(ev_labels) - 1, key="event_b_select",
+            ) if ev_labels else None
+        ev_default_a_idx = 0
+        if ev_b_label is not None:
+            ev_row_b = ev_cal.iloc[ev_labels.index(ev_b_label)]
+            ev_same_slot = ev_cal[(ev_cal["연도"] == ev_row_b["연도"] - 1) & (ev_cal["월"] == ev_row_b["월"])]
+            ev_default_a_idx = (
+                int(ev_same_slot.index[0]) if not ev_same_slot.empty else max(ev_labels.index(ev_b_label) - 1, 0)
+            )
+        with ev_c2:
+            ev_a_label = st.selectbox(
+                "비교할 행사 (보통 작년 같은 행사)", ev_labels, index=ev_default_a_idx,
+                key=f"event_a_select::{ev_b_label}",
+            ) if ev_labels else None
+
+        def _event_default_range(label, fallback):
+            if label is None:
+                return fallback
+            r = ev_cal.iloc[ev_labels.index(label)]
+            s, e = max(r["시작일"].date(), MIN_DATE), min(r["종료일"].date(), MAX_DATE)
+            return (min(s, e), e)
+
+        ev_default_a = _event_default_range(ev_a_label, (MAX_DATE - timedelta(days=13), MAX_DATE - timedelta(days=7)))
+        ev_default_b = _event_default_range(ev_b_label, (MAX_DATE - timedelta(days=6), MAX_DATE))
+        if ev_b_label is not None and ev_cal.iloc[ev_labels.index(ev_b_label)]["종료일"].date() > MAX_DATE:
+            st.caption(f"ℹ️ 이번 행사는 아직 진행 중이라 데이터가 있는 {MAX_DATE:%m/%d}까지만 기본값으로 채웠어요.")
+        st.caption("자동으로 채워진 기간이 실제 행사일과 다르면 아래에서 직접 조정할 수 있어요.")
+
+        ev_d1, ev_d2 = st.columns(2)
+        with ev_d1:
+            ev_a_in = st.date_input(
+                "비교 기간", value=ev_default_a, min_value=MIN_DATE, max_value=MAX_DATE,
+                key=f"event_range_a::{ev_a_label}",
+            )
+        with ev_d2:
+            ev_b_in = st.date_input(
+                "이번 기간", value=ev_default_b, min_value=MIN_DATE, max_value=MAX_DATE,
+                key=f"event_range_b::{ev_b_label}",
+            )
+
+        if not (isinstance(ev_a_in, tuple) and len(ev_a_in) == 2 and isinstance(ev_b_in, tuple) and len(ev_b_in) == 2):
+            st.info("두 기간 모두 시작일~종료일을 선택해주세요.")
+        else:
+            ev_range_a = (pd.Timestamp(ev_a_in[0]), pd.Timestamp(ev_a_in[1]))
+            ev_range_b = (pd.Timestamp(ev_b_in[0]), pd.Timestamp(ev_b_in[1]))
+            ev_label_a = ev_a_label.split(" · ")[0] if ev_a_label else "비교 기간"
+            ev_label_b = ev_b_label.split(" · ")[0] if ev_b_label else "이번 기간"
+            ev_m_a = event_period_metrics(df, *ev_range_a)
+            ev_m_b = event_period_metrics(df, *ev_range_b)
+
+            if ev_m_a is None or ev_m_b is None:
+                st.warning("선택한 기간 중 데이터가 없는 구간이 있습니다.")
+            else:
+                st.markdown(
+                    f"<div style='background:#F8FAFC;border:1px solid #E5E9F0;border-radius:8px;padding:10px 14px;margin:8px 0;'>"
+                    f"<div style='font-size:0.85rem;'>📅 <b>{ev_label_a}</b> {ev_a_in[0]}~{ev_a_in[1]} ({ev_m_a['_ndays']}일)"
+                    f" &nbsp;vs&nbsp; <b>{ev_label_b}</b> {ev_b_in[0]}~{ev_b_in[1]} ({ev_m_b['_ndays']}일)</div>"
+                    f"<div style='font-size:0.76rem;color:#6B7280;margin-top:3px;'>거래액·광고비·UV·결제고객수는 일평균, "
+                    f"ROAS·CTR·CR·객단가는 구간 전체 분자/분모로 다시 계산한 값입니다 — 두 구간 길이가 달라도 비교됩니다.</div></div>",
+                    unsafe_allow_html=True,
+                )
+                if ev_m_a["_ndays"] != ev_m_b["_ndays"]:
+                    st.caption(f"⚠️ 두 기간 일수가 달라요 ({ev_m_a['_ndays']}일 vs {ev_m_b['_ndays']}일) — "
+                               "행사 초반/후반에 매출이 몰리면 일평균도 영향을 받으니 참고하세요.")
+
+                ev_card_metrics = ["거래액", "광고비", "ROAS", "CTR", "CR", "객단가", "UV", "결제고객수"]
+
+                def _ev_fmt(m, v):
+                    return format_million(v) if m in ("거래액", "광고비") else format_value(m, v)
+
+                render_kpi_cards([
+                    {
+                        "label": m + (" · 일평균" if m in EVENT_AVG_METRICS else ""),
+                        "value": _ev_fmt(m, ev_m_b[m]),
+                        "deltas": [(f"{ev_label_a}비", pct_change(ev_m_b[m], ev_m_a[m]), _ev_fmt(m, ev_m_a[m]))],
+                    } for m in ev_card_metrics
+                ])
+
+                # ── 행사 N일차 정렬 라인 비교 ──
+                render_section_title("📈 행사 일차별 추이")
+                ev_metric = st.radio(
+                    "지표", WIDE_YOY_METRICS, index=WIDE_YOY_METRICS.index("거래액"),
+                    horizontal=True, key="event_metric",
+                )
+                ev_va = df[(df["date"] >= ev_range_a[0]) & (df["date"] <= ev_range_a[1])].sort_values("date")
+                ev_vb = df[(df["date"] >= ev_range_b[0]) & (df["date"] <= ev_range_b[1])].sort_values("date")
+                ev_is_m = ev_metric in MILLION_SCALE_METRICS
+                fig_ev = go.Figure()
+                for _v, _lbl, _color in [(ev_va, ev_label_a, "#93C5FD"), (ev_vb, ev_label_b, "#2563EB")]:
+                    _y = _to_million(_v[ev_metric].tolist()) if ev_is_m else _v[ev_metric].tolist()
+                    fig_ev.add_trace(go.Scatter(
+                        x=list(range(1, len(_v) + 1)), y=_y, mode="lines+markers", name=_lbl,
+                        line=dict(width=2, color=_color),
+                        customdata=_v["date"].dt.strftime("%m/%d (%a)").tolist(),
+                        hovertemplate="%{x}일차 · %{customdata}<br>%{y:,.2f}<extra>" + _lbl + "</extra>",
+                    ))
+                fig_ev.update_layout(
+                    height=380, margin=dict(t=20, b=20, l=10, r=10),
+                    xaxis=dict(title="행사 N일차", dtick=1), yaxis=_money_axis(ev_metric, ev_is_m),
+                    hovermode="closest", dragmode="pan",
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+                )
+                st.plotly_chart(fig_ev, use_container_width=True, config={"scrollZoom": True})
+
+                # ── 지표별 상세 ──
+                render_section_title("📋 지표별 상세")
+                ev_rows = []
+                for m in WIDE_YOY_METRICS:
+                    ev_rows.append({
+                        "지표": m + (" (일평균)" if m in EVENT_AVG_METRICS else ""),
+                        ev_label_a: format_value(m, ev_m_a[m]),
+                        ev_label_b: format_value(m, ev_m_b[m]),
+                        "증감률": format_delta_text(pct_change(ev_m_b[m], ev_m_a[m])),
+                    })
+                ev_table = pd.DataFrame(ev_rows)
+                st.dataframe(
+                    ev_table.style.map(delta_cell_style, subset=["증감률"]),
+                    use_container_width=True, hide_index=True,
+                )
+                st.download_button(
+                    "📥 Excel 다운로드", data=to_excel_bytes(ev_table),
+                    file_name=f"행사기간비교_{ev_b_in[0]}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="dl_event_compare",
+                )
+
+                # ── 카테고리별 거래액 변동 (cattxn, 2일 전까지 반영) ──
+                render_section_title("📦 카테고리별 거래액 변동")
+                ev_channel = st.radio(
+                    "채널", ["합계", "쇼핑검색광고", "EP채널"], horizontal=True, key="event_cat_channel",
+                )
+                ev_cat = event_category_compare(cattxn_df, ev_range_a, ev_range_b, ev_channel)
+                if ev_cat.empty or not ev_cat.attrs.get("ndays", (0, 0))[0] or not ev_cat.attrs["ndays"][1]:
+                    st.info("카테고리 데이터가 없는 구간이 있어 비교할 수 없습니다.")
+                else:
+                    ev_na, ev_nb = ev_cat.attrs["ndays"]
+                    ev_up = ev_cat.sort_values("증감액", ascending=False).head(3)
+                    ev_down = ev_cat.sort_values("증감액").head(3)
+                    ev_lines = [
+                        "📈 일평균 거래액이 가장 크게 **늘어난** 카테고리: " + " · ".join(
+                            f"**{r['category']}** {format_delta_text(r['증감률'])} ({r['A']:,.0f} → {r['B']:,.0f})"
+                            for _, r in ev_up.iterrows() if r["증감액"] > 0
+                        ),
+                        "📉 일평균 거래액이 가장 크게 **줄어든** 카테고리: " + " · ".join(
+                            f"**{r['category']}** {format_delta_text(r['증감률'])} ({r['A']:,.0f} → {r['B']:,.0f})"
+                            for _, r in ev_down.iterrows() if r["증감액"] < 0
+                        ),
+                    ]
+                    render_insight_box(ev_lines, title=f"행사기간 카테고리 변동 ({ev_channel})")
+                    ev_cat_table = pd.DataFrame({
+                        "카테고리": ev_cat["category"],
+                        f"{ev_label_a} (일평균)": ev_cat["A"].apply(lambda v: f"{v:,.0f}"),
+                        f"{ev_label_b} (일평균)": ev_cat["B"].apply(lambda v: f"{v:,.0f}"),
+                        "증감액(일평균)": ev_cat["증감액"].apply(lambda v: f"{v:+,.0f}"),
+                        "증감률": ev_cat["증감률"].apply(format_delta_text),
+                    })
+                    st.dataframe(
+                        ev_cat_table.style.map(delta_cell_style, subset=["증감률"]),
+                        use_container_width=True, hide_index=True,
+                        height=min(35 * (len(ev_cat_table) + 1) + 3, 560),
+                    )
+                    st.caption(
+                        f"카테고리 데이터는 2일 전 실적까지 반영됩니다(최신일자: {CATTXN_MAX_DATE}) · "
+                        f"집계일수 {ev_label_a} {ev_na}일 / {ev_label_b} {ev_nb}일 · "
+                        "📁 데이터 출처: category_brand_txn_daily.csv (위 지표 카드의 태블로 원본과는 별도 집계)"
+                    )
 
 
 # ════════════════════════════════════════════════════════════════

@@ -157,6 +157,67 @@ def format_value(metric: str, value: float) -> str:
     return f"{value:,.0f}"
 
 
+# ── 행사 기간 비교 (EP 대시보드 12번 페이지와 같은 방식: 임의의 두 구간을 일평균으로 비교) ──
+_EVENT_CALENDAR_CANDIDATE_PATHS = [
+    os.path.join(BASE_DIR, "data", "event_calendar.csv"),
+    os.path.join(BASE_DIR, "event_calendar.csv"),
+]
+EVENT_AVG_METRICS = ["거래액", "광고비", "UV", "결제고객수"]  # 합계 지표 — 구간 일수로 나눠 일평균으로 비교
+
+
+@st.cache_data
+def load_event_calendar() -> pd.DataFrame:
+    """행사 캘린더(연도/월/행사명/시작일/종료일). 파일이 없으면 빈 DataFrame."""
+    path = next((p for p in _EVENT_CALENDAR_CANDIDATE_PATHS if os.path.exists(p)), None)
+    cols = ["연도", "월", "행사명", "시작일", "종료일"]
+    if path is None:
+        return pd.DataFrame(columns=cols)
+    df = pd.read_csv(path, encoding="utf-8-sig")
+    df["시작일"] = pd.to_datetime(df["시작일"])
+    df["종료일"] = pd.to_datetime(df["종료일"])
+    return df.sort_values(["연도", "월"]).reset_index(drop=True)
+
+
+def event_period_metrics(df: pd.DataFrame, start, end) -> dict:
+    """구간(start~end)의 지표. 합계 지표(거래액·광고비·UV·결제고객수 등)는 데이터가 있는 일수로 나눈
+    일평균, 비율 지표(ROAS·CTR·CR·객단가 등)는 구간 전체 분자/분모로 재계산한 값. 데이터가 없으면 None."""
+    view = df[(df["date"] >= pd.Timestamp(start)) & (df["date"] <= pd.Timestamp(end))]
+    if view.empty:
+        return None
+    ndays = view["date"].nunique()
+    agg = aggregate(view)
+    out = dict(agg)
+    for m in BASE_METRICS:
+        out[m] = agg[m] / ndays
+    out["_ndays"] = ndays
+    return out
+
+
+def event_category_compare(cattxn: pd.DataFrame, range_a, range_b, channel: str = "합계") -> pd.DataFrame:
+    """카테고리별 거래액을 두 구간(일평균)으로 비교. channel: '쇼핑검색광고' | 'EP채널' | '합계'.
+    구간이 데이터 범위를 벗어나면 데이터가 있는 날짜까지만 쓴다."""
+    def _per_day(rng):
+        view = cattxn[(cattxn["date"] >= pd.Timestamp(rng[0])) & (cattxn["date"] <= pd.Timestamp(rng[1]))]
+        if view.empty:
+            return pd.Series(dtype=float), 0
+        ndays = view["date"].nunique()
+        if channel == "쇼핑검색광고":
+            val = view["ad_거래액"]
+        elif channel == "EP채널":
+            val = view["ep_거래액"]
+        else:
+            val = view["ad_거래액"] + view["ep_거래액"]
+        return val.groupby(view["category"]).sum() / ndays, ndays
+
+    a, na = _per_day(range_a)
+    b, nb = _per_day(range_b)
+    out = pd.DataFrame({"A": a, "B": b}).fillna(0.0)
+    out["증감액"] = out["B"] - out["A"]
+    out["증감률"] = out.apply(lambda r: (r["B"] / r["A"] - 1) * 100 if r["A"] else None, axis=1)
+    out.attrs["ndays"] = (na, nb)
+    return out.reset_index(names="category").sort_values("B", ascending=False).reset_index(drop=True)
+
+
 def yoy_same_weekday_dates(target_dates: pd.Series) -> pd.Series:
     """전년 동요일 매칭을 위해 364일(52주) 전 날짜를 반환."""
     return target_dates - pd.Timedelta(days=364)
