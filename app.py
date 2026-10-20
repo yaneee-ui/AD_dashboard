@@ -2858,6 +2858,104 @@ elif menu == "상품군 효율":
             tone="success",
         )
 
+    # ══════════════════════════════════════════════════════════
+    # 카테고리별 거래액 현황 → 행을 클릭하면 그 카테고리의 거래액 상위 상품 TOP10
+    # (03페이지와 같은 카테고리 체계·상품명 데이터 — 이 페이지 위·아래의 NBOS 대/중카테고리와는 별개)
+    # ══════════════════════════════════════════════════════════
+    render_section_title("카테고리별 거래액 현황 · 클릭하면 상위 상품 TOP10")
+    st.caption(
+        "ℹ️ 이 섹션은 03페이지와 같은 카테고리 체계(태블로 기반)와 상품명 데이터를 씁니다 — 이 페이지 다른 영역의 "
+        "NBOS 대/중카테고리와 직접 매핑되지 않아요. 표에서 카테고리 행을 클릭하면 아래에 그 카테고리의 "
+        "거래액 상위 10개 상품이 나옵니다 (선택이 없으면 '합계(전체)' 기준). 기간·표시방식은 이 페이지 상단 필터를 따라가요."
+    )
+    ap_cs_txn = st.radio("정상/이월/입점", CATTXN_TXN_TYPE_OPTIONS, horizontal=True, key="adprod_cs_txn")
+    ap_cs_start = max(ap_start_ts, pd.Timestamp(CATTXN_MIN_DATE))
+    ap_cs_end = min(ap_end_ts, pd.Timestamp(CATTXN_MAX_DATE))
+    ap_cs_view = (
+        cattxn_df[(cattxn_df["date"] >= ap_cs_start) & (cattxn_df["date"] <= ap_cs_end)]
+        if ap_cs_start <= ap_cs_end else cattxn_df.iloc[0:0]
+    )
+    ap_cs_rank = aggregate_cattxn_by(ap_cs_view, "category", ap_cs_txn) if not ap_cs_view.empty else None
+    if ap_cs_rank is not None:
+        ap_cs_rank["합계"] = ap_cs_rank["쇼핑검색광고_거래액"] + ap_cs_rank["EP채널_거래액"]
+        ap_cs_rank = ap_cs_rank[ap_cs_rank["합계"] > 0].sort_values("합계", ascending=False).reset_index(drop=True)
+
+    if ap_cs_rank is None or ap_cs_rank.empty:
+        st.info(f"이 기간에는 카테고리별 데이터가 없습니다 (카테고리 데이터 최신일자: {CATTXN_MAX_DATE}).")
+    else:
+        ap_cs_days = ap_cs_view["date"].nunique() if ap_mode == "일평균" else 1
+        ap_cs_table = pd.DataFrame({
+            "카테고리": ["합계(전체)"] + ap_cs_rank["category"].tolist(),
+            "쇼핑검색광고 거래액": [ap_cs_rank["쇼핑검색광고_거래액"].sum()] + ap_cs_rank["쇼핑검색광고_거래액"].tolist(),
+            "EP채널 거래액": [ap_cs_rank["EP채널_거래액"].sum()] + ap_cs_rank["EP채널_거래액"].tolist(),
+            "합계 거래액": [ap_cs_rank["합계"].sum()] + ap_cs_rank["합계"].tolist(),
+        })
+        for _c in ["쇼핑검색광고 거래액", "EP채널 거래액", "합계 거래액"]:
+            ap_cs_table[_c] = ap_cs_table[_c] / ap_cs_days
+        ap_cs_ad_share = (
+            ap_cs_table["쇼핑검색광고 거래액"] / ap_cs_table["합계 거래액"] * 100
+        ).where(ap_cs_table["합계 거래액"] > 0)
+        # 쉼표 포함 문자열로 보여주되(다른 표와 동일), 선택 로직은 행 순서(index)만 쓰므로 영향 없다.
+        ap_cs_display = ap_cs_table.copy()
+        for _c in ["쇼핑검색광고 거래액", "EP채널 거래액", "합계 거래액"]:
+            ap_cs_display[_c] = ap_cs_table[_c].apply(lambda v: f"{v:,.0f}")
+        ap_cs_display["광고 비중"] = ap_cs_ad_share.apply(lambda v: f"{v:.1f}%" if pd.notna(v) else "-")
+        ap_cs_event = st.dataframe(
+            ap_cs_display, hide_index=True, use_container_width=True,
+            on_select="rerun", selection_mode="single-row", key="adprod_cs_table",
+            height=min(35 * (len(ap_cs_display) + 1) + 3, 460),
+        )
+        ap_cs_sel_rows = ap_cs_event.selection.rows if ap_cs_event is not None else []
+        ap_cs_sel_idx = ap_cs_sel_rows[0] if ap_cs_sel_rows and ap_cs_sel_rows[0] < len(ap_cs_table) else 0
+        ap_cs_sel_cat = ap_cs_table.iloc[ap_cs_sel_idx]["카테고리"]
+        ap_cs_cat_filter = "전체" if ap_cs_sel_cat == "합계(전체)" else ap_cs_sel_cat
+        st.caption(
+            f"📅 집계기간 {ap_cs_start.date()} ~ {ap_cs_end.date()} · {ap_mode} 기준 · 카테고리 데이터는 2일 전 실적까지 반영 "
+            f"(최신일자: {CATTXN_MAX_DATE}) · 합계 거래액 = 쇼핑검색광고 + EP채널"
+        )
+
+        st.markdown(f"**📦 {ap_cs_sel_cat} · 거래액 상위 10개 상품**")
+        if product_txn_df is None:
+            st.info("상품명 단위 데이터가 아직 없습니다 (product_txn_daily 파일 미존재).")
+        else:
+            ap_cs_channel = st.radio(
+                "정렬 기준 채널", ["합계", "쇼핑검색광고", "EP채널"], horizontal=True, key="adprod_cs_channel",
+            )
+            ap_ps = max(ap_cs_start, pd.Timestamp(PRODUCT_TXN_MIN_DATE))
+            ap_pe = min(ap_cs_end, pd.Timestamp(PRODUCT_TXN_MAX_DATE))
+            if ap_ps > ap_pe:
+                st.info(f"이 기간에는 상품명 단위 데이터가 없습니다 (보유 범위: {PRODUCT_TXN_MIN_DATE} ~ {PRODUCT_TXN_MAX_DATE}).")
+            else:
+                ap_top = top_products_by_revenue(
+                    product_txn_df, ap_ps, ap_pe, ap_cs_txn, ap_cs_cat_filter, "전체",
+                    channel=ap_cs_channel, top_n=10,
+                )
+                if ap_top.empty:
+                    st.info("조건에 맞는 상품 거래액 데이터가 없습니다.")
+                else:
+                    ap_pdays = (
+                        product_txn_df[(product_txn_df["date"] >= ap_ps) & (product_txn_df["date"] <= ap_pe)]["date"].nunique()
+                        if ap_mode == "일평균" else 1
+                    ) or 1
+                    st.dataframe(
+                        pd.DataFrame({
+                            "순위": range(1, len(ap_top) + 1),
+                            "상품명": ap_top["product_name"],
+                            "상품코드": ap_top["product_code"],
+                            "카테고리": ap_top["category"],
+                            "브랜드": ap_top["brand"].map(brand_label),
+                            f"거래액({ap_cs_channel})": (ap_top["거래액"] / ap_pdays).apply(lambda v: f"{v:,.0f}"),
+                            "쇼핑검색광고 거래액": (ap_top["ad_거래액"] / ap_pdays).apply(lambda v: f"{v:,.0f}"),
+                            "EP채널 거래액": (ap_top["ep_거래액"] / ap_pdays).apply(lambda v: f"{v:,.0f}"),
+                            "주문고객수": (ap_top["주문고객수"] / ap_pdays).apply(lambda v: f"{v:,.1f}" if ap_mode == "일평균" else f"{v:,.0f}"),
+                        }),
+                        use_container_width=True, hide_index=True,
+                    )
+                    st.caption(
+                        f"📅 집계기간 {ap_ps.date()} ~ {ap_pe.date()} · {ap_mode} 기준 "
+                        f"(상품명 단위 데이터는 {PRODUCT_TXN_MIN_DATE} 이후만 보유) · 📁 product_txn_daily"
+                    )
+
     render_section_title("랭킹 · 직전기간 대비 증감")
     ap_r1, ap_r2, ap_r3, ap_r4 = st.columns([2.2, 2.3, 1.9, 2.4])
     with ap_r1:
