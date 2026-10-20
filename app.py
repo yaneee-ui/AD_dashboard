@@ -350,8 +350,23 @@ def _render_category_mix_section(start_ts, end_ts, ref_date, unit, mode, key_pre
                 cat_immediate_label: format_delta_text(imm_pct) if imm_v is not None else "-",
                 f"{cat_immediate_label} 값": f"{imm_v:,.0f}" if imm_v is not None else "-",
             })
+        # 맨 위 합계 행 — 전체 카테고리 합산 기준(전년·직전기간도 전체 합산과 비교)
+        tot_cur = cat_rank_all["쇼핑검색광고_거래액"].sum()
+        tot_yoy = cat_yoy_series.sum() if cat_yoy_series is not None else None
+        tot_imm = cat_imm_series.sum() if cat_imm_series is not None else None
+        cat_table_rows.insert(0, {
+            "카테고리": "합계(전체)",
+            "거래액": f"{tot_cur:,.0f}",
+            "비중": "100.0%",
+            "전년동요일": format_delta_text(pct_change(tot_cur, tot_yoy)) if tot_yoy is not None else "-",
+            "전년동요일 값": f"{tot_yoy:,.0f}" if tot_yoy is not None else "-",
+            cat_immediate_label: format_delta_text(pct_change(tot_cur, tot_imm)) if tot_imm is not None else "-",
+            f"{cat_immediate_label} 값": f"{tot_imm:,.0f}" if tot_imm is not None else "-",
+        })
         cat_table_df = pd.DataFrame(cat_table_rows)
-        render_comparison_table(cat_table_df, delta_cols=["전년동요일", cat_immediate_label])
+        render_comparison_table(
+            cat_table_df, delta_cols=["전년동요일", cat_immediate_label], bold_rows={"합계(전체)"},
+        )
     cat_comp_strs = [
         f"{lbl} = {p[0].date()} ~ {p[1].date()}" if p else f"{lbl} = 데이터 없음"
         for lbl, p in [(cat_immediate_label, cat_comp_periods.get(cat_immediate_label)),
@@ -417,8 +432,22 @@ def _render_category_mix_section(start_ts, end_ts, ref_date, unit, mode, key_pre
                 cat_immediate_label: format_delta_text(imm_pct) if imm_v is not None else "-",
                 f"{cat_immediate_label} 값": f"{imm_v:,.0f}" if imm_v is not None else "-",
             })
+        ep_tot_cur = cat_rank_all["EP채널_거래액"].sum()
+        ep_tot_yoy = ep_yoy_series.sum() if ep_yoy_series is not None else None
+        ep_tot_imm = ep_imm_series.sum() if ep_imm_series is not None else None
+        ep_table_rows.insert(0, {
+            "카테고리": "합계(전체)",
+            "EP 거래액": f"{ep_tot_cur:,.0f}",
+            "비중": "100.0%",
+            "전년동요일": format_delta_text(pct_change(ep_tot_cur, ep_tot_yoy)) if ep_tot_yoy is not None else "-",
+            "전년동요일 값": f"{ep_tot_yoy:,.0f}" if ep_tot_yoy is not None else "-",
+            cat_immediate_label: format_delta_text(pct_change(ep_tot_cur, ep_tot_imm)) if ep_tot_imm is not None else "-",
+            f"{cat_immediate_label} 값": f"{ep_tot_imm:,.0f}" if ep_tot_imm is not None else "-",
+        })
         ep_table_df = pd.DataFrame(ep_table_rows)
-        render_comparison_table(ep_table_df, delta_cols=["전년동요일", cat_immediate_label])
+        render_comparison_table(
+            ep_table_df, delta_cols=["전년동요일", cat_immediate_label], bold_rows={"합계(전체)"},
+        )
         st.caption(
             "💡 EP(오가닉) 채널 거래액이 높은 카테고리는 광고 반응 가능성이 있는 확대 후보로 "
             "참고할 수 있습니다 (광고 집행 여부와 무관하게 EP 거래액 기준으로 집계)."
