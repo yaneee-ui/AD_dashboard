@@ -629,19 +629,21 @@ def top_products_by_revenue(df: pd.DataFrame, start_ts, end_ts, txn_type: str = 
 
 @st.cache_data
 def top_products_excel_bytes(start_ts, end_ts, txn_type: str = "전체", category: str = "전체",
-                             brand: str = "전체", n: int = 20, days: int = 1):
+                             brand: str = "전체", n: int = 20, days: int = 1, all_scope: bool = False):
     """광고 상위 / EP 상위 / 광고·EP 모두 상위 상품을 시트로 나눈 엑셀(bytes). 데이터가 없으면 None.
     값은 기간 '누계'이고(일평균 아님), 일수는 '정보' 시트에 같이 적는다 — 캐시를 쓰려고 큰 DataFrame을
-    인자로 받지 않고 load_product_txn_data()를 안에서 부른다."""
+    인자로 받지 않고 load_product_txn_data()를 안에서 부른다.
+    all_scope=True면 txn_type/category/brand 인자를 무시하고 '전체' 범위(모든 카테고리·브랜드)로 뽑되,
+    전체 + 정상 + 이월 + 입점 각각의 상위 상품을 '범위' 열로 구분해 한 시트에 이어 붙인다."""
     from io import BytesIO
 
     df = load_product_txn_data()
     if df is None:
         return None
-    ad = top_products_by_revenue(df, start_ts, end_ts, txn_type, category, brand, "쇼핑검색광고", n, n)
-    ep = top_products_by_revenue(df, start_ts, end_ts, txn_type, category, brand, "EP채널", n, n)
-    if ad.empty and ep.empty:
-        return None
+
+    # 상품코드 -> 거래유형 (기간 안에서 처음 나온 값; 한 상품이 여러 유형을 갖는 일은 드물다)
+    period_rows = df[(df["date"] >= pd.Timestamp(start_ts)) & (df["date"] <= pd.Timestamp(end_ts))]
+    txn_of = period_rows[["product_code", "txn_type"]].drop_duplicates("product_code").set_index("product_code")["txn_type"]
 
     def _sheet(frame):
         if frame.empty:
@@ -656,6 +658,7 @@ def top_products_excel_bytes(start_ts, end_ts, txn_type: str = "전체", categor
             "구분": tag,
             "상품명": frame["product_name"],
             "상품코드": frame["product_code"],
+            "거래유형": frame["product_code"].map(txn_of),
             "카테고리": frame["category"],
             "브랜드": frame["brand"].map(brand_label),
             "쇼핑검색광고 거래액": frame["ad_거래액"],
@@ -666,24 +669,50 @@ def top_products_excel_bytes(start_ts, end_ts, txn_type: str = "전체", categor
             "EP채널 주문고객수": frame["ep_주문고객수"],
         })
 
-    ad_sheet = _sheet(ad)
-    ep_sheet = _sheet(ep)
-    # 광고 TOP n 안에 있으면서 EP 순위도 n 이내인 상품 = 둘 다 상위 (EP TOP n에서 뽑아도 같은 집합)
-    both_sheet = ad_sheet[ad_sheet["구분"].str.startswith("★")].copy() if not ad_sheet.empty else pd.DataFrame()
-    if not both_sheet.empty:
-        both_sheet["순위"] = range(1, len(both_sheet) + 1)
-    info = pd.DataFrame({
-        "항목": ["집계기간", "집계일수", "거래유형", "카테고리", "브랜드", "상위 기준", "값 기준"],
-        "내용": [
-            f"{pd.Timestamp(start_ts).date()} ~ {pd.Timestamp(end_ts).date()}", days, txn_type, category,
-            brand_label(brand) if brand != "전체" else "전체", f"광고·EP 각각 상위 {n}위",
-            "기간 누계 (일평균이 필요하면 집계일수로 나누세요)",
-        ],
-    })
+    def _scope_sheets(txn, cat, brd):
+        ad = top_products_by_revenue(df, start_ts, end_ts, txn, cat, brd, "쇼핑검색광고", n, n)
+        ep = top_products_by_revenue(df, start_ts, end_ts, txn, cat, brd, "EP채널", n, n)
+        ad_s, ep_s = _sheet(ad), _sheet(ep)
+        # 광고 TOP n 안에 있으면서 EP 순위도 n 이내인 상품 = 둘 다 상위 (EP TOP n에서 뽑아도 같은 집합)
+        both_s = ad_s[ad_s["구분"].str.startswith("★")].copy() if not ad_s.empty else pd.DataFrame()
+        if not both_s.empty:
+            both_s["순위"] = range(1, len(both_s) + 1)
+        return ad_s, ep_s, both_s
+
+    if all_scope:
+        parts = {"광고": [], "EP": [], "모두": []}
+        for scope_name in ["전체", "정상", "이월", "입점"]:
+            ad_s, ep_s, both_s = _scope_sheets(scope_name, "전체", "전체")
+            for key, s in zip(["광고", "EP", "모두"], [ad_s, ep_s, both_s]):
+                if not s.empty:
+                    parts[key].append(s.assign(범위=scope_name))
+        sheets = []
+        for key, name in [("광고", f"광고 상위 TOP{n}"), ("EP", f"EP 상위 TOP{n}"), ("모두", "광고·EP 모두 상위")]:
+            if parts[key]:
+                s = pd.concat(parts[key], ignore_index=True)
+                s = s[["범위"] + [c for c in s.columns if c != "범위"]]
+            else:
+                s = pd.DataFrame()
+            sheets.append((name, s))
+        scope_rows = [("거래유형", "전체 + 정상 / 이월 / 입점 각각 (시트의 '범위' 열로 구분, 순위는 범위별)"),
+                      ("카테고리", "전체 (카테고리 열로 필터링 가능)"), ("브랜드", "전체")]
+    else:
+        ad_s, ep_s, both_s = _scope_sheets(txn_type, category, brand)
+        sheets = [(f"광고 상위 TOP{n}", ad_s), (f"EP 상위 TOP{n}", ep_s), ("광고·EP 모두 상위", both_s)]
+        scope_rows = [("거래유형", txn_type), ("카테고리", category),
+                      ("브랜드", brand_label(brand) if brand != "전체" else "전체")]
+    if all(s.empty for _, s in sheets):
+        return None
+
+    info = pd.DataFrame(
+        [("집계기간", f"{pd.Timestamp(start_ts).date()} ~ {pd.Timestamp(end_ts).date()}"), ("집계일수", days)]
+        + scope_rows
+        + [("상위 기준", f"광고·EP 각각 상위 {n}위"), ("값 기준", "기간 누계 (일평균이 필요하면 집계일수로 나누세요)")],
+        columns=["항목", "내용"],
+    )
     buf = BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-        for name, sheet in [(f"광고 상위 TOP{n}", ad_sheet), (f"EP 상위 TOP{n}", ep_sheet),
-                            ("광고·EP 모두 상위", both_sheet)]:
+        for name, sheet in sheets:
             (sheet if not sheet.empty else pd.DataFrame({"안내": ["해당 상품이 없습니다."]})).to_excel(
                 writer, index=False, sheet_name=name,
             )

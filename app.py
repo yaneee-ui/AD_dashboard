@@ -2382,18 +2382,27 @@ elif menu == "카테고리별 실적":
                         f"{top_products.attrs.get('both_top_count', 0)}개예요 (표에서 노란 배경 + '★ 광고·EP 모두 상위'). "
                         "순위는 표에 보이는 20개가 아니라 현재 필터 범위의 전체 상품 기준입니다."
                     )
+                    top_dl_scope = st.radio(
+                        "다운로드 범위", ["지금 보는 필터", "전체 (정상·이월·입점 · 모든 카테고리/브랜드)"],
+                        horizontal=True, key="dl_scope_cattxn",
+                        help="'전체'는 위 필터와 무관하게 기간만 적용해서 전체 + 정상 / 이월 / 입점 각각의 상위 상품을 한 파일에 담습니다.",
+                    )
+                    top_all_scope = top_dl_scope.startswith("전체")
                     top_xlsx = top_products_excel_bytes(
                         prod_start, prod_end, cattxn_txn_filter, cattxn_category_filter, cattxn_brand_filter,
                         20, int(product_txn_df[(product_txn_df["date"] >= prod_start)
                                                & (product_txn_df["date"] <= prod_end)]["date"].nunique()),
+                        top_all_scope,
                     )
                     if top_xlsx is not None:
                         st.download_button(
                             "📥 광고 / EP / 광고·EP 모두 상위 상품 Excel 다운로드", data=top_xlsx,
-                            file_name=f"상위상품_{prod_start.date()}_{prod_end.date()}.xlsx",
+                            file_name=f"상위상품{'_전체' if top_all_scope else ''}_{prod_start.date()}_{prod_end.date()}.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             key="dl_cattxn_top_products",
                         )
+                    else:
+                        st.caption("다운로드할 상품 데이터가 없습니다.")
                     st.caption(
                         f"📅 집계기간: {prod_start.date()} ~ {prod_end.date()} · 정렬 채널: {prod_channel} "
                         f"(상품명 단위 데이터는 {PRODUCT_TXN_MIN_DATE} 이후만 보유 — 기간 중 그 이전 구간은 제외됩니다) · "
@@ -3023,18 +3032,27 @@ elif menu == "상품군 효율":
                         f"{ap_top.attrs.get('both_top_count', 0)}개예요 (노란 배경 + '★ 광고·EP 모두 상위'). "
                         "순위는 표의 10개가 아니라 현재 필터 범위의 전체 상품 기준입니다."
                     )
+                    ap_dl_scope = st.radio(
+                        "다운로드 범위", ["지금 보는 필터", "전체 (정상·이월·입점 · 모든 카테고리/브랜드)"],
+                        horizontal=True, key="dl_scope_adprod",
+                        help="'전체'는 위 필터와 무관하게 기간만 적용해서 전체 + 정상 / 이월 / 입점 각각의 상위 상품을 한 파일에 담습니다.",
+                    )
+                    ap_all_scope = ap_dl_scope.startswith("전체")
                     ap_top_xlsx = top_products_excel_bytes(
                         ap_ps, ap_pe, ap_cs_txn, ap_cs_cat_filter, "전체", 20,
                         int(product_txn_df[(product_txn_df["date"] >= ap_ps)
                                            & (product_txn_df["date"] <= ap_pe)]["date"].nunique()),
+                        ap_all_scope,
                     )
                     if ap_top_xlsx is not None:
                         st.download_button(
                             "📥 광고 / EP / 광고·EP 모두 상위 상품 Excel 다운로드", data=ap_top_xlsx,
-                            file_name=f"상위상품_{ap_ps.date()}_{ap_pe.date()}.xlsx",
+                            file_name=f"상위상품{'_전체' if ap_all_scope else ''}_{ap_ps.date()}_{ap_pe.date()}.xlsx",
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                             key="dl_adprod_top_products",
                         )
+                    else:
+                        st.caption("다운로드할 상품 데이터가 없습니다.")
                     st.caption(
                         f"📅 집계기간 {ap_ps.date()} ~ {ap_pe.date()} · {ap_mode} 기준 "
                         f"(상품명 단위 데이터는 {PRODUCT_TXN_MIN_DATE} 이후만 보유) · "
