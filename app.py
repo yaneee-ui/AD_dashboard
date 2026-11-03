@@ -2385,7 +2385,8 @@ elif menu == "카테고리별 실적":
                     top_dl_scope = st.radio(
                         "다운로드 범위", ["지금 보는 필터", "전체 (정상·이월·입점 · 모든 카테고리/브랜드)"],
                         horizontal=True, key="dl_scope_cattxn",
-                        help="'전체'는 위 필터와 무관하게 기간만 적용해서 전체 + 정상 / 이월 / 입점 각각의 상위 상품을 한 파일에 담습니다.",
+                        help="'전체'는 위 필터와 무관하게 기간만 적용해서 전체 + 정상 / 이월 / 입점 각각의 상위 상품과, "
+                             "정상·이월의 카테고리별·브랜드별 상품 목록(그룹당 상위 20개)을 한 파일에 담습니다.",
                     )
                     top_all_scope = top_dl_scope.startswith("전체")
                     top_xlsx = top_products_excel_bytes(
@@ -3035,7 +3036,8 @@ elif menu == "상품군 효율":
                     ap_dl_scope = st.radio(
                         "다운로드 범위", ["지금 보는 필터", "전체 (정상·이월·입점 · 모든 카테고리/브랜드)"],
                         horizontal=True, key="dl_scope_adprod",
-                        help="'전체'는 위 필터와 무관하게 기간만 적용해서 전체 + 정상 / 이월 / 입점 각각의 상위 상품을 한 파일에 담습니다.",
+                        help="'전체'는 위 필터와 무관하게 기간만 적용해서 전체 + 정상 / 이월 / 입점 각각의 상위 상품과, "
+                             "정상·이월의 카테고리별·브랜드별 상품 목록(그룹당 상위 20개)을 한 파일에 담습니다.",
                     )
                     ap_all_scope = ap_dl_scope.startswith("전체")
                     ap_top_xlsx = top_products_excel_bytes(

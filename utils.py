@@ -695,7 +695,49 @@ def top_products_excel_bytes(start_ts, end_ts, txn_type: str = "전체", categor
                 s = pd.DataFrame()
             sheets.append((name, s))
         scope_rows = [("거래유형", "전체 + 정상 / 이월 / 입점 각각 (시트의 '범위' 열로 구분, 순위는 범위별)"),
-                      ("카테고리", "전체 (카테고리 열로 필터링 가능)"), ("브랜드", "전체")]
+                      ("카테고리", "전체 (카테고리 열로 필터링 가능)"), ("브랜드", "전체"),
+                      ("정상·이월 상세 시트", f"'정상/이월 카테고리별·브랜드별 상품' — 각 카테고리/브랜드 안에서 합계 거래액 상위 {n}개 "
+                                           "(광고·EP 순위와 ★는 그 그룹 안에서의 순위 기준)")]
+
+        # 정상 / 이월은 카테고리·브랜드 단위까지 내려가서 그룹별 상위 상품 목록을 따로 만든다.
+        def _group_sheet(txn, group_col):
+            scope = _cattxn_scope(period_rows, txn)
+            if scope.empty:
+                return pd.DataFrame()
+            g = scope.groupby(["product_name", "product_code", "category", "brand"], as_index=False)[
+                ["ad_거래액", "ad_주문고객수", "ep_거래액", "ep_주문고객수"]
+            ].sum()
+            g["합계"] = g["ad_거래액"] + g["ep_거래액"]
+            g = g[g["합계"] > 0]
+            if g.empty:
+                return pd.DataFrame()
+            g["광고순위"] = g["ad_거래액"].where(g["ad_거래액"] > 0).groupby(g[group_col]).rank(ascending=False, method="min")
+            g["EP순위"] = g["ep_거래액"].where(g["ep_거래액"] > 0).groupby(g[group_col]).rank(ascending=False, method="min")
+            order = g.groupby(group_col)["합계"].sum().sort_values(ascending=False)
+            g["_g"] = g[group_col].map({k: i for i, k in enumerate(order.index)})
+            g = g.sort_values(["_g", "합계"], ascending=[True, False])
+            g["순위"] = g.groupby(group_col).cumcount() + 1
+            g = g[g["순위"] <= n]
+            tag = [
+                "★ 광고·EP 모두 상위" if (pd.notna(a) and a <= n and pd.notna(e) and e <= n)
+                else ("광고 상위" if pd.notna(a) and a <= n else ("EP 상위" if pd.notna(e) and e <= n else "-"))
+                for a, e in zip(g["광고순위"], g["EP순위"])
+            ]
+            label = "카테고리" if group_col == "category" else "브랜드"
+            return pd.DataFrame({
+                label: g[group_col].map(brand_label) if group_col == "brand" else g[group_col],
+                "순위": g["순위"], "구분": tag,
+                "상품명": g["product_name"], "상품코드": g["product_code"],
+                "카테고리": g["category"], "브랜드": g["brand"].map(brand_label),
+                "합계 거래액": g["합계"],
+                "쇼핑검색광고 거래액": g["ad_거래액"], "광고 순위(그룹 내)": g["광고순위"],
+                "EP채널 거래액": g["ep_거래액"], "EP 순위(그룹 내)": g["EP순위"],
+                "쇼핑검색광고 주문고객수": g["ad_주문고객수"], "EP채널 주문고객수": g["ep_주문고객수"],
+            })
+
+        for txn_name in ["정상", "이월"]:
+            for group_col, group_name in [("category", "카테고리별"), ("brand", "브랜드별")]:
+                sheets.append((f"{txn_name} {group_name} 상품", _group_sheet(txn_name, group_col)))
     else:
         ad_s, ep_s, both_s = _scope_sheets(txn_type, category, brand)
         sheets = [(f"광고 상위 TOP{n}", ad_s), (f"EP 상위 TOP{n}", ep_s), ("광고·EP 모두 상위", both_s)]
