@@ -605,6 +605,11 @@ def top_products_by_revenue(df: pd.DataFrame, start_ts, end_ts, txn_type: str = 
     grouped = scope.groupby(["product_name", "product_code", "category", "brand"], as_index=False)[
         ["ad_거래액", "ad_주문고객수", "ep_거래액", "ep_주문고객수"]
     ].sum()
+    # 광고·EP 각각 범위 안 전체 상품 중 거래액 순위 (0 이하는 순위 없음) — 두 채널 모두 상위권인
+    # 상품을 가려내는 데 쓴다(표에 보이는 TOP N 안에서만이 아니라 전체 상품 기준).
+    grouped["광고순위"] = grouped["ad_거래액"].where(grouped["ad_거래액"] > 0).rank(ascending=False, method="min")
+    grouped["EP순위"] = grouped["ep_거래액"].where(grouped["ep_거래액"] > 0).rank(ascending=False, method="min")
+    both_count = int(((grouped["광고순위"] <= top_n) & (grouped["EP순위"] <= top_n)).sum())
     if channel == "쇼핑검색광고":
         grouped["거래액"] = grouped["ad_거래액"]
         grouped["주문고객수"] = grouped["ad_주문고객수"]
@@ -615,7 +620,9 @@ def top_products_by_revenue(df: pd.DataFrame, start_ts, end_ts, txn_type: str = 
         grouped["거래액"] = grouped["ad_거래액"] + grouped["ep_거래액"]
         grouped["주문고객수"] = grouped["ad_주문고객수"] + grouped["ep_주문고객수"]
     grouped = grouped[grouped["거래액"] > 0].sort_values("거래액", ascending=False).head(top_n)
-    return grouped.reset_index(drop=True)
+    out = grouped.reset_index(drop=True)
+    out.attrs["both_top_count"] = both_count
+    return out
 
 
 def _cattxn_scope(df: pd.DataFrame, txn_type: str = "전체", category: str = "전체", brand: str = "전체") -> pd.DataFrame:

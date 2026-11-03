@@ -2323,18 +2323,50 @@ elif menu == "카테고리별 실적":
                 if top_products.empty:
                     st.info("조건에 맞는 상품 거래액 데이터가 없습니다.")
                 else:
+                    # 광고·EP 각각 TOP20(전체 상품 기준 순위) 안에 모두 든 상품은 "광고·EP 모두 상위"로 구분
+                    def _top_tag(a_rank, e_rank):
+                        a_ok, e_ok = pd.notna(a_rank) and a_rank <= 20, pd.notna(e_rank) and e_rank <= 20
+                        if a_ok and e_ok:
+                            return "★ 광고·EP 모두 상위"
+                        if a_ok:
+                            return "광고 상위"
+                        if e_ok:
+                            return "EP 상위"
+                        return "-"
+
+                    def _rank_str(v):
+                        return f"{int(v)}위" if pd.notna(v) else "-"
+
                     top_products_display = pd.DataFrame({
                         "순위": range(1, len(top_products) + 1),
+                        "구분": [_top_tag(a, e) for a, e in zip(top_products["광고순위"], top_products["EP순위"])],
                         "상품명": top_products["product_name"],
                         "상품코드": top_products["product_code"],
                         "카테고리": top_products["category"],
                         "브랜드": top_products["brand"].map(brand_label),
                         "거래액": top_products["거래액"].apply(lambda v: f"{v:,.0f}"),
+                        "쇼핑검색광고 거래액": top_products["ad_거래액"].apply(lambda v: f"{v:,.0f}"),
+                        "광고 순위": top_products["광고순위"].map(_rank_str),
+                        "EP채널 거래액": top_products["ep_거래액"].apply(lambda v: f"{v:,.0f}"),
+                        "EP 순위": top_products["EP순위"].map(_rank_str),
                         "주문고객수": top_products["주문고객수"].apply(lambda v: f"{v:,.0f}"),
                     })
-                    st.dataframe(top_products_display, use_container_width=True, hide_index=True)
+                    st.dataframe(
+                        top_products_display.style.apply(
+                            lambda r: ["background-color: #FEF3C7; font-weight: 600"] * len(r)
+                            if r["구분"].startswith("★") else [""] * len(r),
+                            axis=1,
+                        ),
+                        use_container_width=True, hide_index=True,
+                        column_config={"구분": st.column_config.TextColumn("구분", width="medium")},
+                    )
                     st.caption(
-                        f"📅 집계기간: {prod_start.date()} ~ {prod_end.date()} · 채널: {prod_channel} "
+                        f"⭐ 이 범위에서 쇼핑검색광고·EP채널 거래액이 각각 상위 20위 안에 **모두** 든 상품은 "
+                        f"{top_products.attrs.get('both_top_count', 0)}개예요 (표에서 노란 배경 + '★ 광고·EP 모두 상위'). "
+                        "순위는 표에 보이는 20개가 아니라 현재 필터 범위의 전체 상품 기준입니다."
+                    )
+                    st.caption(
+                        f"📅 집계기간: {prod_start.date()} ~ {prod_end.date()} · 정렬 채널: {prod_channel} "
                         f"(상품명 단위 데이터는 {PRODUCT_TXN_MIN_DATE} 이후만 보유 — 기간 중 그 이전 구간은 제외됩니다)"
                     )
                     st.caption("📁 데이터 출처: product_txn_daily.csv ← 정상이월입점_RAW.xlsx(상품명 포함) (카테고리·브랜드 집계와 별도 소스)")
