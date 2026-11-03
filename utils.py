@@ -594,9 +594,10 @@ def load_product_txn_data():
 
 def top_products_by_revenue(df: pd.DataFrame, start_ts, end_ts, txn_type: str = "전체",
                             category: str = "전체", brand: str = "전체", channel: str = "합계",
-                            top_n: int = 20) -> pd.DataFrame:
+                            top_n: int = 20, both_rank_n: int = None) -> pd.DataFrame:
     """선택한 기간/카테고리/브랜드/거래유형 안에서 상품명 단위 거래액 TOP N 랭킹.
-    channel: '쇼핑검색광고' | 'EP채널' | '합계'(광고+EP) 기준으로 정렬."""
+    channel: '쇼핑검색광고' | 'EP채널' | '합계'(광고+EP) 기준으로 정렬.
+    both_rank_n: '광고·EP 모두 상위' 개수(attrs['both_top_count'])를 셀 때의 순위 기준(기본: top_n)."""
     scope = df[(df["date"] >= start_ts) & (df["date"] <= end_ts)]
     scope = _cattxn_scope(scope, txn_type, category, brand)
     if scope.empty:
@@ -609,7 +610,8 @@ def top_products_by_revenue(df: pd.DataFrame, start_ts, end_ts, txn_type: str = 
     # 상품을 가려내는 데 쓴다(표에 보이는 TOP N 안에서만이 아니라 전체 상품 기준).
     grouped["광고순위"] = grouped["ad_거래액"].where(grouped["ad_거래액"] > 0).rank(ascending=False, method="min")
     grouped["EP순위"] = grouped["ep_거래액"].where(grouped["ep_거래액"] > 0).rank(ascending=False, method="min")
-    both_count = int(((grouped["광고순위"] <= top_n) & (grouped["EP순위"] <= top_n)).sum())
+    rank_n = both_rank_n or top_n
+    both_count = int(((grouped["광고순위"] <= rank_n) & (grouped["EP순위"] <= rank_n)).sum())
     if channel == "쇼핑검색광고":
         grouped["거래액"] = grouped["ad_거래액"]
         grouped["주문고객수"] = grouped["ad_주문고객수"]
@@ -623,6 +625,70 @@ def top_products_by_revenue(df: pd.DataFrame, start_ts, end_ts, txn_type: str = 
     out = grouped.reset_index(drop=True)
     out.attrs["both_top_count"] = both_count
     return out
+
+
+@st.cache_data
+def top_products_excel_bytes(start_ts, end_ts, txn_type: str = "전체", category: str = "전체",
+                             brand: str = "전체", n: int = 20, days: int = 1):
+    """광고 상위 / EP 상위 / 광고·EP 모두 상위 상품을 시트로 나눈 엑셀(bytes). 데이터가 없으면 None.
+    값은 기간 '누계'이고(일평균 아님), 일수는 '정보' 시트에 같이 적는다 — 캐시를 쓰려고 큰 DataFrame을
+    인자로 받지 않고 load_product_txn_data()를 안에서 부른다."""
+    from io import BytesIO
+
+    df = load_product_txn_data()
+    if df is None:
+        return None
+    ad = top_products_by_revenue(df, start_ts, end_ts, txn_type, category, brand, "쇼핑검색광고", n, n)
+    ep = top_products_by_revenue(df, start_ts, end_ts, txn_type, category, brand, "EP채널", n, n)
+    if ad.empty and ep.empty:
+        return None
+
+    def _sheet(frame):
+        if frame.empty:
+            return pd.DataFrame()
+        tag = [
+            "★ 광고·EP 모두 상위" if (pd.notna(a) and a <= n and pd.notna(e) and e <= n)
+            else ("광고 상위" if pd.notna(a) and a <= n else ("EP 상위" if pd.notna(e) and e <= n else "-"))
+            for a, e in zip(frame["광고순위"], frame["EP순위"])
+        ]
+        return pd.DataFrame({
+            "순위": range(1, len(frame) + 1),
+            "구분": tag,
+            "상품명": frame["product_name"],
+            "상품코드": frame["product_code"],
+            "카테고리": frame["category"],
+            "브랜드": frame["brand"].map(brand_label),
+            "쇼핑검색광고 거래액": frame["ad_거래액"],
+            "광고 순위": frame["광고순위"],
+            "EP채널 거래액": frame["ep_거래액"],
+            "EP 순위": frame["EP순위"],
+            "쇼핑검색광고 주문고객수": frame["ad_주문고객수"],
+            "EP채널 주문고객수": frame["ep_주문고객수"],
+        })
+
+    ad_sheet = _sheet(ad)
+    ep_sheet = _sheet(ep)
+    # 광고 TOP n 안에 있으면서 EP 순위도 n 이내인 상품 = 둘 다 상위 (EP TOP n에서 뽑아도 같은 집합)
+    both_sheet = ad_sheet[ad_sheet["구분"].str.startswith("★")].copy() if not ad_sheet.empty else pd.DataFrame()
+    if not both_sheet.empty:
+        both_sheet["순위"] = range(1, len(both_sheet) + 1)
+    info = pd.DataFrame({
+        "항목": ["집계기간", "집계일수", "거래유형", "카테고리", "브랜드", "상위 기준", "값 기준"],
+        "내용": [
+            f"{pd.Timestamp(start_ts).date()} ~ {pd.Timestamp(end_ts).date()}", days, txn_type, category,
+            brand_label(brand) if brand != "전체" else "전체", f"광고·EP 각각 상위 {n}위",
+            "기간 누계 (일평균이 필요하면 집계일수로 나누세요)",
+        ],
+    })
+    buf = BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as writer:
+        for name, sheet in [(f"광고 상위 TOP{n}", ad_sheet), (f"EP 상위 TOP{n}", ep_sheet),
+                            ("광고·EP 모두 상위", both_sheet)]:
+            (sheet if not sheet.empty else pd.DataFrame({"안내": ["해당 상품이 없습니다."]})).to_excel(
+                writer, index=False, sheet_name=name,
+            )
+        info.to_excel(writer, index=False, sheet_name="정보")
+    return buf.getvalue()
 
 
 def _cattxn_scope(df: pd.DataFrame, txn_type: str = "전체", category: str = "전체", brand: str = "전체") -> pd.DataFrame:

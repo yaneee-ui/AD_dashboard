@@ -21,6 +21,7 @@ from utils import (
     CATTXN_TXN_TYPE_OPTIONS, CATTXN_CHANNEL_OPTIONS, CATTXN_METRIC_OPTIONS,
     load_product_txn_data, top_products_by_revenue, brand_label,
     load_event_calendar, event_period_metrics, event_category_compare, EVENT_AVG_METRICS,
+    top_products_excel_bytes,
 )
 from styles import (
     inject_css, render_kpi_cards, render_page_header, render_section_title,
@@ -50,6 +51,26 @@ def style_channel_columns(styler, columns):
 def _disp_group(series, group_by):
     """그룹 기준이 브랜드일 때만 코드를 '코드 (한글명)'으로 바꿔 표시용 Series를 만든다."""
     return series.map(brand_label) if group_by == "brand" else series
+
+
+def _top_tag(a_rank, e_rank, n=20):
+    """광고·EP 각각 전체 상품 기준 상위 n위 안에 들었는지로 상품 구분 라벨을 만든다."""
+    a_ok, e_ok = pd.notna(a_rank) and a_rank <= n, pd.notna(e_rank) and e_rank <= n
+    if a_ok and e_ok:
+        return "★ 광고·EP 모두 상위"
+    if a_ok:
+        return "광고 상위"
+    if e_ok:
+        return "EP 상위"
+    return "-"
+
+
+def _rank_str(v):
+    return f"{int(v)}위" if pd.notna(v) else "-"
+
+
+def _highlight_both_rows(row):
+    return ["background-color: #FEF3C7; font-weight: 600"] * len(row) if row["구분"].startswith("★") else [""] * len(row)
 
 
 def style_channel_rows(row, label_col="지표"):
@@ -1392,11 +1413,24 @@ elif menu == "카테고리별 실적":
         c_txn, c_cat, c_brand = st.columns([2, 2, 2])
         with c_txn:
             cattxn_txn_filter = st.selectbox("정상/이월/입점", CATTXN_TXN_TYPE_OPTIONS, key="cattxn_txn_filter")
+        # 정상/이월/입점을 고르면 그 유형에 실제로 거래가 있는 카테고리·브랜드만 선택지로 보여준다
+        # (브랜드는 선택한 카테고리 안에 있는 것만). 선택지가 바뀌어 이전 선택값이 목록에서 사라지면 '전체'로 되돌린다.
+        cattxn_opt_scope = (
+            cattxn_df if cattxn_txn_filter == "전체" else cattxn_df[cattxn_df["txn_type"] == cattxn_txn_filter]
+        )
         with c_cat:
-            cattxn_category_filter = st.selectbox("카테고리", ["전체"] + CATTXN_CATEGORY_LIST, key="cattxn_cat_filter")
+            cattxn_cat_options = ["전체"] + sorted(cattxn_opt_scope["category"].unique())
+            _ensure_valid_select("cattxn_cat_filter", cattxn_cat_options)
+            cattxn_category_filter = st.selectbox("카테고리", cattxn_cat_options, key="cattxn_cat_filter")
         with c_brand:
+            cattxn_brand_scope = (
+                cattxn_opt_scope if cattxn_category_filter == "전체"
+                else cattxn_opt_scope[cattxn_opt_scope["category"] == cattxn_category_filter]
+            )
+            cattxn_brand_options = ["전체"] + sorted(cattxn_brand_scope["brand"].unique())
+            _ensure_valid_select("cattxn_brand_filter", cattxn_brand_options)
             cattxn_brand_filter = st.selectbox(
-                "브랜드", ["전체"] + CATTXN_BRAND_LIST, key="cattxn_brand_filter",
+                "브랜드", cattxn_brand_options, key="cattxn_brand_filter",
                 format_func=lambda b: b if b == "전체" else brand_label(b),
             )
 
@@ -2324,19 +2358,6 @@ elif menu == "카테고리별 실적":
                     st.info("조건에 맞는 상품 거래액 데이터가 없습니다.")
                 else:
                     # 광고·EP 각각 TOP20(전체 상품 기준 순위) 안에 모두 든 상품은 "광고·EP 모두 상위"로 구분
-                    def _top_tag(a_rank, e_rank):
-                        a_ok, e_ok = pd.notna(a_rank) and a_rank <= 20, pd.notna(e_rank) and e_rank <= 20
-                        if a_ok and e_ok:
-                            return "★ 광고·EP 모두 상위"
-                        if a_ok:
-                            return "광고 상위"
-                        if e_ok:
-                            return "EP 상위"
-                        return "-"
-
-                    def _rank_str(v):
-                        return f"{int(v)}위" if pd.notna(v) else "-"
-
                     top_products_display = pd.DataFrame({
                         "순위": range(1, len(top_products) + 1),
                         "구분": [_top_tag(a, e) for a, e in zip(top_products["광고순위"], top_products["EP순위"])],
@@ -2352,11 +2373,7 @@ elif menu == "카테고리별 실적":
                         "주문고객수": top_products["주문고객수"].apply(lambda v: f"{v:,.0f}"),
                     })
                     st.dataframe(
-                        top_products_display.style.apply(
-                            lambda r: ["background-color: #FEF3C7; font-weight: 600"] * len(r)
-                            if r["구분"].startswith("★") else [""] * len(r),
-                            axis=1,
-                        ),
+                        top_products_display.style.apply(_highlight_both_rows, axis=1),
                         use_container_width=True, hide_index=True,
                         column_config={"구분": st.column_config.TextColumn("구분", width="medium")},
                     )
@@ -2365,9 +2382,22 @@ elif menu == "카테고리별 실적":
                         f"{top_products.attrs.get('both_top_count', 0)}개예요 (표에서 노란 배경 + '★ 광고·EP 모두 상위'). "
                         "순위는 표에 보이는 20개가 아니라 현재 필터 범위의 전체 상품 기준입니다."
                     )
+                    top_xlsx = top_products_excel_bytes(
+                        prod_start, prod_end, cattxn_txn_filter, cattxn_category_filter, cattxn_brand_filter,
+                        20, int(product_txn_df[(product_txn_df["date"] >= prod_start)
+                                               & (product_txn_df["date"] <= prod_end)]["date"].nunique()),
+                    )
+                    if top_xlsx is not None:
+                        st.download_button(
+                            "📥 광고 / EP / 광고·EP 모두 상위 상품 Excel 다운로드", data=top_xlsx,
+                            file_name=f"상위상품_{prod_start.date()}_{prod_end.date()}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="dl_cattxn_top_products",
+                        )
                     st.caption(
                         f"📅 집계기간: {prod_start.date()} ~ {prod_end.date()} · 정렬 채널: {prod_channel} "
-                        f"(상품명 단위 데이터는 {PRODUCT_TXN_MIN_DATE} 이후만 보유 — 기간 중 그 이전 구간은 제외됩니다)"
+                        f"(상품명 단위 데이터는 {PRODUCT_TXN_MIN_DATE} 이후만 보유 — 기간 중 그 이전 구간은 제외됩니다) · "
+                        "Excel은 광고 상위 / EP 상위 / 모두 상위를 시트로 나눠 담고, 값은 기간 누계예요."
                     )
                     st.caption("📁 데이터 출처: product_txn_daily.csv ← 정상이월입점_RAW.xlsx(상품명 포함) (카테고리·브랜드 집계와 별도 소스)")
 
@@ -2960,7 +2990,7 @@ elif menu == "상품군 효율":
             else:
                 ap_top = top_products_by_revenue(
                     product_txn_df, ap_ps, ap_pe, ap_cs_txn, ap_cs_cat_filter, "전체",
-                    channel=ap_cs_channel, top_n=10,
+                    channel=ap_cs_channel, top_n=10, both_rank_n=20,
                 )
                 if ap_top.empty:
                     st.info("조건에 맞는 상품 거래액 데이터가 없습니다.")
@@ -2969,23 +2999,46 @@ elif menu == "상품군 효율":
                         product_txn_df[(product_txn_df["date"] >= ap_ps) & (product_txn_df["date"] <= ap_pe)]["date"].nunique()
                         if ap_mode == "일평균" else 1
                     ) or 1
+                    ap_top_display = pd.DataFrame({
+                        "순위": range(1, len(ap_top) + 1),
+                        "구분": [_top_tag(a, e) for a, e in zip(ap_top["광고순위"], ap_top["EP순위"])],
+                        "상품명": ap_top["product_name"],
+                        "상품코드": ap_top["product_code"],
+                        "카테고리": ap_top["category"],
+                        "브랜드": ap_top["brand"].map(brand_label),
+                        f"거래액({ap_cs_channel})": (ap_top["거래액"] / ap_pdays).apply(lambda v: f"{v:,.0f}"),
+                        "쇼핑검색광고 거래액": (ap_top["ad_거래액"] / ap_pdays).apply(lambda v: f"{v:,.0f}"),
+                        "광고 순위": ap_top["광고순위"].map(_rank_str),
+                        "EP채널 거래액": (ap_top["ep_거래액"] / ap_pdays).apply(lambda v: f"{v:,.0f}"),
+                        "EP 순위": ap_top["EP순위"].map(_rank_str),
+                        "주문고객수": (ap_top["주문고객수"] / ap_pdays).apply(lambda v: f"{v:,.1f}" if ap_mode == "일평균" else f"{v:,.0f}"),
+                    })
                     st.dataframe(
-                        pd.DataFrame({
-                            "순위": range(1, len(ap_top) + 1),
-                            "상품명": ap_top["product_name"],
-                            "상품코드": ap_top["product_code"],
-                            "카테고리": ap_top["category"],
-                            "브랜드": ap_top["brand"].map(brand_label),
-                            f"거래액({ap_cs_channel})": (ap_top["거래액"] / ap_pdays).apply(lambda v: f"{v:,.0f}"),
-                            "쇼핑검색광고 거래액": (ap_top["ad_거래액"] / ap_pdays).apply(lambda v: f"{v:,.0f}"),
-                            "EP채널 거래액": (ap_top["ep_거래액"] / ap_pdays).apply(lambda v: f"{v:,.0f}"),
-                            "주문고객수": (ap_top["주문고객수"] / ap_pdays).apply(lambda v: f"{v:,.1f}" if ap_mode == "일평균" else f"{v:,.0f}"),
-                        }),
+                        ap_top_display.style.apply(_highlight_both_rows, axis=1),
                         use_container_width=True, hide_index=True,
+                        column_config={"구분": st.column_config.TextColumn("구분", width="medium")},
                     )
                     st.caption(
+                        f"⭐ 이 범위에서 쇼핑검색광고·EP채널 거래액이 각각 상위 20위 안에 **모두** 든 상품은 "
+                        f"{ap_top.attrs.get('both_top_count', 0)}개예요 (노란 배경 + '★ 광고·EP 모두 상위'). "
+                        "순위는 표의 10개가 아니라 현재 필터 범위의 전체 상품 기준입니다."
+                    )
+                    ap_top_xlsx = top_products_excel_bytes(
+                        ap_ps, ap_pe, ap_cs_txn, ap_cs_cat_filter, "전체", 20,
+                        int(product_txn_df[(product_txn_df["date"] >= ap_ps)
+                                           & (product_txn_df["date"] <= ap_pe)]["date"].nunique()),
+                    )
+                    if ap_top_xlsx is not None:
+                        st.download_button(
+                            "📥 광고 / EP / 광고·EP 모두 상위 상품 Excel 다운로드", data=ap_top_xlsx,
+                            file_name=f"상위상품_{ap_ps.date()}_{ap_pe.date()}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="dl_adprod_top_products",
+                        )
+                    st.caption(
                         f"📅 집계기간 {ap_ps.date()} ~ {ap_pe.date()} · {ap_mode} 기준 "
-                        f"(상품명 단위 데이터는 {PRODUCT_TXN_MIN_DATE} 이후만 보유) · 📁 product_txn_daily"
+                        f"(상품명 단위 데이터는 {PRODUCT_TXN_MIN_DATE} 이후만 보유) · "
+                        "Excel은 광고 상위 / EP 상위 / 모두 상위를 시트로 나눠 담고, 값은 기간 누계예요 · 📁 product_txn_daily"
                     )
 
     render_section_title("랭킹 · 직전기간 대비 증감")
