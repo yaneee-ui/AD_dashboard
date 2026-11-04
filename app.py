@@ -68,6 +68,29 @@ def _rank_str(v):
     return f"{int(v)}위" if pd.notna(v) else "-"
 
 
+TXN_GROUP_BG = {"합계": "#E0E7FF", "정상": "#DCFCE7", "이월": "#FEF3C7", "입점": "#FCE7F3"}
+CHANNEL_GROUP_BG = {"쇼핑검색광고": "#DBEAFE", "EP채널": "#CCFBF1"}
+
+
+def _is_zero(v):
+    """원 단위로 반올림하면 0인 값(소수점 이하 잔여값 포함)까지 0으로 본다."""
+    return v is None or pd.isna(v) or abs(v) < 0.5
+
+
+def _fmt_amt(v):
+    """금액 표시 — 0은 '–'로 흐리게(0이 빼곡하면 표가 지저분해 보이므로)."""
+    return "–" if _is_zero(v) else f"{v:,.0f}"
+
+
+def _delta_pair(cur, prev):
+    """(증감 텍스트, 비교값 텍스트). 비교값이 없거나 0이면 '- (0)' 대신 '-' 또는 '신규'만 보여준다."""
+    if prev is None or pd.isna(prev):
+        return "-", "-"
+    if _is_zero(prev):
+        return ("신규" if not _is_zero(cur) else "-"), "-"
+    return format_delta_text(pct_change(cur, prev)), f"{prev:,.0f}"
+
+
 def _highlight_both_rows(row):
     return ["background-color: #FEF3C7; font-weight: 600"] * len(row) if row["구분"].startswith("★") else [""] * len(row)
 
@@ -1582,6 +1605,147 @@ elif menu == "카테고리별 실적":
 
     render_insight_box(page3_insight_lines)
 
+    # ══════════════════════════════════════════════════════════
+    # 정상 / 이월 / 입점별 실적 — 위 필터와 무관하게 항상 구분해서 보여준다
+    # (거래유형에 따라 실적이 크게 달라 한 값으로 합쳐 보면 판단이 어렵기 때문)
+    # ══════════════════════════════════════════════════════════
+    render_section_title(f"정상 / 이월 / 입점별 실적 · {cattxn_cur_label} ({cattxn_mode})")
+    st.caption(
+        "위 '정상/이월/입점' 필터와 상관없이 세 유형을 항상 나눠서 보여줍니다. "
+        "카테고리·브랜드 필터는 그대로 적용되고, 거래액이 큰 순서로 정렬해요."
+    )
+    txs_types = ["정상", "이월", "입점"]
+    cattxn_immediate_label = next(iter(cattxn_comp_periods.keys()))
+    txs_labels = [cattxn_immediate_label, "전년비"]
+    txs_views = {}
+    for _lbl in txs_labels:
+        _ps, _pe = cattxn_comp_periods[_lbl]
+        txs_views[_lbl] = cattxn_df[(cattxn_df["date"] >= _ps) & (cattxn_df["date"] <= _pe)]
+
+    def _txs_scale(v, days):
+        return v / days if (cattxn_mode == "일평균" and days) else v
+
+    txs_data = {}
+    for _t in txs_types:
+        _cur = aggregate_cattxn(cattxn_view, _t, cattxn_category_filter, cattxn_brand_filter)
+        _d = {
+            "sa": _txs_scale(_cur["쇼핑검색광고_거래액"], cattxn_cur_days),
+            "ep": _txs_scale(_cur["EP채널_거래액"], cattxn_cur_days),
+        }
+        for _lbl in txs_labels:
+            if txs_views[_lbl].empty:
+                _d[f"sa_{_lbl}"] = _d[f"ep_{_lbl}"] = None
+            else:
+                _p = aggregate_cattxn(txs_views[_lbl], _t, cattxn_category_filter, cattxn_brand_filter)
+                _d[f"sa_{_lbl}"] = _txs_scale(_p["쇼핑검색광고_거래액"], cattxn_comp_days[_lbl])
+                _d[f"ep_{_lbl}"] = _txs_scale(_p["EP채널_거래액"], cattxn_comp_days[_lbl])
+        txs_data[_t] = _d
+    txs_total = {}
+    for _k in txs_data[txs_types[0]]:
+        _vals = [txs_data[_t][_k] for _t in txs_types]
+        txs_total[_k] = None if any(v is None for v in _vals) else sum(_vals)
+
+    _txs_delta = _delta_pair
+
+    def _txs_row(name, d):
+        row = {"거래유형": name, "쇼핑검색광고 거래액": _fmt_amt(d["sa"])}
+        for _lbl in txs_labels:
+            row[f"쇼핑검색광고 {_lbl}"], row[f"쇼핑검색광고 {_lbl} 값"] = _txs_delta(d["sa"], d[f"sa_{_lbl}"])
+        row["EP채널 거래액"] = _fmt_amt(d["ep"])
+        for _lbl in txs_labels:
+            row[f"EP채널 {_lbl}"], row[f"EP채널 {_lbl} 값"] = _txs_delta(d["ep"], d[f"ep_{_lbl}"])
+        _sum = d["sa"] + d["ep"]
+        row["광고 비중"] = f"{d['sa'] / _sum * 100:.1f}%" if _sum > 0 else "-"
+        row["합계 거래액"] = _fmt_amt(_sum)
+        return row
+
+    txs_order = sorted(txs_types, key=lambda t: -(txs_data[t]["sa"] + txs_data[t]["ep"]))
+    txs_rows = [_txs_row("합계(전체)", txs_total)] + [_txs_row(t, txs_data[t]) for t in txs_order]
+    _txs_groups, _txs_sub = [], {}
+    for _ch in ["쇼핑검색광고", "EP채널"]:
+        _cols = [f"{_ch} 거래액"] + [f"{_ch} {l}" for l in txs_labels]
+        _txs_groups.append({"title": _ch, "cols": _cols, "bg": CHANNEL_GROUP_BG[_ch]})
+        _txs_sub[f"{_ch} 거래액"] = "거래액"
+        for _l in txs_labels:
+            _txs_sub[f"{_ch} {_l}"] = _l
+    render_comparison_table(
+        pd.DataFrame(txs_rows),
+        delta_cols=[f"쇼핑검색광고 {l}" for l in txs_labels] + [f"EP채널 {l}" for l in txs_labels],
+        bold_rows={"합계(전체)"}, groups=_txs_groups, sub_labels=_txs_sub,
+    )
+
+    # ── 카테고리 × 정상/이월/입점 (선택 기간, 직전기간 대비) ──
+    st.markdown("**카테고리 × 정상 / 이월 / 입점**")
+    txc_channel = st.radio(
+        "채널", ["합계 (광고+EP)", "쇼핑검색광고", "EP채널"], horizontal=True, key="cattxn_txc_channel",
+    )
+
+    def _txc_totals(view):
+        sub = view
+        if cattxn_brand_filter != "전체":
+            sub = sub[sub["brand"] == cattxn_brand_filter]
+        if cattxn_category_filter != "전체":
+            sub = sub[sub["category"] == cattxn_category_filter]
+        if sub.empty:
+            return pd.Series(dtype=float)
+        g = sub.groupby(["txn_type", "category"])[["ad_거래액", "ep_거래액"]].sum()
+        if txc_channel == "쇼핑검색광고":
+            return g["ad_거래액"]
+        if txc_channel == "EP채널":
+            return g["ep_거래액"]
+        return g["ad_거래액"] + g["ep_거래액"]
+
+    txc_cur = _txc_totals(cattxn_view)
+    txc_prev = _txc_totals(txs_views[cattxn_immediate_label])
+    if txc_cur.empty:
+        st.info("선택한 기간에 데이터가 없습니다.")
+    else:
+        txc_prev_days = cattxn_comp_days[cattxn_immediate_label]
+        txc_groups = ["합계"] + txs_types
+        txc_rows = []
+        for _cat in sorted({c for (_, c) in txc_cur.index}):
+            _row = {"카테고리": _cat}
+            _cur_sum = _prev_sum = 0.0
+            for _t in txs_types:
+                _c = _txs_scale(float(txc_cur.get((_t, _cat), 0.0)), cattxn_cur_days)
+                _p = _txs_scale(float(txc_prev.get((_t, _cat), 0.0)), txc_prev_days) if not txc_prev.empty else None
+                _row[_t], _row[f"{_t}__prev"] = _c, _p
+                _cur_sum += _c
+                _prev_sum = (_prev_sum + _p) if (_p is not None and _prev_sum is not None) else None
+            _row["합계"], _row["합계__prev"] = _cur_sum, _prev_sum
+            txc_rows.append(_row)
+        txc_df = pd.DataFrame(txc_rows)
+        # 이번·직전 기간 모두 0인 카테고리는 빈 줄만 늘려서 뺀다. 나머지는 합계 거래액 큰 순.
+        txc_df = txc_df[(txc_df["합계"].abs() >= 0.5) | (txc_df["합계__prev"].fillna(0).abs() >= 0.5)]
+        txc_df = txc_df.sort_values("합계", ascending=False).reset_index(drop=True)
+
+        def _txc_display_row(name, src):
+            out = {"카테고리": name}
+            for _g in txc_groups:
+                _c, _p = src[_g], src[f"{_g}__prev"]
+                out[_g] = _fmt_amt(_c)
+                out[f"{_g} {cattxn_immediate_label}"], out[f"{_g} {cattxn_immediate_label} 값"] = _txs_delta(_c, _p)
+            return out
+
+        txc_total_src = {"카테고리": "합계(전체)"}
+        for _g in txc_groups:
+            txc_total_src[_g] = txc_df[_g].sum()
+            _prevs = txc_df[f"{_g}__prev"]
+            txc_total_src[f"{_g}__prev"] = None if _prevs.isna().any() else _prevs.sum()
+        txc_display = pd.DataFrame(
+            [_txc_display_row("합계(전체)", txc_total_src)] + [_txc_display_row(r["카테고리"], r) for _, r in txc_df.iterrows()]
+        )
+        render_comparison_table(
+            txc_display, delta_cols=[f"{g} {cattxn_immediate_label}" for g in txc_groups], bold_rows={"합계(전체)"},
+            groups=[{"title": g, "cols": [g, f"{g} {cattxn_immediate_label}"], "bg": TXN_GROUP_BG[g]} for g in txc_groups],
+            sub_labels={**{g: "거래액" for g in txc_groups},
+                        **{f"{g} {cattxn_immediate_label}": cattxn_immediate_label for g in txc_groups}},
+        )
+        st.caption(
+            f"📅 {cattxn_cur_label} vs {cattxn_immediate_label} 기간 · {cattxn_mode} 기준 · 합계 = 정상+이월+입점 · "
+            "카테고리는 합계 거래액이 큰 순서"
+        )
+
     # ── 실적요약 (직전기간 · 전년비) ──
     cattxn_immediate_label = next(iter(cattxn_comp_periods.keys()))
     cattxn_prev_agg = cattxn_comp_aggs.get(cattxn_immediate_label)
@@ -2483,6 +2647,9 @@ elif menu == "카테고리별 실적":
     with tab_txn:
         render_section_title(f"정상/이월/입점별 구성 · {cattxn_cur_label}{cattxn_cat_suffix}{cattxn_brand_suffix}")
         cattxn_breakdown = cattxn_txn_type_breakdown(cattxn_view, cattxn_category_filter, cattxn_brand_filter)
+        cattxn_breakdown = cattxn_breakdown.iloc[
+            (-(cattxn_breakdown["쇼핑검색광고 거래액"] + cattxn_breakdown["EP채널 거래액"])).argsort()
+        ].reset_index(drop=True)  # 광고+EP 거래액 큰 순
         cattxn_breakdown_display = pd.DataFrame({
             "정상/이월/입점": cattxn_breakdown["거래유형"],
             "쇼핑검색광고 거래액": cattxn_breakdown["쇼핑검색광고 거래액"].apply(lambda v: f"{v:,.0f}"),
@@ -2553,6 +2720,12 @@ elif menu == "카테고리별 실적":
             row["합계 · 전년비"] = pct_change(cat_cur_total, cat_prev_total)
             cattxn_wide_rows.append(row)
         cattxn_wide_df = pd.DataFrame(cattxn_wide_rows)
+        # 전년·올해 모두 0인 카테고리(예: OFM·유니섹스)는 빈 줄만 늘려서 빼고, 올해 합계 거래액 큰 순으로 정렬
+        _wide_cur_sum_col = f"합계 · {cattxn_wide_cur_year}년"
+        _wide_prev_sum_col = f"합계 · {cattxn_wide_prev_year}년"
+        cattxn_wide_df = cattxn_wide_df[
+            (cattxn_wide_df[_wide_cur_sum_col].abs() >= 0.5) | (cattxn_wide_df[_wide_prev_sum_col].abs() >= 0.5)
+        ].sort_values(_wide_cur_sum_col, ascending=False).reset_index(drop=True)
 
         # 행 합계("합계(전체)" 행): 카테고리 전체를 다 더한 줄 — 맨 위에 고정 노출(스크롤해도
         # 헤더 바로 아래라 항상 보임)되도록 맨 앞에 둔다.
@@ -2573,16 +2746,26 @@ elif menu == "카테고리별 실적":
 
         cattxn_wide_display_cols = {"카테고리": cattxn_wide_df["카테고리"]}
         cattxn_wide_pct_cols = []
+        cattxn_wide_grp_defs, cattxn_wide_sub = [], {}
         for g in cattxn_wide_groups:
             prev_col, cur_col = f"{g} · {cattxn_wide_prev_year}년", f"{g} · {cattxn_wide_cur_year}년"
             pct_col = f"{g} · 전년비"
-            cattxn_wide_display_cols[cur_col] = cattxn_wide_df[cur_col].apply(lambda v: f"{_wide_scaled(v, False):,.0f}")
-            cattxn_wide_display_cols[pct_col] = cattxn_wide_df[pct_col].apply(format_delta_text)
-            cattxn_wide_display_cols[f"{pct_col} 값"] = cattxn_wide_df[prev_col].apply(lambda v: f"{_wide_scaled(v, True):,.0f}")
+            cur_scaled = cattxn_wide_df[cur_col].apply(lambda v: _wide_scaled(v, False))
+            prev_scaled = cattxn_wide_df[prev_col].apply(lambda v: _wide_scaled(v, True))
+            pairs = [_delta_pair(c, p) for c, p in zip(cur_scaled, prev_scaled)]
+            cattxn_wide_display_cols[cur_col] = cur_scaled.apply(_fmt_amt)
+            cattxn_wide_display_cols[pct_col] = [p[0] for p in pairs]
+            cattxn_wide_display_cols[f"{pct_col} 값"] = [p[1] for p in pairs]
             cattxn_wide_pct_cols.append(pct_col)
+            cattxn_wide_grp_defs.append({"title": g, "cols": [cur_col, pct_col], "bg": TXN_GROUP_BG[g]})
+            cattxn_wide_sub[cur_col] = f"{cattxn_wide_cur_year}년"
+            cattxn_wide_sub[pct_col] = "전년비"
         cattxn_wide_display = pd.DataFrame(cattxn_wide_display_cols)
 
-        render_comparison_table(cattxn_wide_display, delta_cols=cattxn_wide_pct_cols, bold_rows={"합계(전체)"})
+        render_comparison_table(
+            cattxn_wide_display, delta_cols=cattxn_wide_pct_cols, bold_rows={"합계(전체)"},
+            groups=cattxn_wide_grp_defs, sub_labels=cattxn_wide_sub,
+        )
         st.caption("💡 맨 왼쪽 \"합계\" 열 = 정상+이월+입점 합산 · 맨 위 \"합계(전체)\" 행 = 전체 카테고리 합산")
         st.caption("📁 데이터 출처: category_brand_txn_daily.csv ← 정상이월입점_RAW.xlsx (01·02페이지 태블로 원본과는 별도 집계)")
         st.download_button(

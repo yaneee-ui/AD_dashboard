@@ -416,6 +416,14 @@ def inject_css(pin_filters: bool = True):
         font-weight: 700;
         background: #F1F5F9;
     }}
+    /* 묶음 머리글(2단 헤더) 사용 시: 묶음 제목은 가운데 정렬, 묶음 사이에 세로 구분선 */
+    table.dtbl thead th.dtbl-grp {{
+        text-align: center;
+        color: #1E293B;
+    }}
+    table.dtbl th.grp-start, table.dtbl td.grp-start {{
+        border-left: 1px solid #CBD5E1;
+    }}
     .dtbl-delta {{
         font-weight: 600;
     }}
@@ -754,7 +762,8 @@ def format_delta_text(delta) -> str:
     return "0.0%"
 
 
-def render_comparison_table(df: pd.DataFrame, delta_cols: list, bold_rows: set = None):
+def render_comparison_table(df: pd.DataFrame, delta_cols: list, bold_rows: set = None,
+                            groups: list = None, sub_labels: dict = None):
     """비교(전년비/전월비 등) 컬럼과 그 옆의 "{컬럼명} 값"(비교대상 실제값) 컬럼을 한 셀로
     합쳐서 raw HTML 테이블로 렌더링한다 — st.dataframe(Styler)은 셀 안 일부만 스타일링을
     못 해서, 지금까지는 "전년비" | "전년비 값" 두 컬럼으로 쪼개 보여줬는데, EP_dashboard의
@@ -766,9 +775,22 @@ def render_comparison_table(df: pd.DataFrame, delta_cols: list, bold_rows: set =
         df에 있으면 그 값을 괄호로 묶어 같은 셀에 회색으로 붙이고, 그 " 값" 컬럼 자체는
         별도 열로는 표시하지 않는다.
     bold_rows: 첫 번째 표시 컬럼 값이 이 set에 있는 행을 볼드+음영 처리(예: "합계" 행 강조).
+    groups: [{"title": "정상", "cols": [열이름, ...], "bg": "#색"}, ...] — 같은 묶음의 열 위에 합친 머리글을
+        얹은 2단 헤더로 그리고, 묶음 사이에 세로 구분선을 넣는다(열이 많은 표에서 어느 열이 어느 묶음인지
+        한눈에 보이게). 묶음에 안 든 열은 두 줄에 걸친 머리글이 된다. 묶음의 열은 서로 붙어 있어야 한다.
+    sub_labels: {열이름: 2단 헤더의 아랫줄에 쓸 짧은 라벨} (groups를 쓸 때만 의미 있음).
     """
     value_cols = {d: f"{d} 값" for d in delta_cols if f"{d} 값" in df.columns}
     display_cols = [c for c in df.columns if c not in value_cols.values()]
+    sub_labels = sub_labels or {}
+    group_of, group_first = {}, set()
+    if groups:
+        for gi, g in enumerate(groups):
+            cols = [c for c in g["cols"] if c in display_cols]
+            for c in cols:
+                group_of[c] = gi
+            if cols:
+                group_first.add(cols[0])
 
     def _delta_cell(pct_str, val_str) -> str:
         pct_str = "-" if pct_str is None or (isinstance(pct_str, float) and pd.isna(pct_str)) else str(pct_str)
@@ -777,21 +799,39 @@ def render_comparison_table(df: pd.DataFrame, delta_cols: list, bold_rows: set =
         ref = f' <span class="dtbl-ref">({val_str})</span>' if has_val else ""
         return f'<span class="dtbl-delta {cls}">{pct_str}</span>{ref}'
 
-    header_html = "".join(f"<th>{c}</th>" for c in display_cols)
+    if groups:
+        row1, row2 = [], []
+        for c in display_cols:
+            if c in group_of:
+                g = groups[group_of[c]]
+                bg = g.get("bg", "#F1F5F9")
+                if c in group_first:
+                    span = len([x for x in g["cols"] if x in display_cols])
+                    row1.append(
+                        f'<th class="dtbl-grp grp-start" colspan="{span}" style="background:{bg};">{g["title"]}</th>'
+                    )
+                cls = ' class="grp-start"' if c in group_first else ""
+                row2.append(f'<th{cls} style="background:{bg};">{sub_labels.get(c, c)}</th>')
+            else:
+                row1.append(f'<th rowspan="2">{c}</th>')
+        header_html = f"<tr>{''.join(row1)}</tr><tr>{''.join(row2)}</tr>"
+    else:
+        header_html = "<tr>" + "".join(f"<th>{c}</th>" for c in display_cols) + "</tr>"
     body_rows = []
     for _, row in df.iterrows():
         is_bold = bold_rows is not None and row[display_cols[0]] in bold_rows
         tr_cls = ' class="dtbl-bold"' if is_bold else ""
         cells = []
         for c in display_cols:
+            td_cls = ' class="grp-start"' if c in group_first else ""
             if c in value_cols:
-                cells.append(f"<td>{_delta_cell(row[c], row[value_cols[c]])}</td>")
+                cells.append(f"<td{td_cls}>{_delta_cell(row[c], row[value_cols[c]])}</td>")
             else:
-                cells.append(f"<td>{row[c]}</td>")
+                cells.append(f"<td{td_cls}>{row[c]}</td>")
         body_rows.append(f"<tr{tr_cls}>{''.join(cells)}</tr>")
 
     st.markdown(
-        f'<div class="dtbl-wrap"><table class="dtbl"><thead><tr>{header_html}</tr></thead>'
+        f'<div class="dtbl-wrap"><table class="dtbl"><thead>{header_html}</thead>'
         f'<tbody>{"".join(body_rows)}</tbody></table></div>',
         unsafe_allow_html=True,
     )
