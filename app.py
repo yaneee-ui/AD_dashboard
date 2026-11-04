@@ -294,7 +294,13 @@ def _render_category_mix_section(start_ts, end_ts, ref_date, unit, mode, key_pre
         st.info("카테고리별 쇼핑검색광고 거래액 데이터가 없습니다.")
         return
 
-    cat_total = cat_rank["쇼핑검색광고_거래액"].sum()
+    # 순 합계(환불·취소로 마이너스인 카테고리까지 포함) — 표의 합계(전체)·비중·도넛 가운데 값의 기준.
+    # 도넛 조각만 양수 카테고리로 그린다(마이너스는 조각으로 못 그림).
+    cat_total = cat_rank_all["쇼핑검색광고_거래액"].sum()
+    cat_table_rank = cat_rank_all[cat_rank_all["쇼핑검색광고_거래액"] != 0].sort_values(
+        "쇼핑검색광고_거래액", ascending=False
+    ).reset_index(drop=True)
+    cat_negative = cat_rank_all[cat_rank_all["쇼핑검색광고_거래액"] < 0].sort_values("쇼핑검색광고_거래액")
 
     # 비교기간(직전기간 + 전년비)도 cattxn 자체 날짜범위 안에서 별도 산출
     cat_comp_periods = get_comparison_periods(ref_date, unit, CATTXN_MIN_DATE, CATTXN_MAX_DATE)
@@ -348,19 +354,24 @@ def _render_category_mix_section(start_ts, end_ts, ref_date, unit, mode, key_pre
             )],
         )
         st.plotly_chart(fig_cat_donut, use_container_width=True)
+        if not cat_negative.empty:
+            st.caption(
+                "※ 환불·취소가 매출보다 많아 거래액이 마이너스인 카테고리는 도넛에서 빼고 표에만 표시했어요 — "
+                + " · ".join(f"{r['category']} {format_million(r['쇼핑검색광고_거래액'])}" for _, r in cat_negative.iterrows())
+            )
 
     yoy_pct_by_cat = {}
     with col_table:
         cat_table_rows = []
-        for _, r in cat_rank.iterrows():
+        for _, r in cat_table_rank.iterrows():
             cname = r["category"]
             cur_v = r["쇼핑검색광고_거래액"]
-            share = (cur_v / cat_total * 100) if cat_total else None
+            share = (cur_v / cat_total * 100) if cat_total > 0 else None
             yoy_v = cat_yoy_series.loc[cname] if cat_yoy_series is not None and cname in cat_yoy_series.index else None
             imm_v = cat_imm_series.loc[cname] if cat_imm_series is not None and cname in cat_imm_series.index else None
             yoy_pct = pct_change(cur_v, yoy_v) if yoy_v is not None else None
             imm_pct = pct_change(cur_v, imm_v) if imm_v is not None else None
-            if yoy_pct is not None:
+            if yoy_pct is not None and cur_v > 0:  # 마이너스 카테고리는 증감률이 왜곡돼 인사이트에서 제외
                 yoy_pct_by_cat[cname] = (yoy_pct, cur_v, yoy_v)
             cat_table_rows.append({
                 "카테고리": cname,
@@ -372,7 +383,7 @@ def _render_category_mix_section(start_ts, end_ts, ref_date, unit, mode, key_pre
                 f"{cat_immediate_label} 값": f"{imm_v:,.0f}" if imm_v is not None else "-",
             })
         # 맨 위 합계 행 — 전체 카테고리 합산 기준(전년·직전기간도 전체 합산과 비교)
-        tot_cur = cat_rank_all["쇼핑검색광고_거래액"].sum()
+        tot_cur = cat_total
         tot_yoy = cat_yoy_series.sum() if cat_yoy_series is not None else None
         tot_imm = cat_imm_series.sum() if cat_imm_series is not None else None
         cat_table_rows.insert(0, {
@@ -428,18 +439,19 @@ def _render_category_mix_section(start_ts, end_ts, ref_date, unit, mode, key_pre
     # ── EP채널 거래액 (참고용) — 광고 반응은 낮지만 EP(오가닉)에서 반응 좋은 카테고리를
     # 찾아 광고 확대 후보를 가늠해볼 수 있도록, 광고 거래액 유무와 무관하게 EP 거래액
     # 기준으로 별도 집계한다.
-    ep_rank = cat_rank_all[cat_rank_all["EP채널_거래액"] > 0].sort_values(
+    # 환불·취소로 마이너스인 카테고리도 표에는 남긴다(0인 카테고리만 제외) — 광고 표와 같은 기준
+    ep_rank = cat_rank_all[cat_rank_all["EP채널_거래액"] != 0].sort_values(
         "EP채널_거래액", ascending=False
     ).reset_index(drop=True)
     if not ep_rank.empty:
         st.divider()
         render_section_title(f"EP채널 거래액 비중 (참고용) · {mode}")
-        ep_total = ep_rank["EP채널_거래액"].sum()
+        ep_total = cat_rank_all["EP채널_거래액"].sum()
         ep_table_rows = []
         for _, r in ep_rank.iterrows():
             cname = r["category"]
             cur_v = r["EP채널_거래액"]
-            share = (cur_v / ep_total * 100) if ep_total else None
+            share = (cur_v / ep_total * 100) if ep_total > 0 else None
             yoy_v = ep_yoy_series.loc[cname] if ep_yoy_series is not None and cname in ep_yoy_series.index else None
             imm_v = ep_imm_series.loc[cname] if ep_imm_series is not None and cname in ep_imm_series.index else None
             yoy_pct = pct_change(cur_v, yoy_v) if yoy_v is not None else None
