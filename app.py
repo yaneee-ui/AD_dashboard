@@ -13,15 +13,14 @@ from utils import (
     load_cattxn_data, aggregate_cattxn, aggregate_cattxn_by, cattxn_group_yoy_wow,
     cattxn_txn_type_breakdown, cattxn_daily_series,
     cattxn_period_buckets, cattxn_bucket_series, cattxn_flow_matrix, cattxn_group_trend_table,
-    cattxn_weekly_changes, category_lag_correlation, category_lag_scatter_data, linear_trend,
-    cattxn_share_series, ad_cost_vs_sa_ep_weekly, classify_comovement, flow_overview_buckets,
-    recent_metric_buckets, metric_sparkline_table, category_revenue_forecast,
+    cattxn_share_series, ad_cost_vs_sa_ep_weekly, flow_overview_buckets,
+    category_revenue_forecast,
     load_ad_product_data, aggregate_ad_product, ad_product_group_compare,
     AD_PRODUCT_OWN_OPTIONS, AD_PRODUCT_BASE_METRICS,
     CATTXN_TXN_TYPE_OPTIONS, CATTXN_CHANNEL_OPTIONS, CATTXN_METRIC_OPTIONS,
     load_product_txn_data, top_products_by_revenue, brand_label,
     load_event_calendar, event_period_metrics, event_category_compare, EVENT_AVG_METRICS,
-    top_products_excel_bytes,
+    top_products_excel_bytes, brand_ad_ep_response, AD_RESPONSE_CLASSES, NEW_PCT,
 )
 from styles import (
     inject_css, render_kpi_cards, render_page_header, render_section_title,
@@ -697,7 +696,7 @@ if menu == "쇼핑검색광고 실적":
 
     render_insight_box(insight_lines)
 
-    p1_tabs = st.tabs(["📋 실적요약 · 지표", "🔻 실적 퍼널", "📦 카테고리별 비중", "📈 2026년 추이"])
+    p1_tabs = st.tabs(["📋 실적요약", "🔻 실적 퍼널", "📈 2026년 추이"])
     with p1_tabs[0]:
         # ── 실적요약 (직전기간 대비 + 전년비) 테이블 ──
         immediate_label = next(iter(comp_periods.keys()))
@@ -744,30 +743,6 @@ if menu == "쇼핑검색광고 실적":
             use_container_width=True, hide_index=True, height=460,
         )
 
-        # ── 보조 지표 스냅샷 (최근 구간 추이) ──
-        render_section_title(f"보조 지표 스냅샷 · 최근 구간 추이 ({unit}, {mode})")
-        spark_metrics = ["노출수", "클릭수", "CTR", "CPC", "CPUV", "객단가", "순결제비중", "신규거래액", "가입수", "첫구매수"]
-        spark_buckets = recent_metric_buckets(df, unit, n=12)
-        spark_df = metric_sparkline_table(df, spark_buckets, spark_metrics, mode)
-        spark_display = pd.DataFrame({
-            "지표": spark_df["지표"],
-            "추이": spark_df["추이"],
-            "최근값": [format_value(m, v) for m, v in zip(spark_df["지표"], spark_df["최근값"])],
-            "직전 대비": spark_df["직전 대비"].apply(format_delta_text),
-        })
-        st.dataframe(
-            spark_display.style.map(delta_cell_style, subset=["직전 대비"]),
-            column_config={
-                "지표": st.column_config.TextColumn("지표", width="small"),
-                "추이": st.column_config.LineChartColumn("추이", width="medium"),
-                "최근값": st.column_config.TextColumn("최근값"),
-                "직전 대비": st.column_config.TextColumn("직전 대비"),
-            },
-            use_container_width=True, hide_index=True,
-            height=min(35 * (len(spark_display) + 1) + 3, 460),
-        )
-        st.caption(f"📅 최근 {len(spark_buckets)}개 구간({unit}) 기준 · {mode} — 메인 3지표(거래액·광고비·ROAS) 외에 "
-                  f"놓치기 쉬운 지표들을 한눈에 훑어보기 위한 표입니다. 지표별 세부 흐름은 아래 '지표 선택' 차트에서 확인하세요.")
 
     with p1_tabs[1]:
         # ── 실적 퍼널 (노출 → 클릭 → 방문 → 구매) ──
@@ -829,10 +804,6 @@ if menu == "쇼핑검색광고 실적":
         )
 
     with p1_tabs[2]:
-        # ── 카테고리별 거래액 비중 (쇼핑검색광고) — cattxn_df 기준, D-2 반영 ──
-        _render_category_mix_section(start_ts, end_ts, ref_date, unit, mode, key_prefix="page1")
-
-    with p1_tabs[3]:
         # ── 추이 차트: 2026년 기준 + 전년비 비교선 (조회단위별 집계) ──
         render_section_title(f"2026년 추이 (전년비 비교) · {mode}")
         st.caption("지표 선택")
@@ -1609,22 +1580,6 @@ elif menu == "카테고리별 실적":
             f"쇼핑검색광고 ROAS(전체채널)가 {roas_lbl} {format_delta_text(roas_pct)}로 {direction}됐습니다."
         )
 
-    page3_weekly = cattxn_weekly_changes(
-        cattxn_df, group_by="category", txn_type=cattxn_txn_filter,
-        category=cattxn_category_filter, brand=cattxn_brand_filter,
-    )
-    page3_latest = page3_weekly.sort_values("_wk").groupby("category").tail(1)
-    page3_classes = page3_latest.apply(
-        lambda r: classify_comovement(r["광고_증감률"], r["EP_증감률"]), axis=1
-    )
-    good_n = int((page3_classes == "🟢 동반상승").sum())
-    bad_n = int((page3_classes == "🔴 광고잠식 의심").sum())
-    if good_n or bad_n:
-        page3_insight_lines.append(
-            f"최근 완결 주 기준 🟢 동반상승 카테고리 {good_n}개, 🔴 광고잠식 의심 카테고리 {bad_n}개 — "
-            "자세한 목록은 'EP 연관성 분석' 탭에서 확인하세요."
-        )
-
     render_insight_box(page3_insight_lines)
 
     # ── 실적요약 (직전기간 · 전년비) ──
@@ -1672,7 +1627,7 @@ elif menu == "카테고리별 실적":
     # 탭으로 분리: 흐름 비교를 맨 앞에 (가장 많이 찾는 뷰)
     # ══════════════════════════════════════════════════════════
     tab_flow, tab_syn, tab_cat, tab_brand, tab_txn = st.tabs([
-        "📈 채널 흐름 비교", "🔗 EP 연관성 분석", "📦 카테고리별 상세", "🏷️ 브랜드별 상세", "🔀 거래유형 구성",
+        "📈 채널 흐름 비교", "🔗 광고 상향 검증 (브랜드)", "📦 카테고리별 상세", "🏷️ 브랜드별 상세", "🔀 거래유형 구성",
     ])
 
     def _normalize_series(vals):
@@ -1980,110 +1935,113 @@ elif menu == "카테고리별 실적":
         )
 
     # ══════════════════════════════════════════════════════════
-    # 탭 1.5: EP 연관성 분석 (시너지 카테고리 찾기)
+    # 탭 2: 광고 상향 검증 — 광고와 EP 모두 거래액 반응이 있는 브랜드
     # ══════════════════════════════════════════════════════════
     with tab_syn:
-        st.markdown(
-            '<div class="kpi-footnote">※ 카테고리별 실제 광고비 원본이 없어, 쇼핑검색광고 거래액 증감률을 '
-            '"얼마나 밀었는지"의 대리지표로 사용합니다. 상관관계는 인과관계를 증명하지 않으며, '
-            '계절성 등 다른 요인이 같이 작용할 수 있습니다. 전체 기간(2025년~) 주간 데이터를 사용합니다.</div>',
-            unsafe_allow_html=True,
-        )
-
-        syn_group_label = st.radio("분석 단위", ["카테고리", "브랜드"], horizontal=True, key="syn_group")
-        syn_group_by = "category" if syn_group_label == "카테고리" else "brand"
-
-        if syn_group_by == "brand" and cattxn_category_filter == "전체":
-            st.info("브랜드 단위 분석은 카테고리를 하나 선택하면(상단 필터) 그 안에서 브랜드별로 비교합니다. "
-                   "지금은 카테고리가 '전체'라 전체 브랜드를 대상으로 분석합니다.")
-
-        syn_weekly = cattxn_weekly_changes(
-            cattxn_df, group_by=syn_group_by, txn_type=cattxn_txn_filter,
-            category=cattxn_category_filter, brand=cattxn_brand_filter,
-        )
-        syn_corr = category_lag_correlation(syn_weekly, max_lag=2, min_samples=4)
-
-        render_section_title(f"{syn_group_label}별 SA↔EP 동행 분석 (최근 완결 주 기준)")
-        latest_moves = syn_weekly.sort_values("_wk").groupby("category").tail(1)[
-            ["category", "광고_증감률", "EP_증감률"]
-        ].reset_index(drop=True)
-        latest_moves["분류"] = latest_moves.apply(
-            lambda r: classify_comovement(r["광고_증감률"], r["EP_증감률"]), axis=1
-        )
-        latest_moves = latest_moves.sort_values("광고_증감률", ascending=False)
-
-        comove_display = pd.DataFrame({
-            syn_group_label: _disp_group(latest_moves["category"], syn_group_by),
-            "SA 매출 증감": latest_moves["광고_증감률"].apply(format_delta_text),
-            "EP 매출 증감": latest_moves["EP_증감률"].apply(format_delta_text),
-            "분류": latest_moves["분류"],
-        })
-        st.dataframe(
-            comove_display.style.map(delta_cell_style, subset=["SA 매출 증감", "EP 매출 증감"]),
-            use_container_width=True, hide_index=True,
-            height=min(35 * (len(comove_display) + 1) + 3, 460),
-        )
+        render_section_title("광고 상향 검증 · 광고와 EP 모두 반응 있는 브랜드")
         st.caption(
-            "💡 🟢 동반상승(SA·EP 같이 오름, 시너지) · 🔵 SA단독 성장(SA만 오르고 EP는 그대로) · "
-            "🔴 광고잠식 의심(SA는 늘었는데 EP는 줄어듦) · ⚪ 동반하락 · ⚫ 변화 미미(±5%p 이내) · 🟡 혼조. "
-            "직전 주 대비 증감률, 가장 최근 완결 주 기준입니다."
+            "브랜드별로 쇼핑검색광고 거래액과 EP채널 거래액이 직전기간 대비 함께 늘었는지 비교해, 광고 상향 조정이 필요한 "
+            "후보를 검증합니다. 상단 필터의 기간·정상/이월/입점·카테고리를 그대로 따라가요."
         )
+        syn_cur_range = (cattxn_start_ts, cattxn_end_ts)
+        syn_prev_range = cattxn_comp_periods[cattxn_immediate_label]
+        if cattxn_cur_days < 7:
+            st.info(
+                f"현재 집계기간이 {cattxn_cur_days}일이라 하루 변동(취소·반품 등)에 분류가 쉽게 흔들려요. "
+                "상단 조회단위를 '주별' 또는 '월별'로 바꿔 보시길 권해요."
+            )
+        sy1, sy2 = st.columns([1.3, 1.3])
+        with sy1:
+            syn_min_amt = st.number_input(
+                "최소 거래액 (일평균 합계, 원)", min_value=0, max_value=5_000_000, value=100_000, step=50_000,
+                key="syn_min_amt", help="광고+EP 거래액 합계(일평균)가 이 금액 미만인 브랜드는 노이즈라 제외합니다.",
+            )
+        with sy2:
+            syn_thr = st.number_input(
+                "변화 기준 (±%)", min_value=1, max_value=50, value=5, step=1, key="syn_thr",
+                help="직전기간 대비 이 % 넘게 늘면 '상승'으로 봅니다.",
+            )
+        syn_df = brand_ad_ep_response(
+            cattxn_df, syn_cur_range, syn_prev_range, cattxn_txn_filter, cattxn_category_filter,
+            cattxn_brand_filter, float(syn_thr),
+        )
+        syn_df = syn_df[syn_df["합계"] >= syn_min_amt]
 
-        render_section_title(f"{syn_group_label}별 산점도 (광고 증감률 vs EP 증감률)")
-        syn_valid = syn_corr[(syn_corr["best_corr"].notna()) & (syn_corr["best_n"] >= 8)]
-        syn_valid_items = syn_valid["category"].tolist()
-
-        if not syn_valid_items:
-            st.info("상관관계를 계산할 수 있는 표본(주 8개 이상)이 부족합니다.")
+        if syn_df.empty:
+            st.info("조건에 맞는 브랜드가 없습니다. 최소 거래액을 낮추거나 기간을 넓혀 보세요.")
         else:
-            sc1, sc2 = st.columns([2, 2])
-            with sc1:
-                syn_pick = st.selectbox(
-                    syn_group_label, syn_valid_items, index=0, key="syn_pick",
-                    format_func=lambda v: brand_label(v) if syn_group_by == "brand" else v,
-                )
-            default_syn_lag = int(syn_corr.loc[syn_corr["category"] == syn_pick, "best_lag"].iloc[0])
-            with sc2:
-                syn_lag = st.radio(
-                    "시차(lag)", [0, 1, 2], index=default_syn_lag, horizontal=True,
-                    format_func=lambda v: "동주" if v == 0 else f"{v}주 후", key="syn_lag",
+            def _syn_pct(v):
+                return "신규" if v >= NEW_PCT else format_delta_text(v)
+
+            def _syn_top(cls, n=5, by="합계"):
+                sub = syn_df[syn_df["분류"] == cls].sort_values(by, ascending=False).head(n)
+                return " · ".join(
+                    f"**{brand_label(r['brand'])}** (광고 {_syn_pct(r['광고증감'])} · EP {_syn_pct(r['EP증감'])})"
+                    for _, r in sub.iterrows()
                 )
 
-            syn_scatter = category_lag_scatter_data(syn_weekly, syn_pick, syn_lag)
+            syn_counts = syn_df["분류"].value_counts()
+            syn_lines = []
+            n_both = int(syn_counts.get(AD_RESPONSE_CLASSES[0], 0))
+            n_ep = int(syn_counts.get(AD_RESPONSE_CLASSES[1], 0))
+            n_ad = int(syn_counts.get(AD_RESPONSE_CLASSES[2], 0))
+            if n_both:
+                syn_lines.append(
+                    f"🟢 **광고·EP 모두 상승 {n_both}개** — 광고 상향 검증 1순위(거래액 큰 순): {_syn_top(AD_RESPONSE_CLASSES[0])}"
+                )
+            if n_ep:
+                syn_lines.append(
+                    f"🔵 **EP만 상승 {n_ep}개** — EP는 반응하는데 광고가 못 따라온 곳, 광고 반영 여지(EP 거래액 큰 순): "
+                    f"{_syn_top(AD_RESPONSE_CLASSES[1], by='EP')}"
+                )
+            if n_ad:
+                syn_lines.append(
+                    f"🟡 **광고만 상승 {n_ad}개** — EP가 따라오지 않아 증가분이 광고 안에서만 도는지 점검이 필요해요."
+                )
+            if not syn_lines:
+                syn_lines.append("이 기간에는 광고·EP가 함께 오른 브랜드가 없습니다.")
+            render_insight_box(syn_lines, title="광고 상향 검증 요약")
 
-            if len(syn_scatter) < 3:
-                st.info("산점도를 그리기엔 표본이 부족합니다.")
+            syn_view = st.radio(
+                "분류 보기", ["전체"] + AD_RESPONSE_CLASSES, horizontal=True, key="syn_view",
+            )
+            syn_show = syn_df if syn_view == "전체" else syn_df[syn_df["분류"] == syn_view]
+            syn_table = pd.DataFrame({
+                "브랜드": syn_show["brand"].map(brand_label),
+                "분류": syn_show["분류"],
+                "광고 거래액": syn_show["광고"].apply(lambda v: f"{v:,.0f}"),
+                "광고 증감": syn_show["광고증감"].apply(_syn_pct),
+                "EP 거래액": syn_show["EP"].apply(lambda v: f"{v:,.0f}"),
+                "EP 증감": syn_show["EP증감"].apply(_syn_pct),
+                "광고 비중": syn_show["광고비중"].apply(lambda v: f"{v:.1f}%" if pd.notna(v) else "-"),
+                "합계 거래액": syn_show["합계"].apply(lambda v: f"{v:,.0f}"),
+            })
+            if syn_table.empty:
+                st.info("선택한 분류에 해당하는 브랜드가 없습니다.")
             else:
-                syn_r = syn_scatter["광고_증감률"].corr(syn_scatter["EP_증감률"])
-                syn_slope, syn_intercept = linear_trend(syn_scatter["광고_증감률"], syn_scatter["EP_증감률"])
-
-                fig_syn = go.Figure()
-                fig_syn.add_trace(go.Scatter(
-                    x=syn_scatter["광고_증감률"], y=syn_scatter["EP_증감률"],
-                    mode="markers", name="주간 데이터",
-                    marker=dict(color="#2563EB", size=8, opacity=0.7),
-                ))
-                if syn_slope is not None:
-                    x_range = [syn_scatter["광고_증감률"].min(), syn_scatter["광고_증감률"].max()]
-                    y_range = [syn_slope * x + syn_intercept for x in x_range]
-                    fig_syn.add_trace(go.Scatter(
-                        x=x_range, y=y_range, mode="lines", name="추세선",
-                        line=dict(color="#94A3B8", dash="dash"),
-                    ))
-                fig_syn.update_layout(
-                    height=440, margin=dict(t=20, b=20, l=10, r=10),
-                    xaxis_title="쇼핑검색광고 거래액 증감률 (%, 전주비)",
-                    yaxis_title=f"EP 거래액 증감률 (%, {'동주' if syn_lag == 0 else f'{syn_lag}주 후'})",
-                    hovermode="closest",
-                    dragmode="pan",
+                st.dataframe(
+                    syn_table.style.map(delta_cell_style, subset=["광고 증감", "EP 증감"]),
+                    use_container_width=True, hide_index=True,
+                    height=min(35 * (len(syn_table) + 1) + 3, 560),
                 )
-                st.plotly_chart(fig_syn, use_container_width=True, config={"scrollZoom": True})
-                st.caption(
-                    f"상관계수 r = {syn_r:.2f} · 표본 {len(syn_scatter)}개 주 · "
-                    f"{brand_label(syn_pick) if syn_group_by == 'brand' else syn_pick}, "
-                    f"{'동주' if syn_lag == 0 else f'{syn_lag}주 후'} 기준 — "
-                    f"r이 클수록(0.5 이상) 광고 확대가 EP 반응과 같이 움직이는(시너지) 경향이 강합니다."
-                )
+            syn_export = syn_show.assign(brand=syn_show["brand"].map(brand_label)).rename(columns={
+                "brand": "브랜드", "광고": "광고 거래액(일평균)", "EP": "EP 거래액(일평균)",
+                "광고_전기": "광고 거래액 직전기간(일평균)", "EP_전기": "EP 거래액 직전기간(일평균)",
+                "광고증감": "광고 증감(%)", "EP증감": "EP 증감(%)", "합계": "합계 거래액(일평균)", "광고비중": "광고 비중(%)",
+            })
+            st.download_button(
+                "📥 Excel 다운로드", data=to_excel_bytes(syn_export),
+                file_name=f"광고상향검증_{cattxn_start_ts.date()}_{cattxn_end_ts.date()}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", key="dl_syn_brand",
+            )
+            n_cur_d, n_prev_d = syn_df.attrs.get("ndays", (0, 0))
+            st.caption(
+                f"📅 이번 {cattxn_start_ts.date()} ~ {cattxn_end_ts.date()} ({n_cur_d}일) vs "
+                f"{cattxn_immediate_label} {syn_prev_range[0].date()} ~ {syn_prev_range[1].date()} ({n_prev_d}일) · 거래액은 일평균 · "
+                "'신규'는 직전기간 거래액이 없거나 0 이하였다가 이번에 생긴 경우예요 · "
+                "광고·EP 동반 상승은 광고 효과를 증명하지 않아요(시즌·프로모션 영향 가능) — 소규모 증액 테스트로 검증하세요."
+            )
+            st.caption("📁 데이터 출처: category_brand_txn_daily.csv (D-2 반영, 01·02페이지 태블로 원본과는 별도 집계)")
 
     # ══════════════════════════════════════════════════════════
     # 탭 2: 카테고리별 상세

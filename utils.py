@@ -1356,6 +1356,58 @@ def classify_ad_product_performance(sale_pct, roas_pct, cur_purchases: float = N
     return "⚪ 혼조"
 
 
+AD_RESPONSE_CLASSES = ["🟢 광고·EP 모두 상승", "🔵 EP만 상승 (광고 약함)", "🟡 광고만 상승", "⚪ 정체·하락"]
+NEW_PCT = 999.0  # 직전기간 거래액이 0 이하인데 이번엔 늘어난 경우(비교 불가) — 화면에서 '신규'로 표시
+
+
+def brand_ad_ep_response(df: pd.DataFrame, cur_range, prev_range, txn_type: str = "전체",
+                         category: str = "전체", brand: str = "전체", threshold: float = 5.0) -> pd.DataFrame:
+    """브랜드별로 쇼핑검색광고 거래액과 EP채널 거래액(일평균)의 직전기간 대비 변화를 비교해 분류한다.
+    광고 상향 조정이 필요한 후보를 검증하는 용도 — 광고·EP가 함께 오르면 '광고·EP 모두 상승',
+    EP만 오르고 광고는 정체/하락이면 'EP만 상승(광고 약함)'(광고 반영 여지), 광고만 오르면 '광고만 상승'.
+    반환 attrs['ndays'] = (이번 일수, 직전 일수)."""
+    scope = _cattxn_scope(df, txn_type, category, brand)
+
+    def _per_day(rng):
+        v = scope[(scope["date"] >= pd.Timestamp(rng[0])) & (scope["date"] <= pd.Timestamp(rng[1]))]
+        if v.empty:
+            return pd.DataFrame(columns=["ad_거래액", "ep_거래액"]), 0
+        nd = v["date"].nunique()
+        return v.groupby("brand")[["ad_거래액", "ep_거래액"]].sum() / nd, nd
+
+    cur, n_cur = _per_day(cur_range)
+    prev, n_prev = _per_day(prev_range)
+    out = cur.join(prev, how="outer", lsuffix="_cur", rsuffix="_prev").fillna(0.0)
+    out = out.rename(columns={
+        "ad_거래액_cur": "광고", "ep_거래액_cur": "EP", "ad_거래액_prev": "광고_전기", "ep_거래액_prev": "EP_전기",
+    })
+
+    def _chg(c, p):
+        if p > 0:
+            return (c / p - 1) * 100
+        return NEW_PCT if c > 0 else float("nan")
+
+    out["광고증감"] = [_chg(c, p) for c, p in zip(out["광고"], out["광고_전기"])]
+    out["EP증감"] = [_chg(c, p) for c, p in zip(out["EP"], out["EP_전기"])]
+    out["합계"] = out["광고"] + out["EP"]
+    out["광고비중"] = (out["광고"] / out["합계"] * 100).where(out["합계"] > 0)
+
+    def _cls(a, e):
+        if pd.isna(a) or pd.isna(e):
+            return "⚪ 정체·하락"
+        if a > threshold and e > threshold:
+            return AD_RESPONSE_CLASSES[0]
+        if e > threshold and a <= threshold:
+            return AD_RESPONSE_CLASSES[1]
+        if a > threshold and e <= threshold:
+            return AD_RESPONSE_CLASSES[2]
+        return AD_RESPONSE_CLASSES[3]
+
+    out["분류"] = [_cls(a, e) for a, e in zip(out["광고증감"], out["EP증감"])]
+    out.attrs["ndays"] = (n_cur, n_prev)
+    return out.reset_index(names="brand").sort_values("합계", ascending=False).reset_index(drop=True)
+
+
 def classify_comovement(sa_pct, ep_pct, threshold: float = 5.0):
     """SA/EP 증감률 조합으로 동행 패턴을 분류. threshold 이하는 '변화 미미'로 취급."""
     if sa_pct is None or ep_pct is None or pd.isna(sa_pct) or pd.isna(ep_pct):
