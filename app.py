@@ -697,250 +697,255 @@ if menu == "쇼핑검색광고 실적":
 
     render_insight_box(insight_lines)
 
-    # ── 실적요약 (직전기간 대비 + 전년비) 테이블 ──
-    immediate_label = next(iter(comp_periods.keys()))
-    prev_agg_for_table = comp_aggs.get(immediate_label)
-    prev_days_for_table = comp_days[immediate_label]
-    prev_start, prev_end = comp_periods[immediate_label]
+    p1_tabs = st.tabs(["📋 실적요약 · 지표", "🔻 실적 퍼널", "📦 카테고리별 비중", "📈 2026년 추이"])
+    with p1_tabs[0]:
+        # ── 실적요약 (직전기간 대비 + 전년비) 테이블 ──
+        immediate_label = next(iter(comp_periods.keys()))
+        prev_agg_for_table = comp_aggs.get(immediate_label)
+        prev_days_for_table = comp_days[immediate_label]
+        prev_start, prev_end = comp_periods[immediate_label]
 
-    yoy_agg_for_table = comp_aggs.get("전년비")
-    yoy_days_for_table = comp_days["전년비"]
-    yoy_start, yoy_end = comp_periods["전년비"]
+        yoy_agg_for_table = comp_aggs.get("전년비")
+        yoy_days_for_table = comp_days["전년비"]
+        yoy_start, yoy_end = comp_periods["전년비"]
 
-    render_section_title(f"실적요약 · {immediate_label} · 전년비 비교 ({mode})")
+        render_section_title(f"실적요약 · {immediate_label} · 전년비 비교 ({mode})")
 
-    summary_metrics = ["노출수", "클릭수", "CTR", "CR", "객단가", "결제고객수",
-                       "CPC", "CPUV", "UV", "광고비", "거래액", "ROAS",
-                       "거래액(총)", "ROAS(총)"]
-    summary_label_map = {"거래액(총)": "총결제거래액", "ROAS(총)": "총결제ROAS"}
-    prev_col_name = period_label(prev_start, prev_end, unit)
-    yoy_col_name = f"전년({period_label(yoy_start, yoy_end, unit)})"
-    rows = []
-    for m in summary_metrics:
-        cur_v = scaled(m, agg[m], cur_days)
+        summary_metrics = ["노출수", "클릭수", "CTR", "CR", "객단가", "결제고객수",
+                           "CPC", "CPUV", "UV", "광고비", "거래액", "ROAS",
+                           "거래액(총)", "ROAS(총)"]
+        summary_label_map = {"거래액(총)": "총결제거래액", "ROAS(총)": "총결제ROAS"}
+        prev_col_name = period_label(prev_start, prev_end, unit)
+        yoy_col_name = f"전년({period_label(yoy_start, yoy_end, unit)})"
+        rows = []
+        for m in summary_metrics:
+            cur_v = scaled(m, agg[m], cur_days)
 
-        prev_raw = prev_agg_for_table[m] if prev_agg_for_table else None
-        prev_v = scaled(m, prev_raw, prev_days_for_table)
-        delta = pct_change(cur_v, prev_v)
+            prev_raw = prev_agg_for_table[m] if prev_agg_for_table else None
+            prev_v = scaled(m, prev_raw, prev_days_for_table)
+            delta = pct_change(cur_v, prev_v)
 
-        yoy_raw = yoy_agg_for_table[m] if yoy_agg_for_table else None
-        yoy_v = scaled(m, yoy_raw, yoy_days_for_table)
-        yoy_delta = pct_change(cur_v, yoy_v)
+            yoy_raw = yoy_agg_for_table[m] if yoy_agg_for_table else None
+            yoy_v = scaled(m, yoy_raw, yoy_days_for_table)
+            yoy_delta = pct_change(cur_v, yoy_v)
 
-        rows.append({
-            "지표": summary_label_map.get(m, m),
-            prev_col_name: format_value(m, prev_v) if prev_v is not None else "-",
-            cur_label: format_value(m, cur_v),
-            f"{immediate_label}(%)": format_delta_text(delta),
-            yoy_col_name: format_value(m, yoy_v) if yoy_v is not None else "-",
-            "전년비(%)": format_delta_text(yoy_delta),
+            rows.append({
+                "지표": summary_label_map.get(m, m),
+                prev_col_name: format_value(m, prev_v) if prev_v is not None else "-",
+                cur_label: format_value(m, cur_v),
+                f"{immediate_label}(%)": format_delta_text(delta),
+                yoy_col_name: format_value(m, yoy_v) if yoy_v is not None else "-",
+                "전년비(%)": format_delta_text(yoy_delta),
+            })
+        summary_df = pd.DataFrame(rows)
+
+        st.dataframe(
+            summary_df.style.map(delta_cell_style, subset=[f"{immediate_label}(%)", "전년비(%)"]),
+            use_container_width=True, hide_index=True, height=460,
+        )
+
+        # ── 보조 지표 스냅샷 (최근 구간 추이) ──
+        render_section_title(f"보조 지표 스냅샷 · 최근 구간 추이 ({unit}, {mode})")
+        spark_metrics = ["노출수", "클릭수", "CTR", "CPC", "CPUV", "객단가", "순결제비중", "신규거래액", "가입수", "첫구매수"]
+        spark_buckets = recent_metric_buckets(df, unit, n=12)
+        spark_df = metric_sparkline_table(df, spark_buckets, spark_metrics, mode)
+        spark_display = pd.DataFrame({
+            "지표": spark_df["지표"],
+            "추이": spark_df["추이"],
+            "최근값": [format_value(m, v) for m, v in zip(spark_df["지표"], spark_df["최근값"])],
+            "직전 대비": spark_df["직전 대비"].apply(format_delta_text),
         })
-    summary_df = pd.DataFrame(rows)
-
-    st.dataframe(
-        summary_df.style.map(delta_cell_style, subset=[f"{immediate_label}(%)", "전년비(%)"]),
-        use_container_width=True, hide_index=True, height=460,
-    )
-
-    # ── 보조 지표 스냅샷 (최근 구간 추이) ──
-    render_section_title(f"보조 지표 스냅샷 · 최근 구간 추이 ({unit}, {mode})")
-    spark_metrics = ["노출수", "클릭수", "CTR", "CPC", "CPUV", "객단가", "순결제비중", "신규거래액", "가입수", "첫구매수"]
-    spark_buckets = recent_metric_buckets(df, unit, n=12)
-    spark_df = metric_sparkline_table(df, spark_buckets, spark_metrics, mode)
-    spark_display = pd.DataFrame({
-        "지표": spark_df["지표"],
-        "추이": spark_df["추이"],
-        "최근값": [format_value(m, v) for m, v in zip(spark_df["지표"], spark_df["최근값"])],
-        "직전 대비": spark_df["직전 대비"].apply(format_delta_text),
-    })
-    st.dataframe(
-        spark_display.style.map(delta_cell_style, subset=["직전 대비"]),
-        column_config={
-            "지표": st.column_config.TextColumn("지표", width="small"),
-            "추이": st.column_config.LineChartColumn("추이", width="medium"),
-            "최근값": st.column_config.TextColumn("최근값"),
-            "직전 대비": st.column_config.TextColumn("직전 대비"),
-        },
-        use_container_width=True, hide_index=True,
-        height=min(35 * (len(spark_display) + 1) + 3, 460),
-    )
-    st.caption(f"📅 최근 {len(spark_buckets)}개 구간({unit}) 기준 · {mode} — 메인 3지표(거래액·광고비·ROAS) 외에 "
-              f"놓치기 쉬운 지표들을 한눈에 훑어보기 위한 표입니다. 지표별 세부 흐름은 아래 '지표 선택' 차트에서 확인하세요.")
-
-    # ── 실적 퍼널 (노출 → 클릭 → 방문 → 구매) ──
-    render_section_title(f"실적 퍼널 (노출 → 클릭 → 방문 → 구매) · {mode}")
-
-    funnel_stages = ["노출수", "클릭수", "UV", "결제고객수"]
-    funnel_cur_vals = [scaled(m, agg[m], cur_days) for m in funnel_stages]
-
-    funnel_deltas = []
-    funnel_yoy_deltas = []
-    for m in funnel_stages:
-        d = deltas_for(m)
-        d_label, d_pct, d_prev = d[0]
-        funnel_deltas.append(
-            f"{d_label} {format_delta_text(d_pct)} ({d_prev})" if d_pct is not None and d_prev else
-            (f"{d_label} {format_delta_text(d_pct)}" if d_pct is not None else f"{d_label} -")
+        st.dataframe(
+            spark_display.style.map(delta_cell_style, subset=["직전 대비"]),
+            column_config={
+                "지표": st.column_config.TextColumn("지표", width="small"),
+                "추이": st.column_config.LineChartColumn("추이", width="medium"),
+                "최근값": st.column_config.TextColumn("최근값"),
+                "직전 대비": st.column_config.TextColumn("직전 대비"),
+            },
+            use_container_width=True, hide_index=True,
+            height=min(35 * (len(spark_display) + 1) + 3, 460),
         )
-        yoy_entry = next((x for x in d if x[0] == "전년비"), None)
-        yoy_pct = yoy_entry[1] if yoy_entry else None
-        yoy_prev = yoy_entry[2] if yoy_entry else None
-        funnel_yoy_deltas.append(
-            f"전년비 {format_delta_text(yoy_pct)} ({yoy_prev})" if yoy_pct is not None and yoy_prev else
-            (f"전년비 {format_delta_text(yoy_pct)}" if yoy_pct is not None else "전년비 -")
-        )
+        st.caption(f"📅 최근 {len(spark_buckets)}개 구간({unit}) 기준 · {mode} — 메인 3지표(거래액·광고비·ROAS) 외에 "
+                  f"놓치기 쉬운 지표들을 한눈에 훑어보기 위한 표입니다. 지표별 세부 흐름은 아래 '지표 선택' 차트에서 확인하세요.")
 
-    render_custom_funnel(
-        funnel_labels, funnel_cur_vals, deltas=funnel_deltas, yoy_deltas=funnel_yoy_deltas,
-        sub_labels=[f"{cur_label} · {mode}"] * 4,
-        colors=["#2563EB", "#0EA5E9", "#F59E0B", "#22C55E"],
-        weak_index=weak_index, weak_note=weak_note,
-    )
-    st.caption("💡 도형 폭은 값 비율이 아니라 보기 좋게 고정한 형태입니다 — 정확한 크기는 옆 숫자를 보세요.")
-    st.caption(f"📅 전년비 기준: {'정확히 12개월 전 같은 달(마감 실적 기준)' if unit == '월마감' else '전년 동요일비(364일=52주 전, 요일 정렬)'}")
-    if weak_index is not None:
-        render_colored_caption(
-            f"🔻 **{funnel_labels[weak_index]} 전환 구간이 가장 부진합니다** — {weak_note}. "
-            "노출·클릭 등 물량이 아니라 단계별 전환율(CTR/UV·클릭율/CR) 기준 진단이라, "
-            "트래픽은 늘어도 이 구간만 새는 중일 수 있습니다."
-        )
+    with p1_tabs[1]:
+        # ── 실적 퍼널 (노출 → 클릭 → 방문 → 구매) ──
+        render_section_title(f"실적 퍼널 (노출 → 클릭 → 방문 → 구매) · {mode}")
 
-    funnel_table_rows = []
-    prev_val = None
-    base_val = funnel_cur_vals[0] if funnel_cur_vals else None
-    for flabel, fval in zip(funnel_labels, funnel_cur_vals):
-        step_rate = (fval / prev_val * 100) if prev_val else None
-        total_rate = (fval / base_val * 100) if base_val else None
-        funnel_table_rows.append({
-            "단계": flabel,
-            "값": f"{fval:,.0f}",
-            "이전 단계 대비": f"{step_rate:.1f}%" if step_rate is not None else "-",
-            "노출 대비": f"{total_rate:.2f}%" if total_rate is not None else "-",
-        })
-        prev_val = fval
-    st.dataframe(pd.DataFrame(funnel_table_rows), hide_index=True, use_container_width=True)
-    st.caption(
-        f"💡 '이전 단계 대비'는 CTR(클릭/노출) → UV/클릭 → CR(구매/UV) 순서와 같습니다. "
-        f"참고: 객단가 {format_value('객단가', agg['객단가'])} · ROAS {format_value('ROAS', agg['ROAS'])} "
-        f"(퍼널 단계에는 포함하지 않고 참고용으로만 표시)"
-    )
+        funnel_stages = ["노출수", "클릭수", "UV", "결제고객수"]
+        funnel_cur_vals = [scaled(m, agg[m], cur_days) for m in funnel_stages]
 
-    # ── 카테고리별 거래액 비중 (쇼핑검색광고) — cattxn_df 기준, D-2 반영 ──
-    _render_category_mix_section(start_ts, end_ts, ref_date, unit, mode, key_prefix="page1")
-
-    # ── 추이 차트: 2026년 기준 + 전년비 비교선 (조회단위별 집계) ──
-    render_section_title(f"2026년 추이 (전년비 비교) · {mode}")
-    st.caption("지표 선택")
-    with st.container(key="pill_trend_metric"):
-        metric_choice = st.radio(
-            "지표 선택", ALL_METRICS, index=ALL_METRICS.index("거래액"),
-            horizontal=True, label_visibility="collapsed", key="trend_metric_choice",
-        )
-
-    show_combo = False
-    if metric_choice == "거래액":
-        show_combo = st.checkbox("광고비 · ROAS 함께 보기 (막대 + 보조축)", value=True, key="trend_combo")
-
-    buckets = build_2026_buckets(df, unit)
-    if not buckets:
-        st.info("2026년 데이터가 없거나, 선택한 조회단위 기준으로 마감된 구간이 없습니다.")
-    else:
-        labels, cur_vals, prev_vals = bucket_yoy_series(df, buckets, metric_choice, mode, unit)
-        axis_metric_label = metric_choice if metric_choice not in BASE_METRICS else f"{metric_choice} ({mode})"
-
-        # ── 일별/주별은 버킷 수가 많아 카테고리축에 다 우겨넣으면 라벨이 겹쳐 읽기 어렵다.
-        # 실제 날짜(date)축으로 바꾸고 레인지슬라이더 + 기본 최근 90일(주별은 약 12주) 확대 뷰를
-        # 줘서, 평소엔 최근 구간만 깔끔하게 보고 필요하면 슬라이더를 끌어 전체 연도를 볼 수 있게 한다.
-        # 월별/월마감은 버킷 수가 적어(최대 12개) 기존 카테고리축 그대로가 더 낫다.
-        is_daily = (unit == "일별")
-        use_date_axis = unit in ("일별", "주별")
-        x_vals = [dates[0] for _, dates in buckets] if use_date_axis else labels
-        line_mode = "lines" if is_daily else "lines+markers"
-
-        show_ma = False
-        if is_daily:
-            show_ma = st.checkbox("7일 이동평균선 함께 보기 (일별 변동 완화)", value=False, key="trend_ma")
-
-        def _ma7(vals):
-            s = pd.Series(vals, dtype="float64")
-            return s.rolling(7, min_periods=3).mean().tolist()
-
-        fig = go.Figure()
-        is_million_metric = metric_choice in MILLION_SCALE_METRICS
-
-        if show_combo:
-            _, ad_cost_vals, _ = bucket_yoy_series(df, buckets, "광고비", mode, unit)
-            _, roas_vals, _ = bucket_yoy_series(df, buckets, "ROAS", mode, unit)
-            roas_pct_vals = [round(v * 100, 1) if v is not None else None for v in roas_vals]
-            ad_cost_plot = _to_million(ad_cost_vals)
-            cur_plot, prev_plot = _to_million(cur_vals), _to_million(prev_vals)
-
-            fig.add_trace(go.Bar(
-                x=x_vals, y=ad_cost_plot, name="광고비", yaxis="y2",
-                marker_color="rgba(148,163,184,0.55)",
-            ))
-            fig.add_trace(go.Scatter(
-                x=x_vals, y=cur_plot, mode=line_mode, name="거래액(올해)",
-                line=dict(width=2, color="#2563EB"),
-                customdata=roas_pct_vals,
-                hovertemplate="%{x}<br>거래액: %{y:,.1f}백만<br>ROAS: %{customdata}%<extra></extra>",
-            ))
-            fig.add_trace(go.Scatter(
-                x=x_vals, y=prev_plot, mode=line_mode, name="거래액(전년비)",
-                line=dict(width=2, dash="dash", color="#93C5FD"), connectgaps=True,
-            ))
-            if show_ma:
-                fig.add_trace(go.Scatter(
-                    x=x_vals, y=_ma7(cur_plot), mode="lines", name="거래액 7일 이동평균",
-                    line=dict(width=3, color="#F59E0B"),
-                ))
-            fig.update_layout(
-                height=480 if is_daily else 440,
-                margin=dict(t=70 if use_date_axis else 20, b=20, l=10, r=10),
-                xaxis=_trend_xaxis(x_vals, use_date_axis, "%m/%d"),
-                yaxis=_money_axis(f"거래액 ({mode})"),
-                yaxis2=dict(**_money_axis("광고비"), overlaying="y", side="right", showgrid=False),
-                hovermode="closest",
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
-                dragmode="pan",
+        funnel_deltas = []
+        funnel_yoy_deltas = []
+        for m in funnel_stages:
+            d = deltas_for(m)
+            d_label, d_pct, d_prev = d[0]
+            funnel_deltas.append(
+                f"{d_label} {format_delta_text(d_pct)} ({d_prev})" if d_pct is not None and d_prev else
+                (f"{d_label} {format_delta_text(d_pct)}" if d_pct is not None else f"{d_label} -")
             )
-            st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True})
-            st.caption("📊 막대=광고비(우측 보조축) · 거래액 라인에 마우스를 올리면 해당 시점 ROAS%가 함께 표시됩니다."
-                      + (" 마우스 스크롤로 확대/축소, 클릭한 채로 드래그하면 좌우 이동됩니다." if use_date_axis else "")
-                      + (" 위쪽 버튼으로 기간(1주/1개월/3개월/6개월/전체)을 바꿔볼 수 있습니다." if use_date_axis else ""))
+            yoy_entry = next((x for x in d if x[0] == "전년비"), None)
+            yoy_pct = yoy_entry[1] if yoy_entry else None
+            yoy_prev = yoy_entry[2] if yoy_entry else None
+            funnel_yoy_deltas.append(
+                f"전년비 {format_delta_text(yoy_pct)} ({yoy_prev})" if yoy_pct is not None and yoy_prev else
+                (f"전년비 {format_delta_text(yoy_pct)}" if yoy_pct is not None else "전년비 -")
+            )
+
+        render_custom_funnel(
+            funnel_labels, funnel_cur_vals, deltas=funnel_deltas, yoy_deltas=funnel_yoy_deltas,
+            sub_labels=[f"{cur_label} · {mode}"] * 4,
+            colors=["#2563EB", "#0EA5E9", "#F59E0B", "#22C55E"],
+            weak_index=weak_index, weak_note=weak_note,
+        )
+        st.caption("💡 도형 폭은 값 비율이 아니라 보기 좋게 고정한 형태입니다 — 정확한 크기는 옆 숫자를 보세요.")
+        st.caption(f"📅 전년비 기준: {'정확히 12개월 전 같은 달(마감 실적 기준)' if unit == '월마감' else '전년 동요일비(364일=52주 전, 요일 정렬)'}")
+        if weak_index is not None:
+            render_colored_caption(
+                f"🔻 **{funnel_labels[weak_index]} 전환 구간이 가장 부진합니다** — {weak_note}. "
+                "노출·클릭 등 물량이 아니라 단계별 전환율(CTR/UV·클릭율/CR) 기준 진단이라, "
+                "트래픽은 늘어도 이 구간만 새는 중일 수 있습니다."
+            )
+
+        funnel_table_rows = []
+        prev_val = None
+        base_val = funnel_cur_vals[0] if funnel_cur_vals else None
+        for flabel, fval in zip(funnel_labels, funnel_cur_vals):
+            step_rate = (fval / prev_val * 100) if prev_val else None
+            total_rate = (fval / base_val * 100) if base_val else None
+            funnel_table_rows.append({
+                "단계": flabel,
+                "값": f"{fval:,.0f}",
+                "이전 단계 대비": f"{step_rate:.1f}%" if step_rate is not None else "-",
+                "노출 대비": f"{total_rate:.2f}%" if total_rate is not None else "-",
+            })
+            prev_val = fval
+        st.dataframe(pd.DataFrame(funnel_table_rows), hide_index=True, use_container_width=True)
+        st.caption(
+            f"💡 '이전 단계 대비'는 CTR(클릭/노출) → UV/클릭 → CR(구매/UV) 순서와 같습니다. "
+            f"참고: 객단가 {format_value('객단가', agg['객단가'])} · ROAS {format_value('ROAS', agg['ROAS'])} "
+            f"(퍼널 단계에는 포함하지 않고 참고용으로만 표시)"
+        )
+
+    with p1_tabs[2]:
+        # ── 카테고리별 거래액 비중 (쇼핑검색광고) — cattxn_df 기준, D-2 반영 ──
+        _render_category_mix_section(start_ts, end_ts, ref_date, unit, mode, key_prefix="page1")
+
+    with p1_tabs[3]:
+        # ── 추이 차트: 2026년 기준 + 전년비 비교선 (조회단위별 집계) ──
+        render_section_title(f"2026년 추이 (전년비 비교) · {mode}")
+        st.caption("지표 선택")
+        with st.container(key="pill_trend_metric"):
+            metric_choice = st.radio(
+                "지표 선택", ALL_METRICS, index=ALL_METRICS.index("거래액"),
+                horizontal=True, label_visibility="collapsed", key="trend_metric_choice",
+            )
+
+        show_combo = False
+        if metric_choice == "거래액":
+            show_combo = st.checkbox("광고비 · ROAS 함께 보기 (막대 + 보조축)", value=True, key="trend_combo")
+
+        buckets = build_2026_buckets(df, unit)
+        if not buckets:
+            st.info("2026년 데이터가 없거나, 선택한 조회단위 기준으로 마감된 구간이 없습니다.")
         else:
-            cur_plot = _to_million(cur_vals) if is_million_metric else cur_vals
-            prev_plot = _to_million(prev_vals) if is_million_metric else prev_vals
-            fig.add_trace(go.Scatter(
-                x=x_vals, y=cur_plot, mode=line_mode, name="2026년(올해)",
-                line=dict(width=2),
-            ))
-            fig.add_trace(go.Scatter(
-                x=x_vals, y=prev_plot, mode=line_mode, name="전년비",
-                line=dict(width=2, dash="dash"), connectgaps=True,
-            ))
-            if show_ma:
-                fig.add_trace(go.Scatter(
-                    x=x_vals, y=_ma7(cur_plot), mode="lines", name="7일 이동평균",
-                    line=dict(width=3, color="#F59E0B"),
-                ))
-            fig.update_layout(
-                height=460 if is_daily else 420,
-                margin=dict(t=70 if use_date_axis else 20, b=20, l=10, r=10),
-                yaxis=_money_axis(axis_metric_label, is_million_metric),
-                xaxis_title=None,
-                xaxis=_trend_xaxis(x_vals, use_date_axis, "%m/%d"),
-                hovermode="closest",
-                dragmode="pan",
-            )
-            st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True})
-            if use_date_axis:
-                default_window_note = "최근 90일" if is_daily else "최근 약 12주"
-                st.caption(f"💡 기본으로 {default_window_note}만 보여줍니다 — 마우스 스크롤로 확대/축소, "
-                           "클릭한 채로 드래그하면 좌우 이동됩니다. 위쪽 버튼으로 1주/1개월/3개월/6개월/전체 기간을 바로 바꿔볼 수 있습니다.")
+            labels, cur_vals, prev_vals = bucket_yoy_series(df, buckets, metric_choice, mode, unit)
+            axis_metric_label = metric_choice if metric_choice not in BASE_METRICS else f"{metric_choice} ({mode})"
 
-        yoy_basis = "정확히 12개월 전 같은 달(마감 실적 기준)" if unit == "월마감" else "전년 동요일비(364일=52주 전, 요일 정렬)"
-        st.caption(f"📅 전년비 비교 기준: {yoy_basis}")
+            # ── 일별/주별은 버킷 수가 많아 카테고리축에 다 우겨넣으면 라벨이 겹쳐 읽기 어렵다.
+            # 실제 날짜(date)축으로 바꾸고 레인지슬라이더 + 기본 최근 90일(주별은 약 12주) 확대 뷰를
+            # 줘서, 평소엔 최근 구간만 깔끔하게 보고 필요하면 슬라이더를 끌어 전체 연도를 볼 수 있게 한다.
+            # 월별/월마감은 버킷 수가 적어(최대 12개) 기존 카테고리축 그대로가 더 낫다.
+            is_daily = (unit == "일별")
+            use_date_axis = unit in ("일별", "주별")
+            x_vals = [dates[0] for _, dates in buckets] if use_date_axis else labels
+            line_mode = "lines" if is_daily else "lines+markers"
+
+            show_ma = False
+            if is_daily:
+                show_ma = st.checkbox("7일 이동평균선 함께 보기 (일별 변동 완화)", value=False, key="trend_ma")
+
+            def _ma7(vals):
+                s = pd.Series(vals, dtype="float64")
+                return s.rolling(7, min_periods=3).mean().tolist()
+
+            fig = go.Figure()
+            is_million_metric = metric_choice in MILLION_SCALE_METRICS
+
+            if show_combo:
+                _, ad_cost_vals, _ = bucket_yoy_series(df, buckets, "광고비", mode, unit)
+                _, roas_vals, _ = bucket_yoy_series(df, buckets, "ROAS", mode, unit)
+                roas_pct_vals = [round(v * 100, 1) if v is not None else None for v in roas_vals]
+                ad_cost_plot = _to_million(ad_cost_vals)
+                cur_plot, prev_plot = _to_million(cur_vals), _to_million(prev_vals)
+
+                fig.add_trace(go.Bar(
+                    x=x_vals, y=ad_cost_plot, name="광고비", yaxis="y2",
+                    marker_color="rgba(148,163,184,0.55)",
+                ))
+                fig.add_trace(go.Scatter(
+                    x=x_vals, y=cur_plot, mode=line_mode, name="거래액(올해)",
+                    line=dict(width=2, color="#2563EB"),
+                    customdata=roas_pct_vals,
+                    hovertemplate="%{x}<br>거래액: %{y:,.1f}백만<br>ROAS: %{customdata}%<extra></extra>",
+                ))
+                fig.add_trace(go.Scatter(
+                    x=x_vals, y=prev_plot, mode=line_mode, name="거래액(전년비)",
+                    line=dict(width=2, dash="dash", color="#93C5FD"), connectgaps=True,
+                ))
+                if show_ma:
+                    fig.add_trace(go.Scatter(
+                        x=x_vals, y=_ma7(cur_plot), mode="lines", name="거래액 7일 이동평균",
+                        line=dict(width=3, color="#F59E0B"),
+                    ))
+                fig.update_layout(
+                    height=480 if is_daily else 440,
+                    margin=dict(t=70 if use_date_axis else 20, b=20, l=10, r=10),
+                    xaxis=_trend_xaxis(x_vals, use_date_axis, "%m/%d"),
+                    yaxis=_money_axis(f"거래액 ({mode})"),
+                    yaxis2=dict(**_money_axis("광고비"), overlaying="y", side="right", showgrid=False),
+                    hovermode="closest",
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+                    dragmode="pan",
+                )
+                st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True})
+                st.caption("📊 막대=광고비(우측 보조축) · 거래액 라인에 마우스를 올리면 해당 시점 ROAS%가 함께 표시됩니다."
+                          + (" 마우스 스크롤로 확대/축소, 클릭한 채로 드래그하면 좌우 이동됩니다." if use_date_axis else "")
+                          + (" 위쪽 버튼으로 기간(1주/1개월/3개월/6개월/전체)을 바꿔볼 수 있습니다." if use_date_axis else ""))
+            else:
+                cur_plot = _to_million(cur_vals) if is_million_metric else cur_vals
+                prev_plot = _to_million(prev_vals) if is_million_metric else prev_vals
+                fig.add_trace(go.Scatter(
+                    x=x_vals, y=cur_plot, mode=line_mode, name="2026년(올해)",
+                    line=dict(width=2),
+                ))
+                fig.add_trace(go.Scatter(
+                    x=x_vals, y=prev_plot, mode=line_mode, name="전년비",
+                    line=dict(width=2, dash="dash"), connectgaps=True,
+                ))
+                if show_ma:
+                    fig.add_trace(go.Scatter(
+                        x=x_vals, y=_ma7(cur_plot), mode="lines", name="7일 이동평균",
+                        line=dict(width=3, color="#F59E0B"),
+                    ))
+                fig.update_layout(
+                    height=460 if is_daily else 420,
+                    margin=dict(t=70 if use_date_axis else 20, b=20, l=10, r=10),
+                    yaxis=_money_axis(axis_metric_label, is_million_metric),
+                    xaxis_title=None,
+                    xaxis=_trend_xaxis(x_vals, use_date_axis, "%m/%d"),
+                    hovermode="closest",
+                    dragmode="pan",
+                )
+                st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True})
+                if use_date_axis:
+                    default_window_note = "최근 90일" if is_daily else "최근 약 12주"
+                    st.caption(f"💡 기본으로 {default_window_note}만 보여줍니다 — 마우스 스크롤로 확대/축소, "
+                               "클릭한 채로 드래그하면 좌우 이동됩니다. 위쪽 버튼으로 1주/1개월/3개월/6개월/전체 기간을 바로 바꿔볼 수 있습니다.")
+
+            yoy_basis = "정확히 12개월 전 같은 달(마감 실적 기준)" if unit == "월마감" else "전년 동요일비(364일=52주 전, 요일 정렬)"
+            st.caption(f"📅 전년비 비교 기준: {yoy_basis}")
 
 
 # ════════════════════════════════════════════════════════════════
@@ -2695,15 +2700,15 @@ elif menu == "상품군 효율":
         title=f"상품군 효율 — {ap_cur_label}" + (f" · {ap_scope_note}" if ap_scope_note else ""),
         sub=f"조회단위: {unit}  ·  표시방식: {ap_mode}  ·  집계기간: {ap_start_ts.date()} ~ {ap_end_ts.date()} ({ap_cur_days}일)",
     )
-    st.markdown(
-        '<div class="kpi-footnote">※ 이 페이지의 대카테고리·중카테고리·브랜드명은 03페이지(태블로 기반, EP 비교)와 '
-        '체계가 다른 이 광고 리포트 자체의 분류입니다 — 서로 직접 매핑되지 않습니다. '
-        '<b>판매액</b>은 NBOS 매칭 실매출 기준이며, 광고 플랫폼이 자체 귀속하는 "전환매출액"과는 다릅니다 — '
-        '전환매출액은 간접전환까지 넓게 잡아 실매출보다 크게 부풀려질 수 있어 ROAS 계산에서 의도적으로 제외했습니다. '
-        f'현재 데이터 보유 기간: {AD_PRODUCT_MIN_DATE} ~ {AD_PRODUCT_MAX_DATE} '
-        '(과거 기간은 원본을 추가로 변환해 순차적으로 백필 예정이며, 기간이 늘어날수록 전주비·전월비·전년비가 순차 활성화됩니다).</div>',
-        unsafe_allow_html=True,
-    )
+    with st.expander("ℹ️ 이 페이지의 데이터 기준 (판매액·카테고리 체계)", expanded=False):
+        st.markdown(
+            f"- **분류 체계:** 이 페이지의 대카테고리·중카테고리·브랜드명은 03페이지(태블로 기반, EP 비교)와 다른 "
+            f"광고 리포트 자체의 분류라 서로 직접 매핑되지 않습니다.\n"
+            f"- **판매액:** NBOS 매칭 실매출 기준입니다. 광고 플랫폼이 자체 귀속하는 '전환매출액'은 간접전환까지 넓게 잡아 "
+            f"실매출보다 크게 부풀려질 수 있어 ROAS 계산에서 일부러 제외했습니다.\n"
+            f"- **보유 기간:** {AD_PRODUCT_MIN_DATE} ~ {AD_PRODUCT_MAX_DATE} (이 기간 안에서 전일·전주·전월·전년비가 계산됩니다).\n"
+            f"- **카테고리 거래액 · 상품 TOP10 탭:** 03페이지와 같은 태블로 기반 카테고리 체계를 씁니다."
+        )
 
     ap_view = ad_product_df[(ad_product_df["date"] >= ap_start_ts) & (ad_product_df["date"] <= ap_end_ts)]
     if ap_view.empty:
@@ -2813,519 +2818,529 @@ elif menu == "상품군 효율":
             )
     render_insight_box(ap_insight_lines)
 
-    # ── 실적 퍼널 (노출 → 클릭 → 구매) — 상단 자사/입점·대/중카테고리 필터를 그대로 반영.
-    # ad_product 리포트에는 UV(방문) 개념이 없어(광고 클릭→매칭된 구매만 추적) 01페이지와
-    # 달리 3단계로 구성한다.
-    ap_title_col, ap_title_pill_col = st.columns([2.4, 1.6])
-    with ap_title_col:
-        render_section_title(
-            f"실적 퍼널 (노출 → 클릭 → 구매)" + (f" · {ap_scope_note}" if ap_scope_note else "") + f" · {ap_mode}"
-        )
-    with ap_title_pill_col:
-        st.markdown("<div style='margin-top:26px'></div>", unsafe_allow_html=True)
-        with st.container(key="pill_ap_diag_metric"):
-            ap_diag_metric = st.radio(
-                "정렬 기준(TOP5)", ["구매전환", "판매액"], horizontal=True,
-                label_visibility="collapsed", key="adprod_diag_metric",
+    p4_tabs = st.tabs(["🔻 퍼널 · 진단", "🏷️ 랭킹", "⚖️ 광고비 조정 후보", "📦 카테고리 거래액 · 상품 TOP10"])
+    with p4_tabs[0]:
+        # ── 실적 퍼널 (노출 → 클릭 → 구매) — 상단 자사/입점·대/중카테고리 필터를 그대로 반영.
+        # ad_product 리포트에는 UV(방문) 개념이 없어(광고 클릭→매칭된 구매만 추적) 01페이지와
+        # 달리 3단계로 구성한다.
+        ap_title_col, ap_title_pill_col = st.columns([2.4, 1.6])
+        with ap_title_col:
+            render_section_title(
+                f"실적 퍼널 (노출 → 클릭 → 구매)" + (f" · {ap_scope_note}" if ap_scope_note else "") + f" · {ap_mode}"
             )
-    ap_funnel_stages = ["노출수", "클릭수", "구매수량"]
-    ap_funnel_labels = ["노출", "클릭", "구매"]
-    ap_funnel_vals = [ap_scaled(m, ap_agg[m], ap_cur_days) for m in ap_funnel_stages]
-
-    ap_funnel_deltas = []
-    ap_funnel_yoy_deltas = []
-    for m in ap_funnel_stages:
-        d = ap_deltas_for(m)
-        d_label, d_pct, d_prev = d[0]
-        ap_funnel_deltas.append(
-            f"{d_label} {format_delta_text(d_pct)} ({d_prev})" if d_pct is not None and d_prev else
-            (f"{d_label} {format_delta_text(d_pct)}" if d_pct is not None else f"{d_label} -")
-        )
-        yoy_entry = next((x for x in d if x[0] == "전년비"), None)
-        yoy_pct = yoy_entry[1] if yoy_entry else None
-        yoy_prev = yoy_entry[2] if yoy_entry else None
-        ap_funnel_yoy_deltas.append(
-            f"전년비 {format_delta_text(yoy_pct)} ({yoy_prev})" if yoy_pct is not None and yoy_prev else
-            (f"전년비 {format_delta_text(yoy_pct)}" if yoy_pct is not None else "전년비 -")
-        )
-
-    # 물량이 아니라 전환율(CTR=클릭/노출, CVR=구매/클릭) 기준으로 가장 부진한 구간 진단 —
-    # 01페이지 퍼널과 동일한 방식, 전년비가 있으면 우선 사용하고 없으면 직전기간으로 대체.
-    ap_stage_rate_defs = [("CTR", 1), ("CVR", 2)]  # (지표, 퍼널 단계 인덱스)
-    ap_yoy_agg = ap_comp_aggs.get("전년비")
-    ap_rate_candidates = []
-    for metric, idx in ap_stage_rate_defs:
-        cur_r = ap_agg[metric]
-        pct, basis = (pct_change(cur_r, ap_yoy_agg[metric]), "전년비") if ap_yoy_agg is not None else (None, None)
-        if pct is None:
-            imm_label, imm_pct, _ = ap_deltas_for(metric)[0]
-            pct, basis = imm_pct, imm_label
-        if pct is not None:
-            ap_rate_candidates.append((idx, metric, pct, basis))
-
-    ap_weak_index, ap_weak_note = None, None
-    if ap_rate_candidates:
-        w_idx, w_metric, w_pct, w_basis = min(ap_rate_candidates, key=lambda x: x[2])
-        if w_pct < 0:
-            ap_weak_index, ap_weak_note = w_idx, f"{w_metric} {w_basis} {format_delta_text(w_pct)}"
-
-    ap_funnel_col, ap_diag_col = st.columns([2.3, 1.7])
-    with ap_funnel_col:
-        render_custom_funnel(
-            ap_funnel_labels, ap_funnel_vals, deltas=ap_funnel_deltas, yoy_deltas=ap_funnel_yoy_deltas,
-            sub_labels=[f"{ap_cur_label} · {ap_mode}"] * 3,
-            colors=["#2563EB", "#0EA5E9", "#22C55E"],
-            weak_index=ap_weak_index, weak_note=ap_weak_note,
-        )
-        if ap_weak_index is not None:
-            render_colored_caption(f"🔻 **{ap_funnel_labels[ap_weak_index]} 전환 구간이 가장 부진합니다** — {ap_weak_note}.")
-        st.caption("💡 상단 필터(자사/입점·대카테고리·중카테고리)를 바꾸면 이 퍼널도 그 범위로 다시 계산됩니다.")
-        st.caption(f"📅 전년비 기준: {'정확히 12개월 전 같은 달(마감 실적 기준)' if unit == '월마감' else '전년 동요일비(364일=52주 전, 요일 정렬)'}")
-
-    with ap_diag_col:
-        # 상단 필터와 무관하게 항상 "전체" 기준으로 대카테고리별 부진/우수 순위를 보여준다 —
-        # 필터를 하나하나 바꿔보지 않아도 어디가 문제인지 바로 알 수 있게.
-        # 대/중카테고리 필터는 무시(카테고리를 굳이 안 좁혀도 전체를 훑어보려는 패널의 목적과
-        # 맞지 않으므로)하지만, 자사/입점은 "보고 있는 관점" 자체를 바꾸는 선택이라 반영한다.
-        # (정렬 기준 알약 버튼은 위쪽 섹션 타이틀 옆으로 이동 — ap_diag_metric은 거기서 정의됨)
-        # 판매액 모드는 %증감이 아니라 증감액(원) 기준으로 순위를 매긴다 — 기존 베이스가
-        # 거의 0인 카테고리(예: 0.3백만→0.0백만)가 "▼100.0%"로 항상 부진 TOP에 끼는 것과
-        # 달리, 실제 금액 임팩트가 큰 카테고리가 위로 오게 된다. 구매전환(CVR)은 금액
-        # 개념이 없어 그대로 %증감 기준을 쓴다.
-        ap_diag_is_amount = ap_diag_metric != "구매전환"
-        ap_diag_sort_col = "CVR_증감" if ap_diag_metric == "구매전환" else "판매액_증감액"
-        ap_diag_label = "CVR" if ap_diag_metric == "구매전환" else "판매액"
-        ap_diag_other_col = "판매액_증감" if ap_diag_metric == "구매전환" else "CVR_증감"
-        ap_diag_other_label = "판매액" if ap_diag_metric == "구매전환" else "CVR"
-
-        ap_diag_rank = ad_product_group_compare(
-            ad_product_df, "대카테고리", ap_start_ts, ap_end_ts, ap_prev_start, ap_prev_end,
-            ap_own, "전체", "전체",
-        )
-        ap_diag_valid = ap_diag_rank[ap_diag_rank[ap_diag_sort_col].notna()]
-        ap_diag_worst = ap_diag_valid.sort_values(ap_diag_sort_col).head(5)
-        ap_diag_best = ap_diag_valid.sort_values(ap_diag_sort_col, ascending=False).head(5)
-        ap_own_note = ap_own if ap_own != "전체" else "자사+입점 전체"
-
-        def _diag_lines(rows, positive: bool):
-            lines = []
-            for _, row in rows.iterrows():
-                if (row[ap_diag_sort_col] > 0) != positive:
-                    continue
-                prev_v, cur_v = row.get(f"{ap_diag_label}_전기"), row.get(ap_diag_label)
-                change_str = (
-                    f" ({ap_format_value(ap_diag_label, prev_v)} → {ap_format_value(ap_diag_label, cur_v)})"
-                    if prev_v is not None and cur_v is not None else ""
+        with ap_title_pill_col:
+            st.markdown("<div style='margin-top:26px'></div>", unsafe_allow_html=True)
+            with st.container(key="pill_ap_diag_metric"):
+                ap_diag_metric = st.radio(
+                    "정렬 기준(TOP5)", ["구매전환", "판매액"], horizontal=True,
+                    label_visibility="collapsed", key="adprod_diag_metric",
                 )
-                if ap_diag_is_amount:
-                    amt = row[ap_diag_sort_col]
-                    arrow = "▲" if amt > 0 else ("▼" if amt < 0 else "")
-                    diag_delta_display = f"{arrow}{format_million(abs(amt))}"
-                else:
-                    diag_delta_display = format_delta_text(row[ap_diag_sort_col])
-                lines.append(
-                    f"**{row['대카테고리']}** — {ap_diag_label} {diag_delta_display}"
-                    f"{change_str} · {ap_diag_other_label} {format_delta_text(row[ap_diag_other_col])}"
-                )
-            return lines
+        ap_funnel_stages = ["노출수", "클릭수", "구매수량"]
+        ap_funnel_labels = ["노출", "클릭", "구매"]
+        ap_funnel_vals = [ap_scaled(m, ap_agg[m], ap_cur_days) for m in ap_funnel_stages]
 
-        worst_lines = _diag_lines(ap_diag_worst, positive=False)
-        render_insight_box(
-            worst_lines or [f"{ap_own_note} 기준, 카테고리 전반에서 뚜렷한 {ap_diag_metric} 부진 신호가 없습니다."],
-            title=f"{ap_diag_metric} 부진 TOP5 ({ap_immediate_label} · {ap_own_note} · 카테고리 필터 무관)",
-            tone="danger",
-        )
-        best_lines = _diag_lines(ap_diag_best, positive=True)
-        render_insight_box(
-            best_lines or [f"{ap_own_note} 기준, 카테고리 전반에서 뚜렷한 {ap_diag_metric} 개선 신호가 없습니다."],
-            title=f"{ap_diag_metric} 우수 TOP5 ({ap_immediate_label} · {ap_own_note} · 카테고리 필터 무관)",
-            tone="success",
-        )
-
-    # ══════════════════════════════════════════════════════════
-    # 카테고리별 거래액 현황 → 행을 클릭하면 그 카테고리의 거래액 상위 상품 TOP10
-    # (03페이지와 같은 카테고리 체계·상품명 데이터 — 이 페이지 위·아래의 NBOS 대/중카테고리와는 별개)
-    # ══════════════════════════════════════════════════════════
-    render_section_title("카테고리별 거래액 현황 · 클릭하면 상위 상품 TOP10")
-    st.caption(
-        "ℹ️ 이 섹션은 03페이지와 같은 카테고리 체계(태블로 기반)와 상품명 데이터를 씁니다 — 이 페이지 다른 영역의 "
-        "NBOS 대/중카테고리와 직접 매핑되지 않아요. 표에서 카테고리 행을 클릭하면 아래에 그 카테고리의 "
-        "거래액 상위 10개 상품이 나옵니다 (선택이 없으면 '합계(전체)' 기준). 기간·표시방식은 이 페이지 상단 필터를 따라가요."
-    )
-    ap_cs_txn = st.radio("정상/이월/입점", CATTXN_TXN_TYPE_OPTIONS, horizontal=True, key="adprod_cs_txn")
-    ap_cs_start = max(ap_start_ts, pd.Timestamp(CATTXN_MIN_DATE))
-    ap_cs_end = min(ap_end_ts, pd.Timestamp(CATTXN_MAX_DATE))
-    ap_cs_view = (
-        cattxn_df[(cattxn_df["date"] >= ap_cs_start) & (cattxn_df["date"] <= ap_cs_end)]
-        if ap_cs_start <= ap_cs_end else cattxn_df.iloc[0:0]
-    )
-    ap_cs_rank = aggregate_cattxn_by(ap_cs_view, "category", ap_cs_txn) if not ap_cs_view.empty else None
-    if ap_cs_rank is not None:
-        ap_cs_rank["합계"] = ap_cs_rank["쇼핑검색광고_거래액"] + ap_cs_rank["EP채널_거래액"]
-        ap_cs_rank = ap_cs_rank[ap_cs_rank["합계"] > 0].sort_values("합계", ascending=False).reset_index(drop=True)
-
-    if ap_cs_rank is None or ap_cs_rank.empty:
-        st.info(f"이 기간에는 카테고리별 데이터가 없습니다 (카테고리 데이터 최신일자: {CATTXN_MAX_DATE}).")
-    else:
-        ap_cs_days = ap_cs_view["date"].nunique() if ap_mode == "일평균" else 1
-        ap_cs_table = pd.DataFrame({
-            "카테고리": ["합계(전체)"] + ap_cs_rank["category"].tolist(),
-            "쇼핑검색광고 거래액": [ap_cs_rank["쇼핑검색광고_거래액"].sum()] + ap_cs_rank["쇼핑검색광고_거래액"].tolist(),
-            "EP채널 거래액": [ap_cs_rank["EP채널_거래액"].sum()] + ap_cs_rank["EP채널_거래액"].tolist(),
-            "합계 거래액": [ap_cs_rank["합계"].sum()] + ap_cs_rank["합계"].tolist(),
-        })
-        for _c in ["쇼핑검색광고 거래액", "EP채널 거래액", "합계 거래액"]:
-            ap_cs_table[_c] = ap_cs_table[_c] / ap_cs_days
-        ap_cs_ad_share = (
-            ap_cs_table["쇼핑검색광고 거래액"] / ap_cs_table["합계 거래액"] * 100
-        ).where(ap_cs_table["합계 거래액"] > 0)
-        # 쉼표 포함 문자열로 보여주되(다른 표와 동일), 선택 로직은 행 순서(index)만 쓰므로 영향 없다.
-        ap_cs_display = ap_cs_table.copy()
-        for _c in ["쇼핑검색광고 거래액", "EP채널 거래액", "합계 거래액"]:
-            ap_cs_display[_c] = ap_cs_table[_c].apply(lambda v: f"{v:,.0f}")
-        ap_cs_display["광고 비중"] = ap_cs_ad_share.apply(lambda v: f"{v:.1f}%" if pd.notna(v) else "-")
-        ap_cs_event = st.dataframe(
-            ap_cs_display, hide_index=True, use_container_width=True,
-            on_select="rerun", selection_mode="single-row", key="adprod_cs_table",
-            height=min(35 * (len(ap_cs_display) + 1) + 3, 460),
-        )
-        ap_cs_sel_rows = ap_cs_event.selection.rows if ap_cs_event is not None else []
-        ap_cs_sel_idx = ap_cs_sel_rows[0] if ap_cs_sel_rows and ap_cs_sel_rows[0] < len(ap_cs_table) else 0
-        ap_cs_sel_cat = ap_cs_table.iloc[ap_cs_sel_idx]["카테고리"]
-        ap_cs_cat_filter = "전체" if ap_cs_sel_cat == "합계(전체)" else ap_cs_sel_cat
-        st.caption(
-            f"📅 집계기간 {ap_cs_start.date()} ~ {ap_cs_end.date()} · {ap_mode} 기준 · 카테고리 데이터는 2일 전 실적까지 반영 "
-            f"(최신일자: {CATTXN_MAX_DATE}) · 합계 거래액 = 쇼핑검색광고 + EP채널"
-        )
-
-        st.markdown(f"**📦 {ap_cs_sel_cat} · 거래액 상위 10개 상품**")
-        if product_txn_df is None:
-            st.info("상품명 단위 데이터가 아직 없습니다 (product_txn_daily 파일 미존재).")
-        else:
-            ap_cs_channel = st.radio(
-                "정렬 기준 채널", ["합계", "쇼핑검색광고", "EP채널"], horizontal=True, key="adprod_cs_channel",
+        ap_funnel_deltas = []
+        ap_funnel_yoy_deltas = []
+        for m in ap_funnel_stages:
+            d = ap_deltas_for(m)
+            d_label, d_pct, d_prev = d[0]
+            ap_funnel_deltas.append(
+                f"{d_label} {format_delta_text(d_pct)} ({d_prev})" if d_pct is not None and d_prev else
+                (f"{d_label} {format_delta_text(d_pct)}" if d_pct is not None else f"{d_label} -")
             )
-            ap_ps = max(ap_cs_start, pd.Timestamp(PRODUCT_TXN_MIN_DATE))
-            ap_pe = min(ap_cs_end, pd.Timestamp(PRODUCT_TXN_MAX_DATE))
-            if ap_ps > ap_pe:
-                st.info(f"이 기간에는 상품명 단위 데이터가 없습니다 (보유 범위: {PRODUCT_TXN_MIN_DATE} ~ {PRODUCT_TXN_MAX_DATE}).")
-            else:
-                ap_top = top_products_by_revenue(
-                    product_txn_df, ap_ps, ap_pe, ap_cs_txn, ap_cs_cat_filter, "전체",
-                    channel=ap_cs_channel, top_n=10, both_rank_n=20,
-                )
-                if ap_top.empty:
-                    st.info("조건에 맞는 상품 거래액 데이터가 없습니다.")
-                else:
-                    ap_pdays = (
-                        product_txn_df[(product_txn_df["date"] >= ap_ps) & (product_txn_df["date"] <= ap_pe)]["date"].nunique()
-                        if ap_mode == "일평균" else 1
-                    ) or 1
-                    ap_top_display = pd.DataFrame({
-                        "순위": range(1, len(ap_top) + 1),
-                        "구분": [_top_tag(a, e) for a, e in zip(ap_top["광고순위"], ap_top["EP순위"])],
-                        "상품명": ap_top["product_name"],
-                        "상품코드": ap_top["product_code"],
-                        "카테고리": ap_top["category"],
-                        "브랜드": ap_top["brand"].map(brand_label),
-                        f"거래액({ap_cs_channel})": (ap_top["거래액"] / ap_pdays).apply(lambda v: f"{v:,.0f}"),
-                        "쇼핑검색광고 거래액": (ap_top["ad_거래액"] / ap_pdays).apply(lambda v: f"{v:,.0f}"),
-                        "광고 순위": ap_top["광고순위"].map(_rank_str),
-                        "EP채널 거래액": (ap_top["ep_거래액"] / ap_pdays).apply(lambda v: f"{v:,.0f}"),
-                        "EP 순위": ap_top["EP순위"].map(_rank_str),
-                        "주문고객수": (ap_top["주문고객수"] / ap_pdays).apply(lambda v: f"{v:,.1f}" if ap_mode == "일평균" else f"{v:,.0f}"),
-                    })
-                    st.dataframe(
-                        ap_top_display.style.apply(_highlight_both_rows, axis=1),
-                        use_container_width=True, hide_index=True,
-                        column_config={"구분": st.column_config.TextColumn("구분", width="medium")},
+            yoy_entry = next((x for x in d if x[0] == "전년비"), None)
+            yoy_pct = yoy_entry[1] if yoy_entry else None
+            yoy_prev = yoy_entry[2] if yoy_entry else None
+            ap_funnel_yoy_deltas.append(
+                f"전년비 {format_delta_text(yoy_pct)} ({yoy_prev})" if yoy_pct is not None and yoy_prev else
+                (f"전년비 {format_delta_text(yoy_pct)}" if yoy_pct is not None else "전년비 -")
+            )
+
+        # 물량이 아니라 전환율(CTR=클릭/노출, CVR=구매/클릭) 기준으로 가장 부진한 구간 진단 —
+        # 01페이지 퍼널과 동일한 방식, 전년비가 있으면 우선 사용하고 없으면 직전기간으로 대체.
+        ap_stage_rate_defs = [("CTR", 1), ("CVR", 2)]  # (지표, 퍼널 단계 인덱스)
+        ap_yoy_agg = ap_comp_aggs.get("전년비")
+        ap_rate_candidates = []
+        for metric, idx in ap_stage_rate_defs:
+            cur_r = ap_agg[metric]
+            pct, basis = (pct_change(cur_r, ap_yoy_agg[metric]), "전년비") if ap_yoy_agg is not None else (None, None)
+            if pct is None:
+                imm_label, imm_pct, _ = ap_deltas_for(metric)[0]
+                pct, basis = imm_pct, imm_label
+            if pct is not None:
+                ap_rate_candidates.append((idx, metric, pct, basis))
+
+        ap_weak_index, ap_weak_note = None, None
+        if ap_rate_candidates:
+            w_idx, w_metric, w_pct, w_basis = min(ap_rate_candidates, key=lambda x: x[2])
+            if w_pct < 0:
+                ap_weak_index, ap_weak_note = w_idx, f"{w_metric} {w_basis} {format_delta_text(w_pct)}"
+
+        ap_funnel_col, ap_diag_col = st.columns([2.3, 1.7])
+        with ap_funnel_col:
+            render_custom_funnel(
+                ap_funnel_labels, ap_funnel_vals, deltas=ap_funnel_deltas, yoy_deltas=ap_funnel_yoy_deltas,
+                sub_labels=[f"{ap_cur_label} · {ap_mode}"] * 3,
+                colors=["#2563EB", "#0EA5E9", "#22C55E"],
+                weak_index=ap_weak_index, weak_note=ap_weak_note,
+            )
+            if ap_weak_index is not None:
+                render_colored_caption(f"🔻 **{ap_funnel_labels[ap_weak_index]} 전환 구간이 가장 부진합니다** — {ap_weak_note}.")
+            st.caption("💡 상단 필터(자사/입점·대카테고리·중카테고리)를 바꾸면 이 퍼널도 그 범위로 다시 계산됩니다.")
+            st.caption(f"📅 전년비 기준: {'정확히 12개월 전 같은 달(마감 실적 기준)' if unit == '월마감' else '전년 동요일비(364일=52주 전, 요일 정렬)'}")
+
+        with ap_diag_col:
+            # 상단 필터와 무관하게 항상 "전체" 기준으로 대카테고리별 부진/우수 순위를 보여준다 —
+            # 필터를 하나하나 바꿔보지 않아도 어디가 문제인지 바로 알 수 있게.
+            # 대/중카테고리 필터는 무시(카테고리를 굳이 안 좁혀도 전체를 훑어보려는 패널의 목적과
+            # 맞지 않으므로)하지만, 자사/입점은 "보고 있는 관점" 자체를 바꾸는 선택이라 반영한다.
+            # (정렬 기준 알약 버튼은 위쪽 섹션 타이틀 옆으로 이동 — ap_diag_metric은 거기서 정의됨)
+            # 판매액 모드는 %증감이 아니라 증감액(원) 기준으로 순위를 매긴다 — 기존 베이스가
+            # 거의 0인 카테고리(예: 0.3백만→0.0백만)가 "▼100.0%"로 항상 부진 TOP에 끼는 것과
+            # 달리, 실제 금액 임팩트가 큰 카테고리가 위로 오게 된다. 구매전환(CVR)은 금액
+            # 개념이 없어 그대로 %증감 기준을 쓴다.
+            ap_diag_is_amount = ap_diag_metric != "구매전환"
+            ap_diag_sort_col = "CVR_증감" if ap_diag_metric == "구매전환" else "판매액_증감액"
+            ap_diag_label = "CVR" if ap_diag_metric == "구매전환" else "판매액"
+            ap_diag_other_col = "판매액_증감" if ap_diag_metric == "구매전환" else "CVR_증감"
+            ap_diag_other_label = "판매액" if ap_diag_metric == "구매전환" else "CVR"
+
+            ap_diag_rank = ad_product_group_compare(
+                ad_product_df, "대카테고리", ap_start_ts, ap_end_ts, ap_prev_start, ap_prev_end,
+                ap_own, "전체", "전체",
+            )
+            ap_diag_valid = ap_diag_rank[ap_diag_rank[ap_diag_sort_col].notna()]
+            ap_diag_worst = ap_diag_valid.sort_values(ap_diag_sort_col).head(5)
+            ap_diag_best = ap_diag_valid.sort_values(ap_diag_sort_col, ascending=False).head(5)
+            ap_own_note = ap_own if ap_own != "전체" else "자사+입점 전체"
+
+            def _diag_lines(rows, positive: bool):
+                lines = []
+                for _, row in rows.iterrows():
+                    if (row[ap_diag_sort_col] > 0) != positive:
+                        continue
+                    prev_v, cur_v = row.get(f"{ap_diag_label}_전기"), row.get(ap_diag_label)
+                    change_str = (
+                        f" ({ap_format_value(ap_diag_label, prev_v)} → {ap_format_value(ap_diag_label, cur_v)})"
+                        if prev_v is not None and cur_v is not None else ""
                     )
-                    st.caption(
-                        f"⭐ 이 범위에서 쇼핑검색광고·EP채널 거래액이 각각 상위 20위 안에 **모두** 든 상품은 "
-                        f"{ap_top.attrs.get('both_top_count', 0)}개예요 (노란 배경 + '★ 광고·EP 모두 상위'). "
-                        "순위는 표의 10개가 아니라 현재 필터 범위의 전체 상품 기준입니다."
-                    )
-                    ap_dl_scope = st.radio(
-                        "다운로드 범위", ["지금 보는 필터", "전체 (정상·이월·입점 · 모든 카테고리/브랜드)"],
-                        horizontal=True, key="dl_scope_adprod",
-                        help="'전체'는 위 필터와 무관하게 기간만 적용해서 전체 + 정상 / 이월 / 입점 각각의 상위 상품과, "
-                             "정상·이월의 카테고리별·브랜드별 상품 목록(그룹당 상위 20개)을 한 파일에 담습니다.",
-                    )
-                    ap_all_scope = ap_dl_scope.startswith("전체")
-                    ap_top_xlsx = top_products_excel_bytes(
-                        ap_ps, ap_pe, ap_cs_txn, ap_cs_cat_filter, "전체", 20,
-                        int(product_txn_df[(product_txn_df["date"] >= ap_ps)
-                                           & (product_txn_df["date"] <= ap_pe)]["date"].nunique()),
-                        ap_all_scope,
-                    )
-                    if ap_top_xlsx is not None:
-                        st.download_button(
-                            "📥 광고 / EP / 광고·EP 모두 상위 상품 Excel 다운로드", data=ap_top_xlsx,
-                            file_name=f"상위상품{'_전체' if ap_all_scope else ''}_{ap_ps.date()}_{ap_pe.date()}.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            key="dl_adprod_top_products",
-                        )
+                    if ap_diag_is_amount:
+                        amt = row[ap_diag_sort_col]
+                        arrow = "▲" if amt > 0 else ("▼" if amt < 0 else "")
+                        diag_delta_display = f"{arrow}{format_million(abs(amt))}"
                     else:
-                        st.caption("다운로드할 상품 데이터가 없습니다.")
-                    st.caption(
-                        f"📅 집계기간 {ap_ps.date()} ~ {ap_pe.date()} · {ap_mode} 기준 "
-                        f"(상품명 단위 데이터는 {PRODUCT_TXN_MIN_DATE} 이후만 보유) · "
-                        "Excel은 광고 상위 / EP 상위 / 모두 상위를 시트로 나눠 담고, 값은 기간 누계예요 · 📁 product_txn_daily"
+                        diag_delta_display = format_delta_text(row[ap_diag_sort_col])
+                    lines.append(
+                        f"**{row['대카테고리']}** — {ap_diag_label} {diag_delta_display}"
+                        f"{change_str} · {ap_diag_other_label} {format_delta_text(row[ap_diag_other_col])}"
                     )
+                return lines
 
-    render_section_title("랭킹 · 직전기간 대비 증감")
-    ap_r1, ap_r2, ap_r3, ap_r4 = st.columns([2.2, 2.3, 1.9, 2.4])
-    with ap_r1:
-        ap_group_label = st.radio("기준", ["대카테고리", "중카테고리", "브랜드"], horizontal=True, key="adprod_group")
-        ap_split_own = st.checkbox(
-            "자사/입점 구분해서 보기", value=False, key="adprod_rank_split_own",
-            help="켜면 선택한 기준을 자사/입점 별개 행으로 나눠서 계산합니다 (브랜드는 원래 한쪽에만 속해 줄 수가 같습니다).",
-        )
-    with ap_r2:
-        ap_sort_metric = st.radio("정렬", ["판매액", "광고비", "ROAS", "판매액 증감률"], horizontal=True, key="adprod_sort")
-    with ap_r3:
-        ap_perf_filter = st.radio("성과 필터", ["전체", "🟢 우수만", "🔴 부진만"], horizontal=True, key="adprod_perf_filter")
-    with ap_r4:
-        ap_roas_status_filter = st.radio(
-            "ROAS 상태 필터", ["전체", "▼ 효율개선 필요", "⚠ 광고비 소액", "정상(700%↑)"],
-            horizontal=True, key="adprod_roas_status_filter",
-        )
-    ap_group_col = {"대카테고리": "대카테고리", "중카테고리": "중카테고리", "브랜드": "브랜드명"}[ap_group_label]
-
-    ap_rank = ad_product_group_compare(
-        ad_product_df, ap_group_col, ap_start_ts, ap_end_ts, ap_prev_start, ap_prev_end,
-        ap_own, ap_large, ap_mid, split_own=ap_split_own,
-    ) if (ap_group_col != "대카테고리" or ap_split_own) else ap_default_rank.copy()
-
-    # 광고비가 거의 0에 가까우면(예: 769원) 판매액이 조금만 잡혀도 ROAS가 수백~수천%로 튀는데
-    # (분모가 너무 작아 통계적으로 불안정) — ROAS 정렬에서는 이런 항목을 뒤로 미루고, 표에도
-    # "광고비 소액(참고용)" 표시를 같이 달아서 "정렬이 갑자기 튀는" 것처럼 보이지 않게 한다.
-    AP_MIN_AD_COST_FOR_ROAS_SORT = 10_000
-
-    if ap_perf_filter == "🟢 우수만":
-        ap_rank = ap_rank[ap_rank["성과"] == "🟢 우수(증액 검토)"]
-    elif ap_perf_filter == "🔴 부진만":
-        ap_rank = ap_rank[ap_rank["성과"] == "🔴 부진(축소·재검토)"]
-
-    # ROAS 상태: 광고비 소액 > 효율개선 필요(ROAS 700% 미만) > 정상 순으로 우선 적용 (표의 'ROAS 상태' 열과 동일)
-    ap_rank = ap_rank.copy()
-    ap_roas_status = pd.Series("-", index=ap_rank.index, dtype=object)
-    ap_roas_status[ap_rank["ROAS"] < 7.0] = "▼ 효율개선 필요"
-    ap_roas_status[ap_rank["광고비"] < AP_MIN_AD_COST_FOR_ROAS_SORT] = "⚠ 광고비 소액(참고용, 순위 밀림)"
-    ap_rank["ROAS 상태"] = ap_roas_status
-    if ap_roas_status_filter == "▼ 효율개선 필요":
-        ap_rank = ap_rank[ap_rank["ROAS 상태"] == "▼ 효율개선 필요"]
-    elif ap_roas_status_filter == "⚠ 광고비 소액":
-        ap_rank = ap_rank[ap_rank["ROAS 상태"].str.startswith("⚠")]
-    elif ap_roas_status_filter == "정상(700%↑)":
-        ap_rank = ap_rank[ap_rank["ROAS 상태"] == "-"]
-
-    ap_sort_col = "판매액_증감" if ap_sort_metric == "판매액 증감률" else ap_sort_metric
-    if ap_sort_metric == "ROAS":
-        ap_roas_unreliable = ap_rank["광고비"] < AP_MIN_AD_COST_FOR_ROAS_SORT
-        ap_reliable_rank = ap_rank[~ap_roas_unreliable].sort_values("ROAS", ascending=False, na_position="last")
-        ap_unreliable_rank = ap_rank[ap_roas_unreliable].sort_values("ROAS", ascending=False, na_position="last")
-        ap_rank = pd.concat([ap_reliable_rank, ap_unreliable_rank])
-    else:
-        ap_rank = ap_rank.sort_values(ap_sort_col, ascending=False, na_position="last")
-    ap_rank_total = len(ap_rank)
-    if ap_group_col == "브랜드명":
-        ap_rank = ap_rank.head(20)
-
-    if ap_rank.empty:
-        st.info("조건에 해당하는 항목이 없습니다.")
-    else:
-        # st.dataframe은 마크다운(**볼드**)을 텍스트 그대로 렌더링하지 않아서(글자 단위 스타일
-        # 불가) "이전"/"현재"를 아예 별도 컬럼으로 나누고, "현재" 컬럼 전체에 Styler로
-        # font-weight를 줘서 굵게 강조한다.
-        ap_display = pd.DataFrame({
-            **({"자사/입점": ap_rank["자사/입점"]} if ap_split_own else {}),
-            **({"대카테고리": ap_rank["대카테고리"]} if ap_group_col == "중카테고리" else {}),
-            ap_group_label: ap_rank[ap_group_col],
-            "성과": ap_rank["성과"],
-            f"판매액 (이전)": ap_rank["판매액_전기"].apply(lambda v: f"{v:,.0f}"),
-            f"판매액 (현재)": ap_rank["판매액"].apply(lambda v: f"{v:,.0f}"),
-            f"판매액 {ap_immediate_label}": ap_rank["판매액_증감"].apply(format_delta_text),
-            f"광고비 (이전)": ap_rank["광고비_전기"].apply(lambda v: f"{v:,.0f}"),
-            f"광고비 (현재)": ap_rank["광고비"].apply(lambda v: f"{v:,.0f}"),
-            f"광고비 {ap_immediate_label}": ap_rank["광고비_증감"].apply(format_delta_text),
-            f"ROAS (이전)": ap_rank["ROAS_전기"].apply(lambda v: f"{v * 100:,.0f}%"),
-            f"ROAS (현재)": ap_rank["ROAS"].apply(lambda v: f"{v * 100:,.0f}%"),
-            f"ROAS {ap_immediate_label}": ap_rank["ROAS_증감"].apply(format_delta_text),
-            "ROAS 상태": ap_rank["ROAS 상태"],
-            f"CR(구매/클릭) (이전)": ap_rank["CVR_전기"].apply(lambda v: f"{v * 100:.2f}%"),
-            f"CR(구매/클릭) (현재)": ap_rank["CVR"].apply(lambda v: f"{v * 100:.2f}%"),
-            f"CR {ap_immediate_label}": ap_rank["CVR_증감"].apply(format_delta_text),
-            "구매건수": ap_rank["구매수량"].apply(lambda v: f"{v:,.0f}"),
-            "객단가": ap_rank["객단가"].apply(lambda v: f"{v:,.0f}"),
-        })
-        ap_current_cols = ["판매액 (현재)", "광고비 (현재)", "ROAS (현재)", "CR(구매/클릭) (현재)"]
-        st.dataframe(
-            ap_display.style.map(
-                delta_cell_style,
-                subset=[f"판매액 {ap_immediate_label}", f"광고비 {ap_immediate_label}",
-                        f"ROAS {ap_immediate_label}", f"CR {ap_immediate_label}", "ROAS 상태"],
-            ).set_properties(subset=ap_current_cols, **{"font-weight": "700", "color": "#0F172A"}),
-            use_container_width=True, hide_index=True,
-            height=min(35 * (len(ap_display) + 1) + 3, 560),
-        )
-    ap_prev_label_str = period_label(ap_prev_start, ap_prev_end, unit) if ap_prev_start <= ap_prev_end else "데이터 없음(보유 기간 밖)"
-    st.caption(
-        f"📅 비교기준: {ap_immediate_label} = {ap_prev_label_str}  ·  "
-        + (f"※ 전체 {ap_rank_total}개 브랜드 중 {ap_sort_metric} 상위 20개만 표시합니다.  ·  " if ap_group_col == "브랜드명" else "")
-        + (f"※ 광고비 {AP_MIN_AD_COST_FOR_ROAS_SORT:,}원 미만인 항목은 ROAS가 분모(광고비)가 작아 비정상적으로 튀기 쉬워서, "
-           "ROAS 정렬 시 순위를 뒤로 미루고 표에는 'ROAS 상태'에 '광고비 소액(참고용)'으로 표시합니다(그래서 정렬이 중간에 튀는 것처럼 보일 수 있어요).  ·  "
-           if ap_sort_metric == "ROAS" else "")
-        + "💡 🟢 우수(판매액·ROAS 동반상승, ROAS 700%↑)=증액 검토 · 🟠 개선 중(추세는 좋지만 ROAS 700%↓)=증액 보류 · "
-          "🟡 물량↑효율↓=소재/입찰 점검 · "
-          "🔵 효율 개선=회복 여지 · 🔴 부진(둘 다 하락)=축소·재검토 대상입니다. (±5%p 이내 변화는 ⚫ 변화 미미로 취급) · "
-          "ROAS 상태: ROAS 700% 미만이면 '효율개선 필요'로 표시합니다."
-    )
-
-    # ══════════════════════════════════════════════════════════
-    # 광고비 조정 후보 — 줄일 후보(저효율) / 늘릴 후보(고효율)
-    # ══════════════════════════════════════════════════════════
-    render_section_title("광고비 조정 후보 · 줄일 후보 / 늘릴 후보")
-    adj_g1, adj_g2, adj_g3, adj_g4 = st.columns([2.2, 1.3, 1.3, 1.6])
-    with adj_g1:
-        ap_adj_group_label = st.radio(
-            "분석 단위", ["중카테고리", "브랜드", "자사/입점"], horizontal=True, key="adprod_adj_group",
-        )
-        ap_adj_split_own = st.checkbox(
-            "자사/입점 구분해서 보기", value=False, key="adprod_adj_split_own",
-            disabled=ap_adj_group_label == "자사/입점",
-            help="켜면 중카테고리·브랜드를 자사/입점 별개 행으로 나눠서 계산합니다.",
-        ) and ap_adj_group_label != "자사/입점"
-    with adj_g2:
-        ap_adj_low = st.number_input("줄일 후보: ROAS(%) 미만", min_value=100, max_value=3000, value=700, step=50,
-                                     key="adprod_adj_low")
-    with adj_g3:
-        ap_adj_high = st.number_input("늘릴 후보: ROAS(%) 이상", min_value=100, max_value=5000, value=1200, step=100,
-                                      key="adprod_adj_high")
-    with adj_g4:
-        ap_adj_min_daily = st.number_input("최소 광고비 (일평균, 원)", min_value=0, max_value=1_000_000, value=20_000,
-                                           step=5_000, key="adprod_adj_min_daily")
-    ap_adj_group_col = {"중카테고리": "중카테고리", "브랜드": "브랜드명", "자사/입점": "자사/입점"}[ap_adj_group_label]
-    ap_adj_min_cost = ap_adj_min_daily * ap_cur_days
-
-    ap_adj_all = ad_product_group_compare(
-        ad_product_df, ap_adj_group_col, ap_start_ts, ap_end_ts, ap_prev_start, ap_prev_end,
-        ap_own, ap_large, ap_mid, split_own=ap_adj_split_own,
-    )
-    ap_adj_total_cost = ap_adj_all["광고비"].sum() if not ap_adj_all.empty else 0
-    ap_adj_valid = ap_adj_all[ap_adj_all["광고비"] >= ap_adj_min_cost] if not ap_adj_all.empty else ap_adj_all
-
-    if ap_adj_valid.empty or not ap_adj_total_cost:
-        st.info("선택한 기간·필터에서 기준(최소 광고비) 이상인 항목이 없습니다.")
-    else:
-        ap_adj_target = ap_adj_low / 100
-        ap_adj_cut = ap_adj_valid[ap_adj_valid["ROAS"] < ap_adj_target].copy()
-        ap_adj_boost = ap_adj_valid[ap_adj_valid["ROAS"] >= ap_adj_high / 100].copy()
-
-        # 진단 기준 = 선택 범위 전체의 평균 CTR/CVR/CPC (분자·분모 합산 후 재계산)
-        ap_adj_avg_ctr = ap_adj_all["클릭수"].sum() / ap_adj_all["노출수"].sum() if ap_adj_all["노출수"].sum() else 0
-        ap_adj_avg_cvr = ap_adj_all["구매수량"].sum() / ap_adj_all["클릭수"].sum() if ap_adj_all["클릭수"].sum() else 0
-        ap_adj_avg_cpc = ap_adj_all["광고비"].sum() / ap_adj_all["클릭수"].sum() if ap_adj_all["클릭수"].sum() else 0
-
-        def _ap_adj_diag(r):
-            if ap_adj_avg_cvr and r["CVR"] < ap_adj_avg_cvr * 0.7:
-                return "전환 낮음 → 상품·가격·결품·상세 점검"
-            if ap_adj_avg_ctr and r["CTR"] < ap_adj_avg_ctr * 0.7:
-                return "클릭률 낮음 → 소재·노출 점검"
-            cpc = r["광고비"] / r["클릭수"] if r["클릭수"] else 0
-            if ap_adj_avg_cpc and cpc > ap_adj_avg_cpc * 1.3:
-                return "클릭단가 높음 → 입찰 하향"
-            return "복합 요인 → 소재·입찰 함께 점검"
-
-        ap_adj_lines = []
-        if not ap_adj_cut.empty:
-            ap_adj_cut["초과광고비"] = ap_adj_cut["광고비"] - ap_adj_cut["판매액"] / ap_adj_target
-            ap_adj_lines.append(
-                f"🔻 줄일 후보 **{len(ap_adj_cut)}개** — 광고비 **{ap_adj_cut['광고비'].sum():,.0f}원** "
-                f"(전체의 {ap_adj_cut['광고비'].sum() / ap_adj_total_cost:.1%})이 ROAS {ap_adj_low}% 미만에서 쓰이고 있어요. "
-                f"ROAS {ap_adj_low}% 수준으로 맞추면 약 **{ap_adj_cut['초과광고비'].sum():,.0f}원** 절감 여지가 있습니다."
+            worst_lines = _diag_lines(ap_diag_worst, positive=False)
+            render_insight_box(
+                worst_lines or [f"{ap_own_note} 기준, 카테고리 전반에서 뚜렷한 {ap_diag_metric} 부진 신호가 없습니다."],
+                title=f"{ap_diag_metric} 부진 TOP5 ({ap_immediate_label} · {ap_own_note} · 카테고리 필터 무관)",
+                tone="danger",
             )
-        else:
-            ap_adj_lines.append(f"🔻 ROAS {ap_adj_low}% 미만이면서 최소 광고비 이상인 항목이 없습니다.")
-        if not ap_adj_boost.empty:
-            ap_adj_lines.append(
-                f"🔺 늘릴 후보 **{len(ap_adj_boost)}개** — 현재 광고비 비중은 "
-                f"**{ap_adj_boost['광고비'].sum() / ap_adj_total_cost:.1%}**에 그치지만 ROAS는 {ap_adj_high}% 이상입니다. "
-                "단계적으로(+20~30%) 올려보고 ROAS가 유지되는지 확인하세요."
-            )
-        else:
-            ap_adj_lines.append(f"🔺 ROAS {ap_adj_high}% 이상이면서 최소 광고비 이상인 항목이 없습니다.")
-        if ap_own == "전체" and ap_adj_group_col != "자사/입점":
-            ap_own_scope = ad_product_df[(ad_product_df["date"] >= ap_start_ts) & (ad_product_df["date"] <= ap_end_ts)]
-            if ap_large != "전체":
-                ap_own_scope = ap_own_scope[ap_own_scope["대카테고리"] == ap_large]
-            if ap_mid != "전체":
-                ap_own_scope = ap_own_scope[ap_own_scope["중카테고리"] == ap_mid]
-            ap_own_g = ap_own_scope.groupby("자사/입점")[["광고비", "판매액"]].sum()
-            if {"자사", "입점"} <= set(ap_own_g.index) and ap_own_g["광고비"].min() > 0:
-                ap_own_roas = ap_own_g["판매액"] / ap_own_g["광고비"]
-                ap_own_share = ap_own_g["광고비"] / ap_own_g["광고비"].sum()
-                ap_adj_lines.append(
-                    f"🏷️ 자사 ROAS **{ap_own_roas['자사'] * 100:,.0f}%** (광고비 {ap_own_share['자사']:.0%}) vs "
-                    f"입점 ROAS **{ap_own_roas['입점'] * 100:,.0f}%** (광고비 {ap_own_share['입점']:.0%}) — "
-                    "입점 쪽 효율 차이가 크면 입점 상품 선별·입찰 조정부터 보세요."
-                )
-        render_insight_box(ap_adj_lines, title="광고비 조정 요약")
-
-        ap_adj_cols_head = (["자사/입점"] if ap_adj_split_own else []) + (
-            ["대카테고리"] if ap_adj_group_col == "중카테고리" else []
-        )
-        ap_adj_name_label = {"중카테고리": "중카테고리", "브랜드명": "브랜드", "자사/입점": "자사/입점"}[ap_adj_group_col]
-        ap_adj_roas_delta_col = f"ROAS {ap_immediate_label}"
-
-        st.markdown("**🔻 줄일 후보** — 초과 광고비(목표 ROAS 대비)가 큰 순")
-        if ap_adj_cut.empty:
-            st.info("해당 항목이 없습니다.")
-        else:
-            ap_adj_cut = ap_adj_cut.sort_values("초과광고비", ascending=False).head(15)
-            ap_adj_cut_display = pd.DataFrame({
-                **{c: ap_adj_cut[c] for c in ap_adj_cols_head},
-                ap_adj_name_label: ap_adj_cut[ap_adj_group_col],
-                "광고비": ap_adj_cut["광고비"].apply(lambda v: f"{v:,.0f}"),
-                "판매액": ap_adj_cut["판매액"].apply(lambda v: f"{v:,.0f}"),
-                "ROAS": ap_adj_cut["ROAS"].apply(lambda v: f"{v * 100:,.0f}%"),
-                ap_adj_roas_delta_col: ap_adj_cut["ROAS_증감"].apply(format_delta_text),
-                "CR(구매/클릭)": ap_adj_cut["CVR"].apply(lambda v: f"{v * 100:.2f}%"),
-                f"초과 광고비 (ROAS {ap_adj_low}% 기준)": ap_adj_cut["초과광고비"].apply(lambda v: f"{v:,.0f}"),
-                "진단": ap_adj_cut.apply(_ap_adj_diag, axis=1),
-            })
-            st.dataframe(
-                ap_adj_cut_display.style.map(delta_cell_style, subset=[ap_adj_roas_delta_col]),
-                use_container_width=True, hide_index=True,
-                height=min(35 * (len(ap_adj_cut_display) + 1) + 3, 560),
+            best_lines = _diag_lines(ap_diag_best, positive=True)
+            render_insight_box(
+                best_lines or [f"{ap_own_note} 기준, 카테고리 전반에서 뚜렷한 {ap_diag_metric} 개선 신호가 없습니다."],
+                title=f"{ap_diag_metric} 우수 TOP5 ({ap_immediate_label} · {ap_own_note} · 카테고리 필터 무관)",
+                tone="success",
             )
 
-        st.markdown("**🔺 늘릴 후보** — 판매액이 큰 순")
-        if ap_adj_boost.empty:
-            st.info("해당 항목이 없습니다.")
-        else:
-            ap_adj_boost = ap_adj_boost.sort_values("판매액", ascending=False).head(15)
-            ap_adj_boost_display = pd.DataFrame({
-                **{c: ap_adj_boost[c] for c in ap_adj_cols_head},
-                ap_adj_name_label: ap_adj_boost[ap_adj_group_col],
-                "광고비": ap_adj_boost["광고비"].apply(lambda v: f"{v:,.0f}"),
-                "광고비 비중": ap_adj_boost["광고비"].apply(lambda v: f"{v / ap_adj_total_cost:.1%}"),
-                "판매액": ap_adj_boost["판매액"].apply(lambda v: f"{v:,.0f}"),
-                "ROAS": ap_adj_boost["ROAS"].apply(lambda v: f"{v * 100:,.0f}%"),
-                ap_adj_roas_delta_col: ap_adj_boost["ROAS_증감"].apply(format_delta_text),
-                "CR(구매/클릭)": ap_adj_boost["CVR"].apply(lambda v: f"{v * 100:.2f}%"),
-                f"판매액 {ap_immediate_label}": ap_adj_boost["판매액_증감"].apply(format_delta_text),
-            })
-            st.dataframe(
-                ap_adj_boost_display.style.map(
-                    delta_cell_style, subset=[ap_adj_roas_delta_col, f"판매액 {ap_immediate_label}"]),
-                use_container_width=True, hide_index=True,
-                height=min(35 * (len(ap_adj_boost_display) + 1) + 3, 560),
-            )
-
+    with p4_tabs[3]:
+        # ══════════════════════════════════════════════════════════
+        # 카테고리별 거래액 현황 → 행을 클릭하면 그 카테고리의 거래액 상위 상품 TOP10
+        # (03페이지와 같은 카테고리 체계·상품명 데이터 — 이 페이지 위·아래의 NBOS 대/중카테고리와는 별개)
+        # ══════════════════════════════════════════════════════════
+        render_section_title("카테고리별 거래액 현황 · 클릭하면 상위 상품 TOP10")
         st.caption(
-            f"📅 집계기간 {ap_start_ts.date()} ~ {ap_end_ts.date()} ({ap_cur_days}일) · 광고비·판매액은 누계 기준 · "
-            f"최소 광고비 = 일평균 {ap_adj_min_daily:,}원 × {ap_cur_days}일 = {ap_adj_min_cost:,.0f}원 이상만 대상 · "
-            "진단은 선택 범위 평균 대비 CR·CTR이 70% 미만, 클릭단가가 130% 초과인지로 판단한 참고용입니다. "
-            "ROAS가 낮아도 신규 노출·시즌 준비 목적일 수 있고, 짧은 기간은 변동이 커서 최소 1~2주 단위로 보길 권합니다."
+            "ℹ️ 이 섹션은 03페이지와 같은 카테고리 체계(태블로 기반)와 상품명 데이터를 씁니다 — 이 페이지 다른 영역의 "
+            "NBOS 대/중카테고리와 직접 매핑되지 않아요. 표에서 카테고리 행을 클릭하면 아래에 그 카테고리의 "
+            "거래액 상위 10개 상품이 나옵니다 (선택이 없으면 '합계(전체)' 기준). 기간·표시방식은 이 페이지 상단 필터를 따라가요."
         )
+        ap_cs_txn = st.radio("정상/이월/입점", CATTXN_TXN_TYPE_OPTIONS, horizontal=True, key="adprod_cs_txn")
+        ap_cs_start = max(ap_start_ts, pd.Timestamp(CATTXN_MIN_DATE))
+        ap_cs_end = min(ap_end_ts, pd.Timestamp(CATTXN_MAX_DATE))
+        ap_cs_view = (
+            cattxn_df[(cattxn_df["date"] >= ap_cs_start) & (cattxn_df["date"] <= ap_cs_end)]
+            if ap_cs_start <= ap_cs_end else cattxn_df.iloc[0:0]
+        )
+        ap_cs_rank = aggregate_cattxn_by(ap_cs_view, "category", ap_cs_txn) if not ap_cs_view.empty else None
+        if ap_cs_rank is not None:
+            ap_cs_rank["합계"] = ap_cs_rank["쇼핑검색광고_거래액"] + ap_cs_rank["EP채널_거래액"]
+            ap_cs_rank = ap_cs_rank[ap_cs_rank["합계"] > 0].sort_values("합계", ascending=False).reset_index(drop=True)
+
+        if ap_cs_rank is None or ap_cs_rank.empty:
+            st.info(f"이 기간에는 카테고리별 데이터가 없습니다 (카테고리 데이터 최신일자: {CATTXN_MAX_DATE}).")
+        else:
+            ap_cs_days = ap_cs_view["date"].nunique() if ap_mode == "일평균" else 1
+            ap_cs_table = pd.DataFrame({
+                "카테고리": ["합계(전체)"] + ap_cs_rank["category"].tolist(),
+                "쇼핑검색광고 거래액": [ap_cs_rank["쇼핑검색광고_거래액"].sum()] + ap_cs_rank["쇼핑검색광고_거래액"].tolist(),
+                "EP채널 거래액": [ap_cs_rank["EP채널_거래액"].sum()] + ap_cs_rank["EP채널_거래액"].tolist(),
+                "합계 거래액": [ap_cs_rank["합계"].sum()] + ap_cs_rank["합계"].tolist(),
+            })
+            for _c in ["쇼핑검색광고 거래액", "EP채널 거래액", "합계 거래액"]:
+                ap_cs_table[_c] = ap_cs_table[_c] / ap_cs_days
+            ap_cs_ad_share = (
+                ap_cs_table["쇼핑검색광고 거래액"] / ap_cs_table["합계 거래액"] * 100
+            ).where(ap_cs_table["합계 거래액"] > 0)
+            # 쉼표 포함 문자열로 보여주되(다른 표와 동일), 선택 로직은 행 순서(index)만 쓰므로 영향 없다.
+            ap_cs_display = ap_cs_table.copy()
+            for _c in ["쇼핑검색광고 거래액", "EP채널 거래액", "합계 거래액"]:
+                ap_cs_display[_c] = ap_cs_table[_c].apply(lambda v: f"{v:,.0f}")
+            ap_cs_display["광고 비중"] = ap_cs_ad_share.apply(lambda v: f"{v:.1f}%" if pd.notna(v) else "-")
+            ap_cs_event = st.dataframe(
+                ap_cs_display, hide_index=True, use_container_width=True,
+                on_select="rerun", selection_mode="single-row", key="adprod_cs_table",
+                height=min(35 * (len(ap_cs_display) + 1) + 3, 460),
+            )
+            ap_cs_sel_rows = ap_cs_event.selection.rows if ap_cs_event is not None else []
+            ap_cs_sel_idx = ap_cs_sel_rows[0] if ap_cs_sel_rows and ap_cs_sel_rows[0] < len(ap_cs_table) else 0
+            ap_cs_sel_cat = ap_cs_table.iloc[ap_cs_sel_idx]["카테고리"]
+            ap_cs_cat_filter = "전체" if ap_cs_sel_cat == "합계(전체)" else ap_cs_sel_cat
+            st.caption(
+                f"📅 집계기간 {ap_cs_start.date()} ~ {ap_cs_end.date()} · {ap_mode} 기준 · 카테고리 데이터는 2일 전 실적까지 반영 "
+                f"(최신일자: {CATTXN_MAX_DATE}) · 합계 거래액 = 쇼핑검색광고 + EP채널"
+            )
+
+            st.markdown(f"**📦 {ap_cs_sel_cat} · 거래액 상위 10개 상품**")
+            if product_txn_df is None:
+                st.info("상품명 단위 데이터가 아직 없습니다 (product_txn_daily 파일 미존재).")
+            else:
+                ap_cs_channel = st.radio(
+                    "정렬 기준 채널", ["합계", "쇼핑검색광고", "EP채널"], horizontal=True, key="adprod_cs_channel",
+                )
+                ap_ps = max(ap_cs_start, pd.Timestamp(PRODUCT_TXN_MIN_DATE))
+                ap_pe = min(ap_cs_end, pd.Timestamp(PRODUCT_TXN_MAX_DATE))
+                if ap_ps > ap_pe:
+                    st.info(f"이 기간에는 상품명 단위 데이터가 없습니다 (보유 범위: {PRODUCT_TXN_MIN_DATE} ~ {PRODUCT_TXN_MAX_DATE}).")
+                else:
+                    ap_top = top_products_by_revenue(
+                        product_txn_df, ap_ps, ap_pe, ap_cs_txn, ap_cs_cat_filter, "전체",
+                        channel=ap_cs_channel, top_n=10, both_rank_n=20,
+                    )
+                    if ap_top.empty:
+                        st.info("조건에 맞는 상품 거래액 데이터가 없습니다.")
+                    else:
+                        ap_pdays = (
+                            product_txn_df[(product_txn_df["date"] >= ap_ps) & (product_txn_df["date"] <= ap_pe)]["date"].nunique()
+                            if ap_mode == "일평균" else 1
+                        ) or 1
+                        ap_top_display = pd.DataFrame({
+                            "순위": range(1, len(ap_top) + 1),
+                            "구분": [_top_tag(a, e) for a, e in zip(ap_top["광고순위"], ap_top["EP순위"])],
+                            "상품명": ap_top["product_name"],
+                            "상품코드": ap_top["product_code"],
+                            "카테고리": ap_top["category"],
+                            "브랜드": ap_top["brand"].map(brand_label),
+                            f"거래액({ap_cs_channel})": (ap_top["거래액"] / ap_pdays).apply(lambda v: f"{v:,.0f}"),
+                            "쇼핑검색광고 거래액": (ap_top["ad_거래액"] / ap_pdays).apply(lambda v: f"{v:,.0f}"),
+                            "광고 순위": ap_top["광고순위"].map(_rank_str),
+                            "EP채널 거래액": (ap_top["ep_거래액"] / ap_pdays).apply(lambda v: f"{v:,.0f}"),
+                            "EP 순위": ap_top["EP순위"].map(_rank_str),
+                            "주문고객수": (ap_top["주문고객수"] / ap_pdays).apply(lambda v: f"{v:,.1f}" if ap_mode == "일평균" else f"{v:,.0f}"),
+                        })
+                        st.dataframe(
+                            ap_top_display.style.apply(_highlight_both_rows, axis=1),
+                            use_container_width=True, hide_index=True,
+                            column_config={"구분": st.column_config.TextColumn("구분", width="medium")},
+                        )
+                        st.caption(
+                            f"⭐ 이 범위에서 쇼핑검색광고·EP채널 거래액이 각각 상위 20위 안에 **모두** 든 상품은 "
+                            f"{ap_top.attrs.get('both_top_count', 0)}개예요 (노란 배경 + '★ 광고·EP 모두 상위'). "
+                            "순위는 표의 10개가 아니라 현재 필터 범위의 전체 상품 기준입니다."
+                        )
+                        ap_dl_scope = st.radio(
+                            "다운로드 범위", ["지금 보는 필터", "전체 (정상·이월·입점 · 모든 카테고리/브랜드)"],
+                            horizontal=True, key="dl_scope_adprod",
+                            help="'전체'는 위 필터와 무관하게 기간만 적용해서 전체 + 정상 / 이월 / 입점 각각의 상위 상품과, "
+                                 "정상·이월의 카테고리별·브랜드별 상품 목록(그룹당 상위 20개)을 한 파일에 담습니다.",
+                        )
+                        ap_all_scope = ap_dl_scope.startswith("전체")
+                        ap_top_xlsx = top_products_excel_bytes(
+                            ap_ps, ap_pe, ap_cs_txn, ap_cs_cat_filter, "전체", 20,
+                            int(product_txn_df[(product_txn_df["date"] >= ap_ps)
+                                               & (product_txn_df["date"] <= ap_pe)]["date"].nunique()),
+                            ap_all_scope,
+                        )
+                        if ap_top_xlsx is not None:
+                            st.download_button(
+                                "📥 광고 / EP / 광고·EP 모두 상위 상품 Excel 다운로드", data=ap_top_xlsx,
+                                file_name=f"상위상품{'_전체' if ap_all_scope else ''}_{ap_ps.date()}_{ap_pe.date()}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                key="dl_adprod_top_products",
+                            )
+                        else:
+                            st.caption("다운로드할 상품 데이터가 없습니다.")
+                        st.caption(
+                            f"📅 집계기간 {ap_ps.date()} ~ {ap_pe.date()} · {ap_mode} 기준 "
+                            f"(상품명 단위 데이터는 {PRODUCT_TXN_MIN_DATE} 이후만 보유) · "
+                            "Excel은 광고 상위 / EP 상위 / 모두 상위를 시트로 나눠 담고, 값은 기간 누계예요 · 📁 product_txn_daily"
+                        )
+
+    with p4_tabs[1]:
+        render_section_title("랭킹 · 직전기간 대비 증감")
+        ap_r1, ap_r2, ap_r3, ap_r4 = st.columns([2.2, 2.3, 1.9, 2.4])
+        with ap_r1:
+            ap_group_label = st.radio("기준", ["대카테고리", "중카테고리", "브랜드"], horizontal=True, key="adprod_group")
+            ap_split_own = st.checkbox(
+                "자사/입점 구분해서 보기", value=False, key="adprod_rank_split_own",
+                help="켜면 선택한 기준을 자사/입점 별개 행으로 나눠서 계산합니다 (브랜드는 원래 한쪽에만 속해 줄 수가 같습니다).",
+            )
+        with ap_r2:
+            ap_sort_metric = st.radio("정렬", ["판매액", "광고비", "ROAS", "판매액 증감률"], horizontal=True, key="adprod_sort")
+        with ap_r3:
+            ap_perf_filter = st.radio("성과 필터", ["전체", "🟢 우수만", "🔴 부진만"], horizontal=True, key="adprod_perf_filter")
+        with ap_r4:
+            ap_roas_status_filter = st.radio(
+                "ROAS 상태 필터", ["전체", "▼ 효율개선 필요", "⚠ 광고비 소액", "정상(700%↑)"],
+                horizontal=True, key="adprod_roas_status_filter",
+            )
+        ap_group_col = {"대카테고리": "대카테고리", "중카테고리": "중카테고리", "브랜드": "브랜드명"}[ap_group_label]
+
+        ap_rank = ad_product_group_compare(
+            ad_product_df, ap_group_col, ap_start_ts, ap_end_ts, ap_prev_start, ap_prev_end,
+            ap_own, ap_large, ap_mid, split_own=ap_split_own,
+        ) if (ap_group_col != "대카테고리" or ap_split_own) else ap_default_rank.copy()
+
+        # 광고비가 거의 0에 가까우면(예: 769원) 판매액이 조금만 잡혀도 ROAS가 수백~수천%로 튀는데
+        # (분모가 너무 작아 통계적으로 불안정) — ROAS 정렬에서는 이런 항목을 뒤로 미루고, 표에도
+        # "광고비 소액(참고용)" 표시를 같이 달아서 "정렬이 갑자기 튀는" 것처럼 보이지 않게 한다.
+        AP_MIN_AD_COST_FOR_ROAS_SORT = 10_000
+
+        if ap_perf_filter == "🟢 우수만":
+            ap_rank = ap_rank[ap_rank["성과"] == "🟢 우수(증액 검토)"]
+        elif ap_perf_filter == "🔴 부진만":
+            ap_rank = ap_rank[ap_rank["성과"] == "🔴 부진(축소·재검토)"]
+
+        # ROAS 상태: 광고비 소액 > 효율개선 필요(ROAS 700% 미만) > 정상 순으로 우선 적용 (표의 'ROAS 상태' 열과 동일)
+        ap_rank = ap_rank.copy()
+        ap_roas_status = pd.Series("-", index=ap_rank.index, dtype=object)
+        ap_roas_status[ap_rank["ROAS"] < 7.0] = "▼ 효율개선 필요"
+        ap_roas_status[ap_rank["광고비"] < AP_MIN_AD_COST_FOR_ROAS_SORT] = "⚠ 광고비 소액(참고용, 순위 밀림)"
+        ap_rank["ROAS 상태"] = ap_roas_status
+        if ap_roas_status_filter == "▼ 효율개선 필요":
+            ap_rank = ap_rank[ap_rank["ROAS 상태"] == "▼ 효율개선 필요"]
+        elif ap_roas_status_filter == "⚠ 광고비 소액":
+            ap_rank = ap_rank[ap_rank["ROAS 상태"].str.startswith("⚠")]
+        elif ap_roas_status_filter == "정상(700%↑)":
+            ap_rank = ap_rank[ap_rank["ROAS 상태"] == "-"]
+
+        ap_sort_col = "판매액_증감" if ap_sort_metric == "판매액 증감률" else ap_sort_metric
+        if ap_sort_metric == "ROAS":
+            ap_roas_unreliable = ap_rank["광고비"] < AP_MIN_AD_COST_FOR_ROAS_SORT
+            ap_reliable_rank = ap_rank[~ap_roas_unreliable].sort_values("ROAS", ascending=False, na_position="last")
+            ap_unreliable_rank = ap_rank[ap_roas_unreliable].sort_values("ROAS", ascending=False, na_position="last")
+            ap_rank = pd.concat([ap_reliable_rank, ap_unreliable_rank])
+        else:
+            ap_rank = ap_rank.sort_values(ap_sort_col, ascending=False, na_position="last")
+        ap_rank_total = len(ap_rank)
+        if ap_group_col == "브랜드명":
+            ap_rank = ap_rank.head(20)
+
+        if ap_rank.empty:
+            st.info("조건에 해당하는 항목이 없습니다.")
+        else:
+            # st.dataframe은 마크다운(**볼드**)을 텍스트 그대로 렌더링하지 않아서(글자 단위 스타일
+            # 불가) "이전"/"현재"를 아예 별도 컬럼으로 나누고, "현재" 컬럼 전체에 Styler로
+            # font-weight를 줘서 굵게 강조한다.
+            ap_display = pd.DataFrame({
+                **({"자사/입점": ap_rank["자사/입점"]} if ap_split_own else {}),
+                **({"대카테고리": ap_rank["대카테고리"]} if ap_group_col == "중카테고리" else {}),
+                ap_group_label: ap_rank[ap_group_col],
+                "성과": ap_rank["성과"],
+                f"판매액 (이전)": ap_rank["판매액_전기"].apply(lambda v: f"{v:,.0f}"),
+                f"판매액 (현재)": ap_rank["판매액"].apply(lambda v: f"{v:,.0f}"),
+                f"판매액 {ap_immediate_label}": ap_rank["판매액_증감"].apply(format_delta_text),
+                f"광고비 (이전)": ap_rank["광고비_전기"].apply(lambda v: f"{v:,.0f}"),
+                f"광고비 (현재)": ap_rank["광고비"].apply(lambda v: f"{v:,.0f}"),
+                f"광고비 {ap_immediate_label}": ap_rank["광고비_증감"].apply(format_delta_text),
+                f"ROAS (이전)": ap_rank["ROAS_전기"].apply(lambda v: f"{v * 100:,.0f}%"),
+                f"ROAS (현재)": ap_rank["ROAS"].apply(lambda v: f"{v * 100:,.0f}%"),
+                f"ROAS {ap_immediate_label}": ap_rank["ROAS_증감"].apply(format_delta_text),
+                "ROAS 상태": ap_rank["ROAS 상태"],
+                f"CR(구매/클릭) (이전)": ap_rank["CVR_전기"].apply(lambda v: f"{v * 100:.2f}%"),
+                f"CR(구매/클릭) (현재)": ap_rank["CVR"].apply(lambda v: f"{v * 100:.2f}%"),
+                f"CR {ap_immediate_label}": ap_rank["CVR_증감"].apply(format_delta_text),
+                "구매건수": ap_rank["구매수량"].apply(lambda v: f"{v:,.0f}"),
+                "객단가": ap_rank["객단가"].apply(lambda v: f"{v:,.0f}"),
+            })
+            ap_current_cols = ["판매액 (현재)", "광고비 (현재)", "ROAS (현재)", "CR(구매/클릭) (현재)"]
+            st.dataframe(
+                ap_display.style.map(
+                    delta_cell_style,
+                    subset=[f"판매액 {ap_immediate_label}", f"광고비 {ap_immediate_label}",
+                            f"ROAS {ap_immediate_label}", f"CR {ap_immediate_label}", "ROAS 상태"],
+                ).set_properties(subset=ap_current_cols, **{"font-weight": "700", "color": "#0F172A"}),
+                use_container_width=True, hide_index=True,
+                height=min(35 * (len(ap_display) + 1) + 3, 560),
+            )
+        ap_prev_label_str = period_label(ap_prev_start, ap_prev_end, unit) if ap_prev_start <= ap_prev_end else "데이터 없음(보유 기간 밖)"
+        st.caption(
+            f"📅 비교기준: {ap_immediate_label} = {ap_prev_label_str}  ·  "
+            + (f"※ 전체 {ap_rank_total}개 브랜드 중 {ap_sort_metric} 상위 20개만 표시합니다.  ·  " if ap_group_col == "브랜드명" else "")
+            + (f"※ 광고비 {AP_MIN_AD_COST_FOR_ROAS_SORT:,}원 미만인 항목은 ROAS가 분모(광고비)가 작아 비정상적으로 튀기 쉬워서, "
+               "ROAS 정렬 시 순위를 뒤로 미루고 표에는 'ROAS 상태'에 '광고비 소액(참고용)'으로 표시합니다(그래서 정렬이 중간에 튀는 것처럼 보일 수 있어요).  ·  "
+               if ap_sort_metric == "ROAS" else "")
+            + "💡 🟢 우수(판매액·ROAS 동반상승, ROAS 700%↑)=증액 검토 · 🟠 개선 중(추세는 좋지만 ROAS 700%↓)=증액 보류 · "
+              "🟡 물량↑효율↓=소재/입찰 점검 · "
+              "🔵 효율 개선=회복 여지 · 🔴 부진(둘 다 하락)=축소·재검토 대상입니다. (±5%p 이내 변화는 ⚫ 변화 미미로 취급) · "
+              "ROAS 상태: ROAS 700% 미만이면 '효율개선 필요'로 표시합니다."
+        )
+
+    with p4_tabs[2]:
+        # ══════════════════════════════════════════════════════════
+        # 광고비 조정 후보 — 줄일 후보(저효율) / 늘릴 후보(고효율)
+        # ══════════════════════════════════════════════════════════
+        render_section_title("광고비 조정 후보 · 줄일 후보 / 늘릴 후보")
+        if ap_cur_days < 7:
+            st.info(
+                f"현재 집계기간이 {ap_cur_days}일이라 취소·반품이 몰린 날의 영향으로 효율이 실제보다 나쁘게 보일 수 있어요. "
+                "조정 후보는 상단 조회단위를 '주별' 또는 '월별'로 바꿔 최소 1주 이상으로 보시길 권해요."
+            )
+        adj_g1, adj_g2, adj_g3, adj_g4 = st.columns([2.2, 1.3, 1.3, 1.6])
+        with adj_g1:
+            ap_adj_group_label = st.radio(
+                "분석 단위", ["중카테고리", "브랜드", "자사/입점"], horizontal=True, key="adprod_adj_group",
+            )
+            ap_adj_split_own = st.checkbox(
+                "자사/입점 구분해서 보기", value=False, key="adprod_adj_split_own",
+                disabled=ap_adj_group_label == "자사/입점",
+                help="켜면 중카테고리·브랜드를 자사/입점 별개 행으로 나눠서 계산합니다.",
+            ) and ap_adj_group_label != "자사/입점"
+        with adj_g2:
+            ap_adj_low = st.number_input("줄일 후보: ROAS(%) 미만", min_value=100, max_value=3000, value=700, step=50,
+                                         key="adprod_adj_low")
+        with adj_g3:
+            ap_adj_high = st.number_input("늘릴 후보: ROAS(%) 이상", min_value=100, max_value=5000, value=1200, step=100,
+                                          key="adprod_adj_high")
+        with adj_g4:
+            ap_adj_min_daily = st.number_input("최소 광고비 (일평균, 원)", min_value=0, max_value=1_000_000, value=20_000,
+                                               step=5_000, key="adprod_adj_min_daily")
+        ap_adj_group_col = {"중카테고리": "중카테고리", "브랜드": "브랜드명", "자사/입점": "자사/입점"}[ap_adj_group_label]
+        ap_adj_min_cost = ap_adj_min_daily * ap_cur_days
+
+        ap_adj_all = ad_product_group_compare(
+            ad_product_df, ap_adj_group_col, ap_start_ts, ap_end_ts, ap_prev_start, ap_prev_end,
+            ap_own, ap_large, ap_mid, split_own=ap_adj_split_own,
+        )
+        ap_adj_total_cost = ap_adj_all["광고비"].sum() if not ap_adj_all.empty else 0
+        ap_adj_valid = ap_adj_all[ap_adj_all["광고비"] >= ap_adj_min_cost] if not ap_adj_all.empty else ap_adj_all
+
+        if ap_adj_valid.empty or not ap_adj_total_cost:
+            st.info("선택한 기간·필터에서 기준(최소 광고비) 이상인 항목이 없습니다.")
+        else:
+            ap_adj_target = ap_adj_low / 100
+            ap_adj_cut = ap_adj_valid[ap_adj_valid["ROAS"] < ap_adj_target].copy()
+            ap_adj_boost = ap_adj_valid[ap_adj_valid["ROAS"] >= ap_adj_high / 100].copy()
+
+            # 진단 기준 = 선택 범위 전체의 평균 CTR/CVR/CPC (분자·분모 합산 후 재계산)
+            ap_adj_avg_ctr = ap_adj_all["클릭수"].sum() / ap_adj_all["노출수"].sum() if ap_adj_all["노출수"].sum() else 0
+            ap_adj_avg_cvr = ap_adj_all["구매수량"].sum() / ap_adj_all["클릭수"].sum() if ap_adj_all["클릭수"].sum() else 0
+            ap_adj_avg_cpc = ap_adj_all["광고비"].sum() / ap_adj_all["클릭수"].sum() if ap_adj_all["클릭수"].sum() else 0
+
+            def _ap_adj_diag(r):
+                if ap_adj_avg_cvr and r["CVR"] < ap_adj_avg_cvr * 0.7:
+                    return "전환 낮음 → 상품·가격·결품·상세 점검"
+                if ap_adj_avg_ctr and r["CTR"] < ap_adj_avg_ctr * 0.7:
+                    return "클릭률 낮음 → 소재·노출 점검"
+                cpc = r["광고비"] / r["클릭수"] if r["클릭수"] else 0
+                if ap_adj_avg_cpc and cpc > ap_adj_avg_cpc * 1.3:
+                    return "클릭단가 높음 → 입찰 하향"
+                return "복합 요인 → 소재·입찰 함께 점검"
+
+            ap_adj_lines = []
+            if not ap_adj_cut.empty:
+                ap_adj_cut["초과광고비"] = ap_adj_cut["광고비"] - ap_adj_cut["판매액"] / ap_adj_target
+                ap_adj_lines.append(
+                    f"🔻 줄일 후보 **{len(ap_adj_cut)}개** — 광고비 **{ap_adj_cut['광고비'].sum():,.0f}원** "
+                    f"(전체의 {ap_adj_cut['광고비'].sum() / ap_adj_total_cost:.1%})이 ROAS {ap_adj_low}% 미만에서 쓰이고 있어요. "
+                    f"ROAS {ap_adj_low}% 수준으로 맞추면 약 **{ap_adj_cut['초과광고비'].sum():,.0f}원** 절감 여지가 있습니다."
+                )
+            else:
+                ap_adj_lines.append(f"🔻 ROAS {ap_adj_low}% 미만이면서 최소 광고비 이상인 항목이 없습니다.")
+            if not ap_adj_boost.empty:
+                ap_adj_lines.append(
+                    f"🔺 늘릴 후보 **{len(ap_adj_boost)}개** — 현재 광고비 비중은 "
+                    f"**{ap_adj_boost['광고비'].sum() / ap_adj_total_cost:.1%}**에 그치지만 ROAS는 {ap_adj_high}% 이상입니다. "
+                    "단계적으로(+20~30%) 올려보고 ROAS가 유지되는지 확인하세요."
+                )
+            else:
+                ap_adj_lines.append(f"🔺 ROAS {ap_adj_high}% 이상이면서 최소 광고비 이상인 항목이 없습니다.")
+            if ap_own == "전체" and ap_adj_group_col != "자사/입점":
+                ap_own_scope = ad_product_df[(ad_product_df["date"] >= ap_start_ts) & (ad_product_df["date"] <= ap_end_ts)]
+                if ap_large != "전체":
+                    ap_own_scope = ap_own_scope[ap_own_scope["대카테고리"] == ap_large]
+                if ap_mid != "전체":
+                    ap_own_scope = ap_own_scope[ap_own_scope["중카테고리"] == ap_mid]
+                ap_own_g = ap_own_scope.groupby("자사/입점")[["광고비", "판매액"]].sum()
+                if {"자사", "입점"} <= set(ap_own_g.index) and ap_own_g["광고비"].min() > 0:
+                    ap_own_roas = ap_own_g["판매액"] / ap_own_g["광고비"]
+                    ap_own_share = ap_own_g["광고비"] / ap_own_g["광고비"].sum()
+                    ap_adj_lines.append(
+                        f"🏷️ 자사 ROAS **{ap_own_roas['자사'] * 100:,.0f}%** (광고비 {ap_own_share['자사']:.0%}) vs "
+                        f"입점 ROAS **{ap_own_roas['입점'] * 100:,.0f}%** (광고비 {ap_own_share['입점']:.0%}) — "
+                        "입점 쪽 효율 차이가 크면 입점 상품 선별·입찰 조정부터 보세요."
+                    )
+            render_insight_box(ap_adj_lines, title="광고비 조정 요약")
+
+            ap_adj_cols_head = (["자사/입점"] if ap_adj_split_own else []) + (
+                ["대카테고리"] if ap_adj_group_col == "중카테고리" else []
+            )
+            ap_adj_name_label = {"중카테고리": "중카테고리", "브랜드명": "브랜드", "자사/입점": "자사/입점"}[ap_adj_group_col]
+            ap_adj_roas_delta_col = f"ROAS {ap_immediate_label}"
+
+            st.markdown("**🔻 줄일 후보** — 초과 광고비(목표 ROAS 대비)가 큰 순")
+            if ap_adj_cut.empty:
+                st.info("해당 항목이 없습니다.")
+            else:
+                ap_adj_cut = ap_adj_cut.sort_values("초과광고비", ascending=False).head(15)
+                ap_adj_cut_display = pd.DataFrame({
+                    **{c: ap_adj_cut[c] for c in ap_adj_cols_head},
+                    ap_adj_name_label: ap_adj_cut[ap_adj_group_col],
+                    "광고비": ap_adj_cut["광고비"].apply(lambda v: f"{v:,.0f}"),
+                    "판매액": ap_adj_cut["판매액"].apply(lambda v: f"{v:,.0f}"),
+                    "ROAS": ap_adj_cut["ROAS"].apply(lambda v: f"{v * 100:,.0f}%"),
+                    ap_adj_roas_delta_col: ap_adj_cut["ROAS_증감"].apply(format_delta_text),
+                    "CR(구매/클릭)": ap_adj_cut["CVR"].apply(lambda v: f"{v * 100:.2f}%"),
+                    f"초과 광고비 (ROAS {ap_adj_low}% 기준)": ap_adj_cut["초과광고비"].apply(lambda v: f"{v:,.0f}"),
+                    "진단": ap_adj_cut.apply(_ap_adj_diag, axis=1),
+                })
+                st.dataframe(
+                    ap_adj_cut_display.style.map(delta_cell_style, subset=[ap_adj_roas_delta_col]),
+                    use_container_width=True, hide_index=True,
+                    height=min(35 * (len(ap_adj_cut_display) + 1) + 3, 560),
+                )
+
+            st.markdown("**🔺 늘릴 후보** — 판매액이 큰 순")
+            if ap_adj_boost.empty:
+                st.info("해당 항목이 없습니다.")
+            else:
+                ap_adj_boost = ap_adj_boost.sort_values("판매액", ascending=False).head(15)
+                ap_adj_boost_display = pd.DataFrame({
+                    **{c: ap_adj_boost[c] for c in ap_adj_cols_head},
+                    ap_adj_name_label: ap_adj_boost[ap_adj_group_col],
+                    "광고비": ap_adj_boost["광고비"].apply(lambda v: f"{v:,.0f}"),
+                    "광고비 비중": ap_adj_boost["광고비"].apply(lambda v: f"{v / ap_adj_total_cost:.1%}"),
+                    "판매액": ap_adj_boost["판매액"].apply(lambda v: f"{v:,.0f}"),
+                    "ROAS": ap_adj_boost["ROAS"].apply(lambda v: f"{v * 100:,.0f}%"),
+                    ap_adj_roas_delta_col: ap_adj_boost["ROAS_증감"].apply(format_delta_text),
+                    "CR(구매/클릭)": ap_adj_boost["CVR"].apply(lambda v: f"{v * 100:.2f}%"),
+                    f"판매액 {ap_immediate_label}": ap_adj_boost["판매액_증감"].apply(format_delta_text),
+                })
+                st.dataframe(
+                    ap_adj_boost_display.style.map(
+                        delta_cell_style, subset=[ap_adj_roas_delta_col, f"판매액 {ap_immediate_label}"]),
+                    use_container_width=True, hide_index=True,
+                    height=min(35 * (len(ap_adj_boost_display) + 1) + 3, 560),
+                )
+
+            st.caption(
+                f"📅 집계기간 {ap_start_ts.date()} ~ {ap_end_ts.date()} ({ap_cur_days}일) · 광고비·판매액은 누계 기준 · "
+                f"최소 광고비 = 일평균 {ap_adj_min_daily:,}원 × {ap_cur_days}일 = {ap_adj_min_cost:,.0f}원 이상만 대상 · "
+                "진단은 선택 범위 평균 대비 CR·CTR이 70% 미만, 클릭단가가 130% 초과인지로 판단한 참고용입니다. "
+                "ROAS가 낮아도 신규 노출·시즌 준비 목적일 수 있고, 짧은 기간은 변동이 커서 최소 1~2주 단위로 보길 권합니다."
+            )
