@@ -1805,21 +1805,22 @@ elif menu == "카테고리별 실적":
                 if is_compare_mode:
                     labels, ad_vals, _ = cattxn_bucket_series(
                         cattxn_df, sel_buckets, "쇼핑검색광고", trend_metric, trend_txn_type, cattxn_category_filter,
-                        brand=cattxn_brand_filter
+                        brand=cattxn_brand_filter, per_day=cattxn_mode == "일평균"
                     )
                     _, ep_vals, _ = cattxn_bucket_series(
                         cattxn_df, sel_buckets, "EP채널", trend_metric, trend_txn_type, cattxn_category_filter,
-                        brand=cattxn_brand_filter
+                        brand=cattxn_brand_filter, per_day=cattxn_mode == "일평균"
                     )
                     _render_compare_trend(labels, ad_vals, ep_vals, trend_metric, x_categorical=True, normalize=normalize_flow)
                 else:
                     labels, cur_vals, prev_vals = cattxn_bucket_series(
                         cattxn_df, sel_buckets, trend_channel, trend_metric, trend_txn_type, cattxn_category_filter,
-                        brand=cattxn_brand_filter
+                        brand=cattxn_brand_filter, per_day=cattxn_mode == "일평균"
                     )
                     _render_single_trend(labels, cur_vals, prev_vals, trend_channel, trend_metric, show_yoy_line,
                                          x_categorical=True, prev_label="전년 동일주차")
                 st.caption(f"📅 주차: {week_range[0]} ~ {week_range[1]}"
+                          + ("  ·  거래액·주문고객수는 일평균(주 단위 합계÷일수)" if cattxn_mode == "일평균" and trend_metric != "객단가" else "")
                           + ("  ·  전년 비교선: 동일 주차(364일 전) 매칭" if not is_compare_mode and show_yoy_line else ""))
 
         else:  # 월별 / 월마감
@@ -1836,22 +1837,24 @@ elif menu == "카테고리별 실적":
             elif is_compare_mode:
                 labels, ad_vals, _ = cattxn_bucket_series(
                     cattxn_df, all_months, "쇼핑검색광고", trend_metric, trend_txn_type, cattxn_category_filter,
-                    brand=cattxn_brand_filter
+                    brand=cattxn_brand_filter, per_day=cattxn_mode == "일평균"
                 )
                 _, ep_vals, _ = cattxn_bucket_series(
                     cattxn_df, all_months, "EP채널", trend_metric, trend_txn_type, cattxn_category_filter,
-                    brand=cattxn_brand_filter
+                    brand=cattxn_brand_filter, per_day=cattxn_mode == "일평균"
                 )
                 _render_compare_trend(labels, ad_vals, ep_vals, trend_metric, x_categorical=True, normalize=normalize_flow)
-                st.caption("📅 2026년 전체")
+                st.caption("📅 2026년 전체"
+                           + ("  ·  거래액·주문고객수는 일평균(월 합계÷일수, 진행 중인 달은 지난 일수 기준)" if cattxn_mode == "일평균" and trend_metric != "객단가" else ""))
             else:
                 labels, cur_vals, prev_vals = cattxn_bucket_series(
                     cattxn_df, all_months, trend_channel, trend_metric, trend_txn_type, cattxn_category_filter,
-                    brand=cattxn_brand_filter
+                    brand=cattxn_brand_filter, per_day=cattxn_mode == "일평균"
                 )
                 _render_single_trend(labels, cur_vals, prev_vals, trend_channel, trend_metric, show_yoy_line,
                                      x_categorical=True, prev_label="전년 동월(동요일 기준)")
-                st.caption("📅 2026년 전체" + ("  ·  전년 비교선: 동월 동요일(364일 전) 매칭" if show_yoy_line else ""))
+                st.caption("📅 2026년 전체" + ("  ·  전년 비교선: 동월 동요일(364일 전) 매칭" if show_yoy_line else "")
+                           + ("  ·  거래액·주문고객수는 일평균(월 합계÷일수, 진행 중인 달은 지난 일수 기준)" if cattxn_mode == "일평균" and trend_metric != "객단가" else ""))
 
         # ── SA/EP 거래액 비중 추이 (조회단위 기준 최근 구간) ──
         render_section_title(f"SA/EP 거래액 비중 추이 · {unit}")

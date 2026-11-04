@@ -941,18 +941,20 @@ def cattxn_period_buckets(df: pd.DataFrame, unit: str):
 
 
 def cattxn_bucket_series(df: pd.DataFrame, buckets, channel: str, metric: str, txn_type: str, category: str,
-                         brand: str = "전체"):
+                         brand: str = "전체", per_day: bool = False):
     """cattxn_period_buckets() 결과를 받아 (labels, 올해값, 전년동요일값) 반환.
-    전년 비교는 버킷을 구성하는 각 날짜를 364일 시프트해서 재집계 — 요일 정렬 유지."""
+    전년 비교는 버킷을 구성하는 각 날짜를 364일 시프트해서 재집계 — 요일 정렬 유지.
+    per_day=True면 거래액·주문고객수를 버킷 안의 '데이터가 있는 일수'로 나눈 일평균으로 돌려준다 —
+    아직 끝나지 않은 주/월(예: 월 초 며칠뿐인 달)이 합계 때문에 급락해 보이는 걸 막는다. 객단가는 비율이라 그대로."""
     prefix = "ad" if channel == "쇼핑검색광고" else "ep"
     rev_col, cnt_col = f"{prefix}_거래액", f"{prefix}_주문고객수"
     scope = _cattxn_scope(df, txn_type, category, brand)
 
-    def _metric(rev, cnt):
+    def _metric(rev, cnt, days):
         if metric == "거래액":
-            return rev
+            return rev / days if per_day and days else rev
         if metric == "주문고객수":
-            return cnt
+            return cnt / days if per_day and days else cnt
         return (rev / cnt) if cnt else None
 
     labels, cur_vals, prev_vals = [], [], []
@@ -965,8 +967,8 @@ def cattxn_bucket_series(df: pd.DataFrame, buckets, channel: str, metric: str, t
         prev_rev, prev_cnt = prev_sub[rev_col].sum(), prev_sub[cnt_col].sum()
 
         labels.append(label)
-        cur_vals.append(_metric(cur_rev, cur_cnt))
-        prev_vals.append(_metric(prev_rev, prev_cnt) if not prev_sub.empty else None)
+        cur_vals.append(_metric(cur_rev, cur_cnt, cur_sub["date"].nunique()))
+        prev_vals.append(_metric(prev_rev, prev_cnt, prev_sub["date"].nunique()) if not prev_sub.empty else None)
 
     return labels, cur_vals, prev_vals
 
