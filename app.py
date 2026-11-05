@@ -4006,22 +4006,25 @@ elif menu == "상품군 효율":
         if not ex_opts:
             st.info("비교할 수 있는 이전 기간이 없습니다.")
         else:
-            ex_target = st.radio(
-                "분해 대상", ["노출", "클릭", "판매액"], horizontal=True, key="adprod_ex_target",
-                help="선택한 지표의 증감을 '상품수가 달라진 몫'과 '상품 1개당 값이 달라진 몫'으로 나눠 보여줘요. "
-                     "노출·클릭은 '클릭이 발생한 상품 수(운영 상품수)', 판매액은 '매출이 발생한 상품 수' 기준이에요.",
-            )
+            ex_r1a, ex_r1b = st.columns([1.2, 2.4])
+            with ex_r1a:
+                ex_target = st.radio(
+                    "분해 대상", ["노출", "클릭", "판매액"], horizontal=True, key="adprod_ex_target",
+                    help="선택한 지표의 증감을 '상품수가 달라진 몫'과 '상품 1개당 값이 달라진 몫'으로 나눠 보여줘요. "
+                         "노출·클릭은 '클릭이 발생한 상품 수(운영 상품수)', 판매액은 '매출이 발생한 상품 수' 기준이에요.",
+                )
             ex_metric = {"노출": "노출수", "클릭": "클릭수", "판매액": "판매액"}[ex_target]
             ex_count_col = "매출상품수" if ex_target == "판매액" else "클릭상품수"
             ex_count_label = "매출 발생 상품수" if ex_target == "판매액" else "운영 상품수"
             ex_unit_word = ex_target
-            ex_split = st.radio(
-                "자사 / 입점", ["자사 · 입점 나누어 보기", "합산 (상단 자사/입점 필터 기준)"], horizontal=True,
-                key="adprod_ex_split",
-                help="'나누어 보기'는 상단 자사/입점 필터와 무관하게 자사와 입점을 각각 따로 분해해서 위아래로 보여줘요. "
-                     "대/중카테고리 필터는 그대로 적용돼요.",
-            )
-            ex1, ex2, ex3, ex4 = st.columns([1.5, 2.1, 1.5, 1.2])
+            with ex_r1b:
+                ex_split = st.radio(
+                    "자사 / 입점", ["자사 · 입점 나누어 보기", "합산 (상단 자사/입점 필터 기준)"], horizontal=True,
+                    key="adprod_ex_split",
+                    help="'나누어 보기'는 상단 자사/입점 필터와 무관하게 자사와 입점을 각각 따로 분해해서 위아래로 보여줘요. "
+                         "대/중카테고리 필터는 그대로 적용돼요.",
+                )
+            ex1, ex2, ex3, ex4 = st.columns([1.9, 2.2, 1.6, 1.1])
             with ex1:
                 ex_label = st.radio("비교 기준", list(ex_opts.keys()), horizontal=True, key="adprod_ex_cmp")
             with ex2:
@@ -4185,6 +4188,78 @@ elif menu == "상품군 효율":
                     )
                 render_insight_box(lines, title=f"{ex_label} 기준 · {ex_group_label}별 · {ex_unit_word} · {own_val}")
 
+                # ── 해석 · 액션: 표를 보고 '그래서 뭘 해야 하나'를 규칙으로 정리 (참고용) ──
+                def _dr(pct, th=5.0):
+                    return "상" if (pct is not None and pct > th) else ("하" if (pct is not None and pct < -th) else "보합")
+
+                c_pct, r_pct = pct_change(cost_b, cost_a), (pct_change(roas_b, roas_a) if (roas_a and roas_b is not None) else None)
+                k_pct, s_pct, t_pct = pct_change(clk_b, clk_a), pct_change(sal_b, sal_a), pct_change(t_b, t_a)
+                acts = []
+                if ex_target == "판매액":
+                    kd, sd, rd = _dr(k_pct), _dr(s_pct), _dr(r_pct)
+                    if kd == "상" and sd == "하":
+                        acts.append("**진단** 클릭은 늘었는데 판매액이 줄었어요 → 유입은 오는데 구매로 이어지지 않는 상태(전환·상품 경쟁력 문제).")
+                        acts.append("**액션** 아래 '클릭↑ 매출↓' 항목부터 가격·재고·대표이미지·상세를 점검하고, 클릭만 받고 안 팔리는 상품은 입찰을 낮추거나 제외하세요.")
+                    elif kd == "하" and sd == "하":
+                        acts.append("**진단** 클릭 자체가 줄어 판매액이 줄었어요 → 노출·입찰 쪽 문제(물량 부족).")
+                        acts.append("**액션** ROAS가 유지·양호한 항목은 입찰 상향·상품 확대로 물량을 되살리고, 노출이 크게 빠진 카테고리를 먼저 점검하세요.")
+                    elif sd == "상" and rd == "하":
+                        acts.append("**진단** 판매액은 늘었지만 ROAS가 떨어졌어요 → 광고비를 더 쓰고 얻은 매출이라 효율은 악화.")
+                        acts.append("**액션** 광고비 증가분이 큰 🔴 항목의 입찰을 낮추거나 목표 ROAS를 설정해 증액이 효율을 깎지 않게 하세요.")
+                    elif sd == "상":
+                        acts.append("**진단** 판매액이 늘었고 ROAS도 유지·개선 — 광고가 잘 먹히는 상태예요.")
+                        acts.append("**액션** ROAS 높은데 광고비를 아직 안 늘린 항목(아래 '증액 후보')에 소규모 증액 테스트를 해보세요.")
+                    else:
+                        acts.append("**진단** 클릭·판매액에 뚜렷한 변화가 없어요 — 항목별 신호(🔴/🟡)만 선별해서 보세요.")
+                    if op_a and op_b and sl_a is not None and sl_b is not None:
+                        od, ld = _dr(pct_change(op_b, op_a)), _dr(pct_change(sl_b, sl_a))
+                        if od != "하" and ld == "하":
+                            acts.append("**상품 풀** 운영 상품은 유지·증가인데 매출 나는 상품이 줄었어요 → 새로 붙인 상품이 클릭만 받고 팔리지 않는지 확인하고, 클릭 많은데 매출 0인 상품을 정리하세요.")
+                        elif od == "하" and ld == "하":
+                            acts.append("**상품 풀** 운영 상품 자체가 줄어 매출 상품도 줄었어요 → 빠진 상품이 의도된 종료인지, 입찰·재고 문제인지 확인하세요.")
+                else:
+                    td, rd = _dr(t_pct), _dr(r_pct)
+                    if td == "상" and rd == "하":
+                        acts.append(f"**진단** {ex_unit_word}은 늘었는데 ROAS가 떨어졌어요 → 물량을 키우며 효율이 희생된 상태.")
+                        acts.append("**액션** 🔴 항목(광고비↑ ROAS↓)부터 입찰을 낮추고, 매출로 이어지지 않는 상품을 제외하세요.")
+                    elif td == "하" and rd == "하":
+                        acts.append(f"**진단** {ex_unit_word}과 ROAS가 함께 나빠졌어요 → 물량·효율 모두 악화(우선 점검 대상).")
+                        acts.append("**액션** 판매액 분해 보기로 바꿔 클릭이 매출로 이어지는지 확인하고, 줄어든 항목의 입찰·상품 상태를 점검하세요.")
+                    elif td == "하" and rd != "하":
+                        acts.append(f"**진단** {ex_unit_word}은 줄었지만 ROAS는 유지·개선 — 효율 위주로 정리된 상태일 수 있어요.")
+                        acts.append("**액션** 의도한 축소가 아니라면 ROAS 좋은 항목의 입찰을 올려 물량을 회복하세요.")
+                    elif td == "상":
+                        acts.append(f"**진단** {ex_unit_word}이 늘었고 ROAS도 유지·개선 — 양호.")
+                        acts.append("**액션** 판매액 분해 보기에서 늘어난 물량이 실제 매출로 이어지는지 확인하세요.")
+                    else:
+                        acts.append(f"**진단** {ex_unit_word}에 뚜렷한 변화가 없어요 — 항목별 신호만 선별해서 보세요.")
+                    if ex_has_n and ex["상품수효과"].notna().any():
+                        _en, _ei = abs(ex["상품수효과"].sum()), abs(ex["상품당노출효과"].sum())
+                        if _en >= _ei:
+                            acts.append(f"**원인** {ex_unit_word} 변화는 주로 운영 상품 수 변화 때문이에요 → 상품 풀(추가·종료)을 점검하세요.")
+                        else:
+                            acts.append(f"**원인** {ex_unit_word} 변화는 주로 상품당 {ex_unit_word} 변화(입찰·경쟁·노출 순위) 때문이에요 → 입찰가·키워드 경쟁을 점검하세요.")
+                # 항목별 액션 후보
+                if ex_target == "판매액":
+                    _fl = ex[(ex["클릭수_전"] > 0) & (ex["판매액_전"] > 0)].copy()
+                    _fl["_k"] = (_fl["클릭수_후"] / _fl["클릭수_전"] - 1) * 100
+                    _fl["_s"] = (_fl["판매액_후"] / _fl["판매액_전"] - 1) * 100
+                    _fl = _fl[(_fl["_k"] > 5) & (_fl["_s"] < -5)].sort_values("판매액증감" if "판매액증감" in _fl else "대상증감").head(3)
+                    if not _fl.empty:
+                        acts.append("**클릭↑ 매출↓ (전환 점검)** " + " · ".join(
+                            f"{_ex_nm(r[ex_group_col])} 클릭 {r['_k']:+.0f}% · 판매액 {r['_s']:+.0f}%" for _, r in _fl.iterrows()))
+                if not _bad.empty:
+                    acts.append("**효율화 우선(입찰↓·제외)** " + " · ".join(_ex_nm(v) for v in _bad[ex_group_col]))
+                if roas_b:
+                    _up = ex[(ex["광고비_후"] >= 1000) & (ex["ROAS_후"] >= roas_b * 1.2)
+                             & (ex["광고비_전"] > 0) & ((ex["광고비_후"] / ex["광고비_전"] - 1) * 100 <= 5)].sort_values("ROAS_후", ascending=False).head(3)
+                    if not _up.empty:
+                        acts.append("**증액 후보(ROAS 높은데 광고비는 안 늘림)** " + " · ".join(
+                            f"{_ex_nm(r[ex_group_col])} ROAS {r['ROAS_후'] * 100:,.0f}%" for _, r in _up.iterrows()))
+                acts.append("※ 규칙 기반 참고용이에요. 하루치는 변동이 크고 최근 1일은 다음 날 보정될 수 있으니 주 단위로도 확인하세요.")
+                render_insight_box(acts, title=f"🧭 해석 · 액션 · {own_val}")
+
+
                 view = ex.copy()
                 if ex_dir == "감소만":
                     view = view[view["대상증감"] < 0].sort_values("대상증감")
@@ -4319,6 +4394,20 @@ elif menu == "상품군 효율":
                     )
                     if ex_top and n_all > ex_top:
                         st.caption(f"※ 전체 {n_all}개 중 상위 {ex_top}개만 표시했어요 — 위의 '표시 개수'를 바꾸거나 상세 Excel로 전체를 받을 수 있어요.")
+
+                    with st.expander("📖 효율 신호 읽는 법 · 신호별 액션", expanded=False):
+                        st.markdown(
+                            "| 신호 | 뜻 | 액션 |\n|---|---|---|\n"
+                            "| 🔴 광고비↑ ROAS↓ | 돈을 더 썼는데 매출 효율이 떨어짐 | 입찰 하향·저효율 상품 제외, 목표 ROAS 설정 |\n"
+                            "| 🟢 광고비↑ ROAS 유지·↑ | 증액이 효율을 깎지 않음 | 유지하거나 추가 증액 테스트 |\n"
+                            "| 🟡 광고비↓ ROAS↓ | 줄였는데도 효율이 나빠짐 | 상품·가격·재고 등 광고 외 요인 점검 |\n"
+                            "| 🔵 광고비↓ ROAS 유지·↑ | 효율화가 진행됨 | 매출이 줄지 않았는지만 확인 |\n"
+                            "| 🟠 광고비 유지 ROAS↓ | 같은 비용에 매출이 줄어듦 | 전환(가격·재고·이미지)·경쟁 변화 점검 |\n"
+                            "| 🟢 광고비 유지 ROAS↑ | 같은 비용에 매출이 늘어남 | 증액 후보 |\n"
+                            "| ⚫ 변화 미미 | ±5% 이내 | 조치 불필요 |\n\n"
+                            "**읽는 순서** ① 위 타일로 전체 방향 → ② 🧭 해석·액션 → ③ 효율 지도에서 오른쪽 아래(빨강) 항목 → ④ 표에서 그 항목의 클릭·판매액·상품수 증감률로 원인 확인.\n\n"
+                            "**판매액 보기에서 흐름 읽기** 클릭↑·판매액↓ = 전환 문제 / 클릭↓·판매액↓ = 노출·입찰 문제 / 운영 상품↑·매출 상품↓ = 팔리지 않는 상품이 늘어남."
+                        )
 
                     # ── 상세: 이전 → 이번 값, 노출·클릭·CTR, 상품수·상품당 값·몫 ──
                     tbl = pd.DataFrame({ex_group_label: view[ex_group_col].map(_ex_nm)})
