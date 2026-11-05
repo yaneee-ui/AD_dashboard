@@ -4012,8 +4012,13 @@ elif menu == "상품군 효율":
             with ex1:
                 ex_label = st.radio("비교 기준", list(ex_opts.keys()), horizontal=True, key="adprod_ex_cmp")
             with ex2:
-                ex_group_label = st.radio("분해 단위", ["대카테고리", "중카테고리", "브랜드", "자사/입점"],
-                                          horizontal=True, key="adprod_ex_group")
+                # '나누어 보기'에서는 섹션마다 자사(또는 입점)만 보이므로 자사/입점 단위는 의미가 없어 합산 모드에서만 고를 수 있게 한다
+                _ex_split_on = ex_split.startswith("자사")
+                ex_group_label = st.radio(
+                    "분해 단위", ["대카테고리", "중카테고리", "브랜드"] + ([] if _ex_split_on else ["자사/입점"]),
+                    horizontal=True, key=f"adprod_ex_group_{'split' if _ex_split_on else 'sum'}",
+                    help="자사/입점 단위는 '합산' 보기에서만 고를 수 있어요 — 자사와 입점을 한 표에서 비교하는 용도예요." if _ex_split_on else None,
+                )
             with ex3:
                 ex_dir = st.radio("보기", ["전체", "감소만", "증가만"], horizontal=True, key="adprod_ex_dir")
             ex_group_col = {"대카테고리": "대카테고리", "중카테고리": "중카테고리", "브랜드": "브랜드명",
