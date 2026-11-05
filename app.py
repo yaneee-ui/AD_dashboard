@@ -128,6 +128,54 @@ if ad_product_df is not None:
 # 운영 상품수(상품코드 기준, 원본을 다시 변환한 날짜부터만 존재) — 없으면 None, 있는 기간만 값을 보여준다
 ad_count_df = load_ad_product_count_data()
 
+
+def _src_info(kind):
+    """데이터 종류 -> (구분 이름, 파일, 원본, 최신일자 또는 None, 반영 시점 설명). 없는 데이터면 None."""
+    if kind == "tableau":
+        return ("일일리포트 지표 (노출·클릭·UV·광고비·거래액·ROAS 등)", "tableau_daily.csv", "일일리포트_RAW.xlsx", MAX_DATE, "1일 전(D-1)까지")
+    if kind == "cattxn":
+        return ("카테고리·브랜드 거래액 (쇼핑검색광고/EP채널, 정상/이월/입점)", "category_brand_txn_daily.csv", "정상이월입점_RAW.xlsx", CATTXN_MAX_DATE, "1일 전(D-1)까지")
+    if kind == "product" and product_txn_df is not None:
+        return ("상품명 단위 거래액 (TOP 상품)", "product_txn_daily(_2026H1/H2).csv", "정상이월입점_RAW.xlsx(상품명 포함)", PRODUCT_TXN_MAX_DATE,
+                f"1일 전(D-1)까지, {PRODUCT_TXN_MIN_DATE} 이후만 보유")
+    if kind == "adprod" and ad_product_df is not None:
+        return ("상품군 광고 리포트 (노출·클릭·광고비·판매액, NBOS 매칭)", "ad_product_category_daily(_YYYYH1/H2).csv", "쇼핑검색리포트_RAW.xlsx",
+                AD_PRODUCT_MAX_DATE, "원본을 변환한 날짜까지")
+    if kind == "adcount" and ad_count_df is not None:
+        return ("운영 상품수 (광고가 노출된 상품코드 수)", "ad_product_count_daily(_2026H2).csv", "쇼핑검색리포트_RAW.xlsx(상품코드)",
+                ad_count_df["date"].max().date(), f"{ad_count_df['date'].min().date()} 이후만 보유")
+    if kind == "event":
+        return ("행사 일정", "event_calendar.csv", "EP_dashboard 폴더의 행사 달력을 복사", None, "일정이 바뀌면 다시 복사")
+    return None
+
+
+def src_tag(*kinds):
+    """섹션 제목 아래 한 줄 출처. 예: 📁 출처: 일일리포트 = tableau_daily.csv ← 일일리포트_RAW.xlsx · 최신 2026-11-04 (보통 D-1)"""
+    parts = []
+    for k in kinds:
+        info = _src_info(k)
+        if info is None:
+            continue
+        label, f, raw, mx, lag = info
+        short = label.split(" (")[0]
+        parts.append(f"{short} = {f} ← {raw}" + (f" · 최신 {mx}" if mx else "") + (f" ({lag})" if lag else ""))
+    return "📁 출처: " + "  /  ".join(parts) if parts else ""
+
+
+def render_source_panel(kinds, expanded=False):
+    """페이지 상단 '데이터 출처 · 반영 시점' 패널(접힘). 제목에 가장 중요한 최신일자를 같이 적는다."""
+    infos = [i for i in (_src_info(k) for k in kinds) if i]
+    if not infos:
+        return
+    heads = [f"{i[0].split(' (')[0]} {i[3]}" for i in infos if i[3]]
+    title = "📁 데이터 출처 · 반영 시점" + (f"  —  {' · '.join(heads[:2])}" if heads else "")
+    with st.expander(title, expanded=expanded):
+        rows = ["| 구분 | 파일 | 원본 | 최신일자 | 반영 시점 |", "|---|---|---|---|---|"]
+        for label, f, raw, mx, lag in infos:
+            rows.append(f"| **{label}** | {f} | {raw} | {('**' + str(mx) + '**') if mx else '-'} | {lag} |")
+        st.markdown("\n".join(rows))
+        st.caption("⚠️ 최근 1일(D-1) 데이터는 다음 날 보정될 수 있어요 — 가장 최근 날짜 값은 잠정치로 보고, 필요하면 하루 지난 뒤 다시 확인하세요.")
+
 # 01페이지 '지표 선택' 알약 중 가장 자주 보는 핵심 9개 — 맨 앞에 배치하고 별도 색으로 강조한다.
 CORE_METRICS = ["노출수", "클릭수", "CTR", "UV", "광고비", "거래액", "ROAS", "CR", "객단가"]
 _all_metrics_raw = ["노출수", "클릭수", "UV", "광고비"] + list(RATIO_DEFS.keys()) + [
@@ -238,7 +286,7 @@ def render_quick_date_buttons(unit: str, min_date, max_date, date_key: str, sele
     st.selectbox의 key — 버튼을 누르면 해당 위젯의 session_state를 직접 갱신하고 rerun한다."""
     max_ts = pd.Timestamp(max_date)
     if unit == "일별":
-        # 데이터가 D-1(또는 D-2) 반영이라 max_date 자체가 이미 "어제" 실적이라, 버튼 이름을
+        # 데이터가 D-1 반영이라 max_date 자체가 이미 "어제" 실적이라, 버튼 이름을
         # "오늘/어제"가 아니라 "전일(최신 반영일)/전전일"로 — 실제 오늘 데이터가 있다는 오해를 막는다.
         pairs = [("전일", max_date), ("전전일", (max_ts - pd.Timedelta(days=1)).date())]
     elif unit == "주별":
@@ -297,7 +345,7 @@ def _trend_xaxis(x_vals, is_daily: bool, tickformat: str = "%m/%d") -> dict:
 def _render_category_mix_section(start_ts, end_ts, ref_date, unit, mode, key_prefix):
     """카테고리별 거래액 비중(도넛+표) + 전년비 증감 인사이트. 01·02페이지에서 재사용
     (key_prefix로 위젯 key를 구분해서 두 페이지에 동시에 떠도 충돌 안 나게 한다).
-    cattxn_df(카테고리·브랜드 정상/이월/입점, D-2 반영) 기준 — 01·02페이지의 메인
+    cattxn_df(카테고리·브랜드 정상/이월/입점, D-1 반영) 기준 — 01·02페이지의 메인
     지표(태블로 원본, D-1)와는 별도 집계."""
     render_section_title(f"카테고리별 거래액 비중 (쇼핑검색광고) · {mode}")
     cat_txn_filter = st.radio(
@@ -431,7 +479,7 @@ def _render_category_mix_section(start_ts, end_ts, ref_date, unit, mode, key_pre
                        ("전년비", cat_comp_periods.get("전년비"))]
     ]
     st.caption(
-        f"ℹ️ 이 표는 2일 전 실적까지 반영됩니다 (최신일자: {CATTXN_MAX_DATE}) "
+        f"ℹ️ 이 표는 1일 전 실적까지 반영됩니다 (최신일자: {CATTXN_MAX_DATE}, 최근 1일(D-1) 데이터는 다음 날 보정될 수 있어요) "
         f"· 집계기간: {cat_start.date()} ~ {cat_end.date()} · 비교대상 기간 — {' · '.join(cat_comp_strs)}"
     )
     st.caption("📁 데이터 출처: category_brand_txn_daily.csv ← 정상이월입점_RAW.xlsx (01·02페이지 태블로 원본과는 별도 집계)")
@@ -546,6 +594,7 @@ if menu == "쇼핑검색광고 실적":
         title=f"쇼핑검색광고 실적 — {cur_label}",
         sub=f"조회단위: {unit}  ·  표시방식: {mode}  ·  집계기간: {start_ts.date()} ~ {end_ts.date()} ({cur_days}일)",
     )
+    render_source_panel(["tableau", "cattxn", "adcount"])
 
     mask = (df["date"] >= start_ts) & (df["date"] <= end_ts)
     view = df.loc[mask].copy()
@@ -622,7 +671,7 @@ if menu == "쇼핑검색광고 실적":
 
     # ── KPI 카드: 메인(거래액·광고비·ROAS·EP채널) + 보조 지표 2단 구성 ──
     def ep_revenue_raw(p_start, p_end):
-        """cattxn_df(카테고리 데이터, D-2 반영) 기준 EP채널 거래액 합계. 기간이 cattxn 데이터
+        """cattxn_df(카테고리 데이터, D-1 반영) 기준 EP채널 거래액 합계. 기간이 cattxn 데이터
         범위를 벗어나면 클립해서 계산하고, 겹치는 데이터가 없으면 None."""
         c_start = max(p_start, pd.Timestamp(CATTXN_MIN_DATE))
         c_end = min(p_end, pd.Timestamp(CATTXN_MAX_DATE))
@@ -664,7 +713,9 @@ if menu == "쇼핑검색광고 실적":
     render_kpi_cards(primary_cards, size="lg")
     st.markdown(
         '<div class="kpi-footnote">※ 광고비·거래액·ROAS는 쇼핑검색광고 핵심 지표이며, EP채널 거래액을 나란히 두어 '
-        '광고 흐름과 EP 흐름을 함께 볼 수 있게 했습니다.</div>',
+        '광고 흐름과 EP 흐름을 함께 볼 수 있게 했습니다.<br>'
+        f'📁 광고비·거래액·ROAS 등 = tableau_daily.csv (최신 {MAX_DATE}, 보통 D-1) · '
+        f'EP채널 거래액 = category_brand_txn_daily.csv (최신 {CATTXN_MAX_DATE}, 보통 D-1)</div>',
         unsafe_allow_html=True,
     )
 
@@ -736,6 +787,7 @@ if menu == "쇼핑검색광고 실적":
         yoy_start, yoy_end = comp_periods["전년비"]
 
         render_section_title(f"실적요약 · {immediate_label} · 전년비 비교 ({mode})")
+        st.caption(src_tag("tableau", "adcount"))
 
         summary_metrics = ["노출수", "클릭수", "CTR", "CR", "객단가", "결제고객수",
                            "CPC", "CPUV", "UV", "광고비", "거래액", "ROAS",
@@ -794,6 +846,7 @@ if menu == "쇼핑검색광고 실적":
     with p1_tabs[1]:
         # ── 실적 퍼널 (노출 → 클릭 → 방문 → 구매) ──
         render_section_title(f"실적 퍼널 (노출 → 클릭 → 방문 → 구매) · {mode}")
+        st.caption(src_tag("tableau"))
 
         funnel_stages = ["노출수", "클릭수", "UV", "결제고객수"]
         funnel_cur_vals = [scaled(m, agg[m], cur_days) for m in funnel_stages]
@@ -853,6 +906,7 @@ if menu == "쇼핑검색광고 실적":
     with p1_tabs[2]:
         # ── 추이 차트: 2026년 기준 + 전년비 비교선 (조회단위별 집계) ──
         render_section_title(f"2026년 추이 (전년비 비교) · {mode}")
+        st.caption(src_tag("tableau"))
         st.caption("지표 선택")
         with st.container(key="pill_trend_metric"):
             metric_choice = st.radio(
@@ -979,6 +1033,7 @@ elif menu == "전년비교":
         f"📅 전년비 비교는 전년 동요일(364일 전, 요일 정렬) 기준입니다 · "
         f"데이터는 {MAX_DATE}까지 반영되어 있습니다 (그 이후 실적은 아직 집계 전)."
     )
+    render_source_panel(["tableau", "cattxn", "product", "event"])
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "일자별 YoY (전년 동요일)", f"{unit} 종합 YoY", "📆 월별 실적 비교 (연간)", "📦 카테고리별 거래액 비중",
         "🎉 행사기간 비교",
@@ -1233,6 +1288,7 @@ elif menu == "전년비교":
     # ── TAB 5: 행사기간 비교 (EP 대시보드 12번 페이지와 같은 방식 — 두 구간을 일평균으로 맞대본다) ──
     with tab5:
         render_section_title("🎉 행사기간 비교")
+        st.caption(src_tag("tableau", "event"))
         st.caption(
             "행사 시작·종료일은 조회단위·전년 동요일(364일) 로직과 무관하게 해마다 며칠씩 밀리기 때문에, "
             "'이번 행사'와 '비교할 행사'를 직접 골라 두 구간을 일평균으로 비교합니다."
@@ -1416,7 +1472,7 @@ elif menu == "전년비교":
                     key="dl_event_compare",
                 )
 
-                # ── 카테고리별 거래액 변동 (cattxn, 2일 전까지 반영) ──
+                # ── 카테고리별 거래액 변동 (cattxn, 1일 전까지 반영) ──
                 render_section_title("📦 카테고리별 거래액 변동")
                 ev_channel = st.radio(
                     "채널", ["합계", "쇼핑검색광고", "EP채널"], horizontal=True, key="event_cat_channel",
@@ -1455,7 +1511,7 @@ elif menu == "전년비교":
                         height=min(35 * (len(ev_cat_table) + 1) + 3, 560),
                     )
                     st.caption(
-                        f"카테고리 데이터는 2일 전 실적까지 반영됩니다(최신일자: {CATTXN_MAX_DATE}) · "
+                        f"카테고리 데이터는 1일 전 실적까지 반영됩니다(최신일자: {CATTXN_MAX_DATE}, 최근 1일(D-1) 데이터는 다음 날 보정될 수 있어요) · "
                         f"집계일수 {ev_label_a} {ev_na}일 / {ev_label_b} {ev_nb}일 · "
                         "📁 데이터 출처: category_brand_txn_daily.csv (위 지표 카드의 태블로 원본과는 별도 집계)"
                     )
@@ -1463,6 +1519,7 @@ elif menu == "전년비교":
                 # ── 어디서 빠졌나: 정상/이월/입점 · 카테고리 · 브랜드 · 상품 분해 ──
                 if ev_cat_days_a and ev_cat_days_b:
                     render_section_title("🔍 어디서 늘고 빠졌나 (정상/이월/입점 · 카테고리 · 브랜드 · 상품)")
+                    st.caption(src_tag("cattxn", "product"))
                     st.caption(
                         f"위와 같은 비교 기준·날짜({ev_label_b} vs {ev_label_a}), 채널 '{ev_channel}'로 일평균 거래액을 쪼개 봅니다. "
                         "기여도는 전체 거래액(비교 기간 일평균) 대비 그 항목의 증감액이 몇 %p인지예요 — 항목별 기여도를 모두 더하면 전체 증감률이 됩니다."
@@ -1649,7 +1706,7 @@ elif menu == "카테고리별 실적":
         title=f"카테고리별 실적 — {cattxn_cur_label}{cattxn_cat_suffix}{cattxn_brand_suffix}{cattxn_txn_suffix}",
         sub=f"조회단위: {unit}  ·  표시방식: {cattxn_mode}  ·  집계기간: {cattxn_start_ts.date()} ~ {cattxn_end_ts.date()} ({cattxn_cur_days}일)",
     )
-    # ── 데이터 출처 · 반영 시점: 이 페이지는 파일마다 반영 시점(D-1/D-2)이 달라 한눈에 보이게 정리 ──
+    # ── 데이터 출처 · 반영 시점: 이 페이지의 모든 데이터는 1일 전(D-1)까지 반영 ──
     _today_ts = pd.Timestamp.today().normalize()
 
     def _ago(d):
@@ -1657,7 +1714,7 @@ elif menu == "카테고리별 실적":
         return "오늘" if n == 0 else f"{n}일 전"
 
     CATTXN_SRC = {
-        "cattxn": ("category_brand_txn_daily.csv", "정상이월입점_RAW.xlsx", CATTXN_MAX_DATE, "D-2"),
+        "cattxn": ("category_brand_txn_daily.csv", "정상이월입점_RAW.xlsx", CATTXN_MAX_DATE, "D-1"),
         "tableau": ("tableau_daily.csv", "일일리포트_RAW.xlsx", MAX_DATE, "D-1"),
     }
 
@@ -1673,19 +1730,19 @@ elif menu == "카테고리별 실적":
             parts.append(f"{names[k]} = {f} ← {raw} · 최신 {mx} (보통 {lag} 반영)")
         return "📁 출처: " + "  /  ".join(parts)
 
-    with st.expander("📁 데이터 출처 · 반영 시점 (파일마다 최신일자가 달라요)", expanded=True):
+    with st.expander("📁 데이터 출처 · 반영 시점 (모두 1일 전 D-1 기준)", expanded=True):
         _src_rows = [
             "| 구분 | 어디서 | 원본 | 최신일자 | 반영 시점 |",
             "|---|---|---|---|---|",
             f"| **거래액·주문고객수·객단가** (쇼핑검색광고 / EP채널, 카테고리·브랜드·정상/이월/입점) "
-            f"| category_brand_txn_daily.csv | 정상이월입점_RAW.xlsx | **{CATTXN_MAX_DATE}** ({_ago(CATTXN_MAX_DATE)}) | 보통 **2일 전(D-2)** 까지 |",
+            f"| category_brand_txn_daily.csv | 정상이월입점_RAW.xlsx | **{CATTXN_MAX_DATE}** ({_ago(CATTXN_MAX_DATE)}) | **1일 전(D-1)** 까지 |",
             f"| **광고비·ROAS** (전체채널, 카테고리 구분 없음 · 01·02페이지와 동일) "
-            f"| tableau_daily.csv | 일일리포트_RAW.xlsx | **{MAX_DATE}** ({_ago(MAX_DATE)}) | 보통 **1일 전(D-1)** 까지 |",
+            f"| tableau_daily.csv | 일일리포트_RAW.xlsx | **{MAX_DATE}** ({_ago(MAX_DATE)}) | **1일 전(D-1)** 까지 |",
         ]
         if product_txn_df is not None:
             _src_rows.append(
                 f"| **TOP20 상품** (상품명 단위) | product_txn_daily(_2026H1/H2).csv | 정상이월입점_RAW.xlsx(상품명 포함) "
-                f"| **{PRODUCT_TXN_MAX_DATE}** ({_ago(PRODUCT_TXN_MAX_DATE)}) | 카테고리·브랜드 집계와 같은 D-2, **{PRODUCT_TXN_MIN_DATE} 이후만** 보유 |"
+                f"| **{PRODUCT_TXN_MAX_DATE}** ({_ago(PRODUCT_TXN_MAX_DATE)}) | **1일 전(D-1)** 까지, **{PRODUCT_TXN_MIN_DATE} 이후만** 보유 |"
             )
         st.markdown("\n".join(_src_rows))
         if CATTXN_MAX_DATE != MAX_DATE:
@@ -1697,9 +1754,9 @@ elif menu == "카테고리별 실적":
             )
         else:
             st.caption(
-                f"현재는 두 파일 모두 {CATTXN_MAX_DATE}까지 반영돼 있어요 — 다만 파이프라인상 카테고리 거래액은 보통 하루 더 늦게 "
-                "들어와서, 갱신 시점에 따라 두 파일의 최신일자가 하루 어긋날 수 있어요."
+                f"모든 데이터가 {CATTXN_MAX_DATE}(1일 전)까지 같은 날짜로 반영돼 있어요."
             )
+        st.caption("⚠️ 최근 1일(D-1) 데이터는 다음 날 보정될 수 있어요 — 가장 최근 날짜 값은 잠정치로 보고, 필요하면 하루 지난 뒤 다시 확인하세요.")
 
     cattxn_mask = (cattxn_df["date"] >= cattxn_start_ts) & (cattxn_df["date"] <= cattxn_end_ts)
     cattxn_view = cattxn_df.loc[cattxn_mask]
@@ -1808,7 +1865,7 @@ elif menu == "카테고리별 실적":
         f'<div class="kpi-footnote">※ 거래액·주문고객수는 선택한 표시방식({cattxn_mode}) 기준이며, '
         f'객단가는 거래액÷주문고객수로 재산정한 값입니다. 광고비·ROAS는 카테고리별 광고비 원본이 없어 '
         f'<b>쇼핑검색광고 전체 채널 기준</b>입니다(카테고리 필터와 무관, 01페이지와 동일 소스).<br>'
-        f'📁 거래액·주문고객수·객단가 = category_brand_txn_daily.csv (최신 {CATTXN_MAX_DATE}, 보통 D-2) · '
+        f'📁 거래액·주문고객수·객단가 = category_brand_txn_daily.csv (최신 {CATTXN_MAX_DATE}, 보통 D-1) · '
         f'광고비·ROAS = tableau_daily.csv (최신 {MAX_DATE}, 보통 D-1)</div>',
         unsafe_allow_html=True,
     )
@@ -2452,7 +2509,7 @@ elif menu == "카테고리별 실적":
                 "'신규'는 직전기간 거래액이 없거나 0 이하였다가 이번에 생긴 경우예요 · "
                 "광고·EP 동반 상승은 광고 효과를 증명하지 않아요(시즌·프로모션 영향 가능) — 소규모 증액 테스트로 검증하세요."
             )
-            st.caption("📁 데이터 출처: category_brand_txn_daily.csv (D-2 반영, 01·02페이지 태블로 원본과는 별도 집계)")
+            st.caption("📁 데이터 출처: category_brand_txn_daily.csv (D-1 반영, 최근 1일(D-1) 데이터는 다음 날 보정될 수 있어요 · 01·02페이지 태블로 원본과는 별도 집계)")
 
     # ══════════════════════════════════════════════════════════
     # 탭 2: 카테고리별 상세
@@ -3093,6 +3150,7 @@ elif menu == "상품군 효율":
         title=f"상품군 효율 — {ap_cur_label}" + (f" · {ap_scope_note}" if ap_scope_note else ""),
         sub=f"조회단위: {unit}  ·  표시방식: {ap_mode}  ·  집계기간: {ap_start_ts.date()} ~ {ap_end_ts.date()} ({ap_cur_days}일)",
     )
+    render_source_panel(["adprod", "adcount", "cattxn", "product"])
     with st.expander("ℹ️ 이 페이지의 데이터 기준 (판매액·카테고리 체계)", expanded=False):
         st.markdown(
             f"- **분류 체계:** 이 페이지의 대카테고리·중카테고리·브랜드명은 03페이지(태블로 기반, EP 비교)와 다른 "
@@ -3228,6 +3286,7 @@ elif menu == "상품군 효율":
             render_section_title(
                 f"실적 퍼널 (노출 → 클릭 → 구매)" + (f" · {ap_scope_note}" if ap_scope_note else "") + f" · {ap_mode}"
             )
+        st.caption(src_tag("adprod"))
         with ap_title_pill_col:
             st.markdown("<div style='margin-top:26px'></div>", unsafe_allow_html=True)
             with st.container(key="pill_ap_diag_metric"):
@@ -3355,6 +3414,7 @@ elif menu == "상품군 효율":
         # (03페이지와 같은 카테고리 체계·상품명 데이터 — 이 페이지 위·아래의 NBOS 대/중카테고리와는 별개)
         # ══════════════════════════════════════════════════════════
         render_section_title("카테고리별 거래액 현황 · 클릭하면 상위 상품 TOP10")
+        st.caption(src_tag("cattxn", "product"))
         st.caption(
             "ℹ️ 이 섹션은 03페이지와 같은 카테고리 체계(태블로 기반)와 상품명 데이터를 씁니다 — 이 페이지 다른 영역의 "
             "NBOS 대/중카테고리와 직접 매핑되지 않아요. 표에서 카테고리 행을 클릭하면 아래에 그 카테고리의 "
@@ -3402,8 +3462,8 @@ elif menu == "상품군 효율":
             ap_cs_sel_cat = ap_cs_table.iloc[ap_cs_sel_idx]["카테고리"]
             ap_cs_cat_filter = "전체" if ap_cs_sel_cat == "합계(전체)" else ap_cs_sel_cat
             st.caption(
-                f"📅 집계기간 {ap_cs_start.date()} ~ {ap_cs_end.date()} · {ap_mode} 기준 · 카테고리 데이터는 2일 전 실적까지 반영 "
-                f"(최신일자: {CATTXN_MAX_DATE}) · 합계 거래액 = 쇼핑검색광고 + EP채널"
+                f"📅 집계기간 {ap_cs_start.date()} ~ {ap_cs_end.date()} · {ap_mode} 기준 · 카테고리 데이터는 1일 전 실적까지 반영 "
+                f"(최신일자: {CATTXN_MAX_DATE}, 최근 1일(D-1) 데이터는 다음 날 보정될 수 있어요) · 합계 거래액 = 쇼핑검색광고 + EP채널"
             )
 
             st.markdown(f"**📦 {ap_cs_sel_cat} · 거래액 상위 10개 상품**")
@@ -3483,6 +3543,7 @@ elif menu == "상품군 효율":
 
     with p4_tabs[1]:
         render_section_title("랭킹 · 직전기간 대비 증감")
+        st.caption(src_tag("adprod"))
         ap_r1, ap_r2, ap_r3, ap_r4 = st.columns([2.2, 2.3, 1.9, 2.4])
         with ap_r1:
             ap_group_label = st.radio("기준", ["대카테고리", "중카테고리", "브랜드"], horizontal=True, key="adprod_group")
@@ -3593,6 +3654,7 @@ elif menu == "상품군 효율":
 
     with p4_tabs[2]:
         render_section_title("판매액 × ROAS 추이 · 카테고리별 흐름 지도")
+        st.caption(src_tag("adprod"))
         st.caption(
             "가로축은 판매액(일평균), 세로축은 ROAS예요. 점 하나가 한 구간(주/월)이고 선이 시간 흐름이며, 가장 큰 점이 "
             "최근 구간입니다. 오른쪽 위로 갈수록 규모와 효율이 함께 좋아지고, 점선 아래는 ROAS 700% 미만이에요."
@@ -3750,6 +3812,7 @@ elif menu == "상품군 효율":
         # 광고비 조정 후보 — 줄일 후보(저효율) / 늘릴 후보(고효율)
         # ══════════════════════════════════════════════════════════
         render_section_title("광고비 조정 후보 · 줄일 후보 / 늘릴 후보")
+        st.caption(src_tag("adprod"))
         if ap_cur_days < 7:
             st.info(
                 f"현재 집계기간이 {ap_cur_days}일이라 취소·반품이 몰린 날의 영향으로 효율이 실제보다 나쁘게 보일 수 있어요. "
@@ -3905,6 +3968,7 @@ elif menu == "상품군 효율":
     # ════════════════════════════════════════════════════════════════
     with p4_tabs[5]:
         render_section_title("노출·클릭 변화 분해 (어디서, 왜 늘고 줄었나)")
+        st.caption(src_tag("adprod", "adcount"))
         ex_opts = {lbl: pr for lbl, pr in ap_comp_periods.items() if pr[0] <= pr[1]}
         if not ex_opts:
             st.info("비교할 수 있는 이전 기간이 없습니다.")
