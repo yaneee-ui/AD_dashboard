@@ -1234,6 +1234,12 @@ elif menu == "전년비교":
         if ev_b_label is not None:
             ev_row_b = ev_cal.iloc[ev_labels.index(ev_b_label)]
             ev_same_slot = ev_cal[(ev_cal["연도"] == ev_row_b["연도"] - 1) & (ev_cal["월"] == ev_row_b["월"])]
+            # 달력에 '전년비교행사'가 적혀 있으면(같은 달에 행사가 둘 이상인 경우 등) 그 전년 행사를 우선 비교 대상으로 쓴다
+            if "전년비교행사" in ev_cal.columns and pd.notna(ev_row_b.get("전년비교행사")):
+                ev_pref = ev_cal[(ev_cal["연도"] == ev_row_b["연도"] - 1) & (ev_cal["행사명"] == ev_row_b["전년비교행사"])]
+                if not ev_pref.empty:
+                    ev_same_slot = ev_pref
+                    st.caption(f"ℹ️ 행사 달력에서 이 행사의 전년 비교 대상으로 '{ev_row_b['전년비교행사']}'(전년)이 지정돼 있어 기본값으로 골랐어요.")
             ev_default_a_idx = (
                 int(ev_same_slot.index[0]) if not ev_same_slot.empty else max(ev_labels.index(ev_b_label) - 1, 0)
             )
