@@ -178,10 +178,51 @@ def load_event_calendar() -> pd.DataFrame:
     return df.sort_values(["연도", "월"]).reset_index(drop=True)
 
 
-def event_period_metrics(df: pd.DataFrame, start, end) -> dict:
-    """구간(start~end)의 지표. 합계 지표(거래액·광고비·UV·결제고객수 등)는 데이터가 있는 일수로 나눈
-    일평균, 비율 지표(ROAS·CTR·CR·객단가 등)는 구간 전체 분자/분모로 재계산한 값. 데이터가 없으면 None."""
-    view = df[(df["date"] >= pd.Timestamp(start)) & (df["date"] <= pd.Timestamp(end))]
+_WD_KR = "월화수목금토일"
+
+
+def resolve_event_days(have, range_a, range_b, mode: str = "진행일"):
+    """행사 비교에서 '어느 날짜끼리' 비교할지 정한다 (EP 대시보드 행사 기간 비교와 같은 방식).
+    반환: (A 날짜 리스트, B 날짜 리스트). have: 데이터가 있는 날짜(Timestamp) 집합 — B는 데이터가 있는 날만 쓴다.
+    - 진행일: 행사 시작일부터 N일차끼리. B가 n일이면 A도 앞에서 n일(1일차=1일차).
+    - 동요일: 같은 요일끼리. B의 k번째 '월요일'은 A의 k번째 '월요일'과 짝짓고, 짝이 없는 날은 양쪽 다 뺀다
+      (예: 올해 월~월 / 작년 금~금 행사면 월~목은 작년 월~목, 금~일은 작년 금~일과 비교)."""
+    all_a = [d for d in pd.date_range(pd.Timestamp(range_a[0]), pd.Timestamp(range_a[1])) if d in have]
+    days_b = [d for d in pd.date_range(pd.Timestamp(range_b[0]), pd.Timestamp(range_b[1])) if d in have]
+    if mode == "동요일":
+        by_wd = {}
+        for d in all_a:
+            by_wd.setdefault(d.weekday(), []).append(d)
+        seen, pa, pb = {}, [], []
+        for d in days_b:
+            k = seen.get(d.weekday(), 0)
+            seen[d.weekday()] = k + 1
+            lst = by_wd.get(d.weekday(), [])
+            if k < len(lst):
+                pa.append(lst[k])
+                pb.append(d)
+        return pa, pb
+    return all_a[:len(days_b)], days_b
+
+
+def describe_event_pairs(days_a, days_b, mode: str, limit: int = 8) -> str:
+    """대응 날짜를 사람이 읽는 문장으로 (예: '1일차 11/2(월) ↔ 11/21(금)'). 이번 ↔ 비교 순서."""
+    def f(d):
+        return f"{d.month}/{d.day}({_WD_KR[d.weekday()]})"
+    parts = []
+    for i, (a, b) in enumerate(zip(days_a, days_b)):
+        head = f"{i + 1}일차 " if mode != "동요일" else ""
+        parts.append(f"{head}{f(b)} ↔ {f(a)}")
+    shown = parts[:limit]
+    if len(parts) > limit:
+        shown.append(f"외 {len(parts) - limit}일")
+    return " · ".join(shown)
+
+
+def event_days_metrics(df: pd.DataFrame, days) -> dict:
+    """비교에 쓰는 날짜 목록(days)의 지표. 합계 지표(거래액·광고비·UV·결제고객수 등)는 그 날짜 수로 나눈
+    일평균, 비율 지표(ROAS·CTR·CR·객단가 등)는 전체 분자/분모로 재계산한 값. 데이터가 없으면 None."""
+    view = df[df["date"].isin(list(days))]
     if view.empty:
         return None
     ndays = view["date"].nunique()
@@ -193,11 +234,11 @@ def event_period_metrics(df: pd.DataFrame, start, end) -> dict:
     return out
 
 
-def event_category_compare(cattxn: pd.DataFrame, range_a, range_b, channel: str = "합계") -> pd.DataFrame:
-    """카테고리별 거래액을 두 구간(일평균)으로 비교. channel: '쇼핑검색광고' | 'EP채널' | '합계'.
-    구간이 데이터 범위를 벗어나면 데이터가 있는 날짜까지만 쓴다."""
-    def _per_day(rng):
-        view = cattxn[(cattxn["date"] >= pd.Timestamp(rng[0])) & (cattxn["date"] <= pd.Timestamp(rng[1]))]
+def event_category_compare(cattxn: pd.DataFrame, days_a, days_b, channel: str = "합계") -> pd.DataFrame:
+    """카테고리별 거래액을 두 날짜 목록(일평균)으로 비교. channel: '쇼핑검색광고' | 'EP채널' | '합계'.
+    days_a/days_b는 resolve_event_days()로 짝지은 비교 날짜(진행일/동요일 기준)."""
+    def _per_day(days):
+        view = cattxn[cattxn["date"].isin(list(days))]
         if view.empty:
             return pd.Series(dtype=float), 0
         ndays = view["date"].nunique()
@@ -209,13 +250,52 @@ def event_category_compare(cattxn: pd.DataFrame, range_a, range_b, channel: str 
             val = view["ad_거래액"] + view["ep_거래액"]
         return val.groupby(view["category"]).sum() / ndays, ndays
 
-    a, na = _per_day(range_a)
-    b, nb = _per_day(range_b)
+    a, na = _per_day(days_a)
+    b, nb = _per_day(days_b)
     out = pd.DataFrame({"A": a, "B": b}).fillna(0.0)
     out["증감액"] = out["B"] - out["A"]
     out["증감률"] = out.apply(lambda r: (r["B"] / r["A"] - 1) * 100 if r["A"] else None, axis=1)
     out.attrs["ndays"] = (na, nb)
     return out.reset_index(names="category").sort_values("B", ascending=False).reset_index(drop=True)
+
+
+def event_breakdown_compare(df: pd.DataFrame, days_a, days_b, group_cols, channel: str = "합계",
+                            txn_type: str = "전체") -> pd.DataFrame:
+    """두 날짜 목록(일평균)을 group_cols 단위(예: ['txn_type'], ['category'], ['brand'],
+    ['category','brand'], ['product_name','brand'])로 비교해 '어디서 늘고 빠졌는지' 보여준다.
+    df는 category_brand_txn_daily 또는 product_txn_daily. txn_type='정상'|'이월'|'입점'이면 그 구분만.
+    열: group_cols + A(비교기간 일평균) / B(이번 일평균) / 증감액 / 증감률 / 기여도(전체 순증감 대비 %p, 하락 기여는 음수).
+    attrs: ndays=(na, nb), total=(A합, B합)."""
+    group_cols = list(group_cols)
+    scope = df if txn_type == "전체" else df[df["txn_type"] == txn_type]
+
+    def _per_day(days):
+        view = scope[scope["date"].isin(list(days))]
+        if view.empty:
+            return pd.Series(dtype=float), 0
+        ndays = view["date"].nunique()
+        if channel == "쇼핑검색광고":
+            val = view["ad_거래액"]
+        elif channel == "EP채널":
+            val = view["ep_거래액"]
+        else:
+            val = view["ad_거래액"] + view["ep_거래액"]
+        return val.groupby([view[c] for c in group_cols]).sum() / ndays, ndays
+
+    a, na = _per_day(days_a)
+    b, nb = _per_day(days_b)
+    out = pd.DataFrame({"A": a, "B": b}).fillna(0.0)
+    out["증감액"] = out["B"] - out["A"]
+    out["증감률"] = out.apply(lambda r: (r["B"] / r["A"] - 1) * 100 if r["A"] else None, axis=1)
+    total_a, total_b = float(out["A"].sum()), float(out["B"].sum())
+    net = total_b - total_a
+    # 기여도: 이 항목의 증감액이 전체 증감(A합 기준)에서 차지하는 %p — 합하면 전체 증감률이 된다
+    out["기여도"] = out["증감액"] / total_a * 100 if total_a else None
+    out = out.reset_index().sort_values("증감액").reset_index(drop=True)
+    out.attrs["ndays"] = (na, nb)
+    out.attrs["total"] = (total_a, total_b)
+    out.attrs["net"] = net
+    return out
 
 
 def yoy_same_weekday_dates(target_dates: pd.Series) -> pd.Series:

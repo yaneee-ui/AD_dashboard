@@ -19,7 +19,8 @@ from utils import (
     AD_PRODUCT_OWN_OPTIONS, AD_PRODUCT_BASE_METRICS,
     CATTXN_TXN_TYPE_OPTIONS, CATTXN_CHANNEL_OPTIONS, CATTXN_METRIC_OPTIONS,
     load_product_txn_data, top_products_by_revenue, brand_label,
-    load_event_calendar, event_period_metrics, event_category_compare, EVENT_AVG_METRICS,
+    load_event_calendar, event_days_metrics, event_category_compare, event_breakdown_compare, EVENT_AVG_METRICS,
+    resolve_event_days, describe_event_pairs,
     top_products_excel_bytes, brand_ad_ep_response, AD_RESPONSE_CLASSES, NEW_PCT, ad_product_flow_points,
 )
 from styles import (
@@ -1274,6 +1275,13 @@ elif menu == "전년비교":
                 key=f"event_range_b::{ev_b_label}",
             )
 
+        ev_cmp_label = st.radio(
+            "비교 기준", ["행사 진행일 (N일차끼리)", "동요일 (같은 요일끼리)"], horizontal=True, key="event_cmp_mode",
+            help="행사 진행일: 행사 첫날부터 1일차·2일차…끼리 비교해요(보통은 이 기준). "
+                 "동요일: 행사 시작 요일이 작년과 다를 때(예: 올해 월~월 / 작년 금~금) 같은 요일끼리 맞춰 비교해요.",
+        )
+        ev_cmp_mode = "동요일" if ev_cmp_label.startswith("동요일") else "진행일"
+
         if not (isinstance(ev_a_in, tuple) and len(ev_a_in) == 2 and isinstance(ev_b_in, tuple) and len(ev_b_in) == 2):
             st.info("두 기간 모두 시작일~종료일을 선택해주세요.")
         else:
@@ -1281,23 +1289,47 @@ elif menu == "전년비교":
             ev_range_b = (pd.Timestamp(ev_b_in[0]), pd.Timestamp(ev_b_in[1]))
             ev_label_a = ev_a_label.split(" · ")[0] if ev_a_label else "비교 기간"
             ev_label_b = ev_b_label.split(" · ")[0] if ev_b_label else "이번 기간"
-            ev_m_a = event_period_metrics(df, *ev_range_a)
-            ev_m_b = event_period_metrics(df, *ev_range_b)
+            ev_have = set(pd.to_datetime(df["date"].unique()))
+            ev_days_a, ev_days_b = resolve_event_days(ev_have, ev_range_a, ev_range_b, ev_cmp_mode)
+            ev_m_a = event_days_metrics(df, ev_days_a)
+            ev_m_b = event_days_metrics(df, ev_days_b)
+
+            def _fmt_ev_days(ds):
+                """실제로 비교에 쓰는 날짜를 짧게: 이어진 날짜는 '11/21~11/23', 아니면 '11/24, 11/25'."""
+                if not ds:
+                    return "-"
+                contig = all((ds[i + 1] - ds[i]).days == 1 for i in range(len(ds) - 1))
+                if contig and len(ds) > 1:
+                    return f"{ds[0]:%Y-%m-%d}~{ds[-1]:%m-%d} ({len(ds)}일)"
+                return ", ".join(f"{d:%m/%d}" for d in ds) + f" ({len(ds)}일)"
 
             if ev_m_a is None or ev_m_b is None:
                 st.warning("선택한 기간 중 데이터가 없는 구간이 있습니다.")
             else:
                 st.markdown(
                     f"<div style='background:#F8FAFC;border:1px solid #E5E9F0;border-radius:8px;padding:10px 14px;margin:8px 0;'>"
-                    f"<div style='font-size:0.85rem;'>📅 <b>{ev_label_a}</b> {ev_a_in[0]}~{ev_a_in[1]} ({ev_m_a['_ndays']}일)"
-                    f" &nbsp;vs&nbsp; <b>{ev_label_b}</b> {ev_b_in[0]}~{ev_b_in[1]} ({ev_m_b['_ndays']}일)</div>"
-                    f"<div style='font-size:0.76rem;color:#6B7280;margin-top:3px;'>거래액·광고비·UV·결제고객수는 일평균, "
-                    f"ROAS·CTR·CR·객단가는 구간 전체 분자/분모로 다시 계산한 값입니다 — 두 구간 길이가 달라도 비교됩니다.</div></div>",
+                    f"<div style='font-size:0.85rem;'>📅 <b>{ev_label_b}</b> {_fmt_ev_days(ev_days_b)}"
+                    f" &nbsp;vs&nbsp; <b>{ev_label_a}</b> {_fmt_ev_days(ev_days_a)}"
+                    f" &nbsp;·&nbsp; <b>{'동요일' if ev_cmp_mode == '동요일' else '행사 진행일'}</b> 기준 {ev_m_b['_ndays']}일 비교</div>"
+                    f"<div style='font-size:0.76rem;color:#6B7280;margin-top:3px;'>선택한 기간: 이번 {ev_b_in[0]}~{ev_b_in[1]} · "
+                    f"비교 {ev_a_in[0]}~{ev_a_in[1]} 중 위 날짜만 사용</div>"
+                    f"<div style='font-size:0.76rem;color:#6B7280;margin-top:3px;'>대응 날짜(이번 ↔ 비교): "
+                    f"{describe_event_pairs(ev_days_a, ev_days_b, ev_cmp_mode)}</div>"
+                    f"<div style='font-size:0.76rem;color:#6B7280;margin-top:3px;'>거래액·광고비·UV·결제고객수는 일평균(비교한 날짜의 합계 ÷ 일수), "
+                    f"ROAS·CTR·CR·객단가는 비교한 날짜 전체의 분자/분모로 다시 계산한 값입니다.</div></div>",
                     unsafe_allow_html=True,
                 )
-                if ev_m_a["_ndays"] != ev_m_b["_ndays"]:
-                    st.caption(f"⚠️ 두 기간 일수가 달라요 ({ev_m_a['_ndays']}일 vs {ev_m_b['_ndays']}일) — "
-                               "행사 초반/후반에 매출이 몰리면 일평균도 영향을 받으니 참고하세요.")
+                if ev_cmp_mode == "동요일":
+                    ev_dropped = [d for d in pd.date_range(ev_range_b[0], ev_range_b[1])
+                                  if d in ev_have and d not in set(ev_days_b)]
+                    if ev_dropped:
+                        st.caption(
+                            "ℹ️ 같은 요일 짝이 없어서 비교에서 뺀 이번 기간 날짜: "
+                            + ", ".join(f"{d.month}/{d.day}({'월화수목금토일'[d.weekday()]})" for d in ev_dropped)
+                        )
+                elif ev_m_a["_ndays"] != ev_m_b["_ndays"]:
+                    st.caption(f"⚠️ 비교 기간이 이번 기간보다 짧아요 ({ev_m_a['_ndays']}일 vs {ev_m_b['_ndays']}일) — "
+                               "있는 날짜까지만 비교해요.")
 
                 ev_card_metrics = ["거래액", "광고비", "ROAS", "CTR", "CR", "객단가", "UV", "결제고객수"]
 
@@ -1318,21 +1350,22 @@ elif menu == "전년비교":
                     "지표", WIDE_YOY_METRICS, index=WIDE_YOY_METRICS.index("거래액"),
                     horizontal=True, key="event_metric",
                 )
-                ev_va = df[(df["date"] >= ev_range_a[0]) & (df["date"] <= ev_range_a[1])].sort_values("date")
-                ev_vb = df[(df["date"] >= ev_range_b[0]) & (df["date"] <= ev_range_b[1])].sort_values("date")
+                ev_series = df.set_index("date")[ev_metric]
                 ev_is_m = ev_metric in MILLION_SCALE_METRICS
                 fig_ev = go.Figure()
-                for _v, _lbl, _color in [(ev_va, ev_label_a, "#93C5FD"), (ev_vb, ev_label_b, "#2563EB")]:
-                    _y = _to_million(_v[ev_metric].tolist()) if ev_is_m else _v[ev_metric].tolist()
+                for _days, _lbl, _color in [(ev_days_a, ev_label_a, "#93C5FD"), (ev_days_b, ev_label_b, "#2563EB")]:
+                    _vals = [ev_series.get(d) for d in _days]
+                    _y = _to_million(_vals) if ev_is_m else _vals
                     fig_ev.add_trace(go.Scatter(
-                        x=list(range(1, len(_v) + 1)), y=_y, mode="lines+markers", name=_lbl,
+                        x=list(range(1, len(_days) + 1)), y=_y, mode="lines+markers", name=_lbl,
                         line=dict(width=2, color=_color),
-                        customdata=_v["date"].dt.strftime("%m/%d (%a)").tolist(),
-                        hovertemplate="%{x}일차 · %{customdata}<br>%{y:,.2f}<extra>" + _lbl + "</extra>",
+                        customdata=[f"{d:%m/%d}({'월화수목금토일'[d.weekday()]})" for d in _days],
+                        hovertemplate="%{x}번째 · %{customdata}<br>%{y:,.2f}<extra>" + _lbl + "</extra>",
                     ))
                 fig_ev.update_layout(
                     height=380, margin=dict(t=20, b=20, l=10, r=10),
-                    xaxis=dict(title="행사 N일차", dtick=1), yaxis=_money_axis(ev_metric, ev_is_m),
+                    xaxis=dict(title="행사 N일차" if ev_cmp_mode == "진행일" else "대응 순서 (같은 요일끼리)", dtick=1),
+                    yaxis=_money_axis(ev_metric, ev_is_m),
                     hovermode="closest", dragmode="pan",
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
                 )
@@ -1365,7 +1398,10 @@ elif menu == "전년비교":
                 ev_channel = st.radio(
                     "채널", ["합계", "쇼핑검색광고", "EP채널"], horizontal=True, key="event_cat_channel",
                 )
-                ev_cat = event_category_compare(cattxn_df, ev_range_a, ev_range_b, ev_channel)
+                ev_cat_days_a, ev_cat_days_b = resolve_event_days(
+                    set(pd.to_datetime(cattxn_df["date"].unique())), ev_range_a, ev_range_b, ev_cmp_mode,
+                )
+                ev_cat = event_category_compare(cattxn_df, ev_cat_days_a, ev_cat_days_b, ev_channel)
                 if ev_cat.empty or not ev_cat.attrs.get("ndays", (0, 0))[0] or not ev_cat.attrs["ndays"][1]:
                     st.info("카테고리 데이터가 없는 구간이 있어 비교할 수 없습니다.")
                 else:
@@ -1400,6 +1436,133 @@ elif menu == "전년비교":
                         f"집계일수 {ev_label_a} {ev_na}일 / {ev_label_b} {ev_nb}일 · "
                         "📁 데이터 출처: category_brand_txn_daily.csv (위 지표 카드의 태블로 원본과는 별도 집계)"
                     )
+
+                # ── 어디서 빠졌나: 정상/이월/입점 · 카테고리 · 브랜드 · 상품 분해 ──
+                if ev_cat_days_a and ev_cat_days_b:
+                    render_section_title("🔍 어디서 늘고 빠졌나 (정상/이월/입점 · 카테고리 · 브랜드 · 상품)")
+                    st.caption(
+                        f"위와 같은 비교 기준·날짜({ev_label_b} vs {ev_label_a}), 채널 '{ev_channel}'로 일평균 거래액을 쪼개 봅니다. "
+                        "기여도는 전체 거래액(비교 기간 일평균) 대비 그 항목의 증감액이 몇 %p인지예요 — 항목별 기여도를 모두 더하면 전체 증감률이 됩니다."
+                    )
+                    ev_bd_total = event_breakdown_compare(cattxn_df, ev_cat_days_a, ev_cat_days_b, ["txn_type"], ev_channel)
+                    ev_tot_a, ev_tot_b = ev_bd_total.attrs["total"]
+
+                    def _bd_fmt(frame, name_cols, name_labels):
+                        t = pd.DataFrame({lbl: frame[c] if c != "brand" else frame[c].map(brand_label)
+                                          for c, lbl in zip(name_cols, name_labels)})
+                        t[f"{ev_label_a} (일평균)"] = frame["A"].apply(lambda v: f"{v:,.0f}")
+                        t[f"{ev_label_b} (일평균)"] = frame["B"].apply(lambda v: f"{v:,.0f}")
+                        t["증감액(일평균)"] = frame["증감액"].apply(lambda v: f"{v:+,.0f}")
+                        t["증감률"] = frame["증감률"].apply(format_delta_text)
+                        t["기여도"] = frame["기여도"].apply(lambda v: "-" if pd.isna(v) else f"{v:+.1f}%p")
+                        return t
+
+                    ev_bd_total = ev_bd_total.sort_values("B", ascending=False).reset_index(drop=True)
+                    st.markdown("**① 정상 / 이월 / 입점별**")
+                    ev_t1 = _bd_fmt(ev_bd_total, ["txn_type"], ["구분"])
+                    st.dataframe(
+                        ev_t1.style.map(delta_cell_style, subset=["증감률"]),
+                        use_container_width=True, hide_index=True, height=35 * (len(ev_t1) + 1) + 3,
+                    )
+
+                    st.markdown("**② 카테고리 · 브랜드별 (구분을 골라 좁혀볼 수 있어요)**")
+                    bd1, bd2, bd3 = st.columns([1.4, 1.6, 1.2])
+                    with bd1:
+                        ev_bd_txn = st.radio("구분", ["전체", "정상", "이월", "입점"], horizontal=True, key="event_bd_txn")
+                    with bd2:
+                        ev_bd_level_label = st.radio(
+                            "단위", ["카테고리", "브랜드", "카테고리 × 브랜드"], horizontal=True, key="event_bd_level",
+                        )
+                    with bd3:
+                        ev_bd_dir = st.radio("보기", ["감소만", "증가만", "전체"], horizontal=True, key="event_bd_dir")
+                    ev_bd_cols = {"카테고리": ["category"], "브랜드": ["brand"],
+                                  "카테고리 × 브랜드": ["category", "brand"]}[ev_bd_level_label]
+                    ev_bd_names = {"category": "카테고리", "brand": "브랜드"}
+                    ev_bd = event_breakdown_compare(cattxn_df, ev_cat_days_a, ev_cat_days_b, ev_bd_cols, ev_channel, ev_bd_txn)
+                    bd_a, bd_b = ev_bd.attrs["total"]
+                    if ev_bd.empty or not bd_a:
+                        st.info("조건에 맞는 데이터가 없습니다.")
+                    else:
+                        bd_net = bd_b - bd_a
+                        ev_down_sum = ev_bd.loc[ev_bd["증감액"] < 0, "증감액"].sum()
+                        ev_up_sum = ev_bd.loc[ev_bd["증감액"] > 0, "증감액"].sum()
+                        render_insight_box(
+                            [
+                                f"{ev_bd_txn} 합계 일평균 거래액 {bd_a:,.0f} → {bd_b:,.0f} "
+                                f"(**{bd_net:+,.0f}**, {format_delta_text(pct_change(bd_b, bd_a))})",
+                                f"📉 줄어든 항목들의 감소분 합계 {ev_down_sum:,.0f} · 📈 늘어난 항목들의 증가분 합계 {ev_up_sum:+,.0f}",
+                            ],
+                            title=f"{ev_bd_txn} · {ev_bd_level_label} 기준",
+                        )
+                        if ev_bd_dir == "감소만":
+                            ev_bd_view = ev_bd[ev_bd["증감액"] < 0].sort_values("증감액")
+                        elif ev_bd_dir == "증가만":
+                            ev_bd_view = ev_bd[ev_bd["증감액"] > 0].sort_values("증감액", ascending=False)
+                        else:
+                            ev_bd_view = ev_bd.sort_values("B", ascending=False)
+                        ev_bd_view = ev_bd_view[ev_bd_view["증감액"].abs() >= 0.5] if ev_bd_dir != "전체" else ev_bd_view
+                        if ev_bd_view.empty:
+                            st.info(f"'{ev_bd_dir}'에 해당하는 항목이 없습니다.")
+                        else:
+                            ev_t2 = _bd_fmt(ev_bd_view, ev_bd_cols, [ev_bd_names[c] for c in ev_bd_cols])
+                            st.dataframe(
+                                ev_t2.style.map(delta_cell_style, subset=["증감률"]),
+                                use_container_width=True, hide_index=True,
+                                height=min(35 * (len(ev_t2) + 1) + 3, 520),
+                            )
+                            st.download_button(
+                                "📥 Excel 다운로드", data=to_excel_bytes(ev_t2),
+                                file_name=f"행사비교_{ev_bd_txn}_{ev_bd_level_label}_{ev_b_in[0]}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                key="dl_event_breakdown",
+                            )
+                        st.caption(
+                            "'증감률' 이 '-' 인 항목은 비교 기간에 거래액이 없던 신규 항목이에요. 이월·정상 구분은 브랜드/카테고리 단위로 달라질 수 있어 "
+                            "구분을 바꿔가며 같이 보세요."
+                        )
+
+                    st.markdown("**③ 상품별 (상품 RAW)**")
+                    if product_txn_df is None:
+                        st.info("상품 RAW 파일이 없어 상품 단위는 볼 수 없습니다.")
+                    else:
+                        ev_pr_days_a, ev_pr_days_b = resolve_event_days(
+                            set(pd.to_datetime(product_txn_df["date"].unique())), ev_range_a, ev_range_b, ev_cmp_mode,
+                        )
+                        # 상품 RAW는 2026년부터라, 비교 기간이 전부 그 안에 있어야 두 구간을 똑같이 비교할 수 있다
+                        if (not ev_pr_days_a or len(ev_pr_days_a) != len(ev_cat_days_a)
+                                or len(ev_pr_days_b) != len(ev_cat_days_b)):
+                            st.info(
+                                f"상품 RAW는 {PRODUCT_TXN_MIN_DATE}부터 {PRODUCT_TXN_MAX_DATE}까지만 있어 이 비교 기간 전체를 상품 단위로 "
+                                "맞출 수 없어요(전년 행사 등은 위 ①②의 카테고리·브랜드 단위로 확인). "
+                                "올해 안의 두 행사를 비교하면 상품 단위도 볼 수 있어요."
+                            )
+                        else:
+                            ev_pr_txn = st.radio("구분", ["전체", "정상", "이월", "입점"], horizontal=True, key="event_pr_txn")
+                            ev_pr = event_breakdown_compare(
+                                product_txn_df, ev_pr_days_a, ev_pr_days_b,
+                                ["product_name", "brand", "category"], ev_channel, ev_pr_txn,
+                            )
+                            ev_pr_n = st.slider("표시 개수", 5, 50, 20, key="event_pr_n")
+                            ev_pr_dir = st.radio("보기 ", ["감소 상위", "증가 상위"], horizontal=True, key="event_pr_dir")
+                            ev_pr_view = (
+                                ev_pr[ev_pr["증감액"] < 0].sort_values("증감액") if ev_pr_dir == "감소 상위"
+                                else ev_pr[ev_pr["증감액"] > 0].sort_values("증감액", ascending=False)
+                            ).head(ev_pr_n)
+                            if ev_pr_view.empty:
+                                st.info("해당하는 상품이 없습니다.")
+                            else:
+                                ev_t3 = _bd_fmt(ev_pr_view, ["product_name", "brand", "category"], ["상품명", "브랜드", "카테고리"])
+                                st.dataframe(
+                                    ev_t3.style.map(delta_cell_style, subset=["증감률"]),
+                                    use_container_width=True, hide_index=True,
+                                    height=min(35 * (len(ev_t3) + 1) + 3, 560),
+                                )
+                                st.download_button(
+                                    "📥 Excel 다운로드", data=to_excel_bytes(ev_t3),
+                                    file_name=f"행사비교_상품_{ev_b_in[0]}.xlsx",
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                    key="dl_event_product",
+                                )
 
 
 # ════════════════════════════════════════════════════════════════
