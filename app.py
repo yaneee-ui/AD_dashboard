@@ -4066,6 +4066,14 @@ elif menu == "상품군 효율":
                         lines.append(
                             f"판매액 일평균 {sal_a:,.0f} → {sal_b:,.0f} (**{sal_b - sal_a:+,.0f}**, {format_delta_text(pct_change(sal_b, sal_a))})"
                         )
+                    cost_a, cost_b = ex["광고비_전"].sum(), ex["광고비_후"].sum()
+                    roas_a = (sal_a / cost_a) if cost_a > 0 else None
+                    roas_b = (sal_b / cost_b) if cost_b > 0 else None
+                    if roas_a is not None and roas_b is not None:
+                        lines.append(
+                            f"💰 광고비 일평균 {cost_a:,.0f} → {cost_b:,.0f} ({format_delta_text(pct_change(cost_b, cost_a))}) · "
+                            f"ROAS {roas_a * 100:,.0f}% → {roas_b * 100:,.0f}% ({format_delta_text(pct_change(roas_b, roas_a))})"
+                        )
                     drop = ex[ex["대상증감"] < 0].head(3)
                     rise = ex[ex["대상증감"] > 0].sort_values("대상증감", ascending=False).head(3)
                     if not drop.empty:
@@ -4083,6 +4091,15 @@ elif menu == "상품군 효율":
                             f"🧮 {ex_unit_word} 증감 {_d_total:+,.0f} = {ex_count_label} 변화 몫 **{eff_n:+,.0f}** + 상품 1개당 {ex_unit_word} 변화 몫 **{eff_i:+,.0f}** "
                             f"({ex_group_label}별 몫을 합친 값 · 전체 {ex_count_label}는 일평균 {n_a:,.0f}개 → {n_b:,.0f}개)"
                         )
+                    # 효율화가 필요한 곳: 광고비는 늘었는데 ROAS가 떨어진 항목 (광고비 증가액 큰 순)
+                    _bad = ex[(ex["광고비증감"] > 0)
+                              & (ex["광고비_전"] > 0)
+                              & ((ex["광고비_후"] / ex["광고비_전"] - 1) * 100 > 5)
+                              & (ex["ROAS_후"] < ex["ROAS_전"] * 0.95)].sort_values("광고비증감", ascending=False).head(3)
+                    if not _bad.empty:
+                        lines.append("🔴 **효율화 필요**(광고비↑ ROAS↓): " + " · ".join(
+                            f"**{_ex_nm(r[ex_group_col])}** 광고비 {r['광고비증감']:+,.0f} · ROAS {r['ROAS_전'] * 100:,.0f}%→{r['ROAS_후'] * 100:,.0f}%"
+                            for _, r in _bad.iterrows()))
                     render_insight_box(lines, title=f"{ex_label} 기준 · {ex_group_label}별 · {ex_unit_word} · {own_val}")
 
                     view = ex.copy()
@@ -4116,6 +4133,39 @@ elif menu == "상품군 효율":
                         tbl[f"{ex_unit_word}(일평균)"] = [_arrow(a, b, _fmt0) for a, b in zip(view["대상_전"], view["대상_후"])]
                         tbl[f"{ex_unit_word} 증감"] = view["대상증감"].apply(lambda v: f"{v:+,.0f}")
                         tbl[f"{ex_unit_word} 기여도"] = view["대상기여도"].apply(lambda v: "-" if pd.isna(v) else f"{v:+.1f}%p")
+                        def _eff_signal(r):
+                            """광고비·ROAS 방향으로 본 효율 신호 (±5% 초과를 변화로 봄)."""
+                            ca, cb, ra, rb = r["광고비_전"], r["광고비_후"], r["ROAS_전"], r["ROAS_후"]
+                            if pd.isna(ra) or pd.isna(rb) or ca <= 0 or cb <= 0:
+                                return "-"
+                            if ra <= 0:
+                                return "-"
+                            c_pct = (cb / ca - 1) * 100
+                            r_pct = (rb / ra - 1) * 100
+                            if c_pct > 5 and r_pct < -5:
+                                return "🔴 광고비↑ ROAS↓ (효율화 필요)"
+                            if c_pct > 5:
+                                return "🟢 광고비↑ ROAS 유지·↑ (확대 양호)"
+                            if c_pct < -5 and r_pct < -5:
+                                return "🟡 광고비↓ ROAS↓ (점검)"
+                            if c_pct < -5:
+                                return "🔵 광고비↓ ROAS 유지·↑ (효율화 진행)"
+                            if r_pct < -5:
+                                return "🟠 광고비 유지 ROAS↓ (점검)"
+                            if r_pct > 5:
+                                return "🟢 광고비 유지 ROAS↑"
+                            return "⚫ 변화 미미"
+
+                        def _roas_txt(v):
+                            return "-" if pd.isna(v) else f"{v * 100:,.0f}%"
+
+                        tbl["광고비(일평균)"] = [_arrow(a, b, _fmt0) for a, b in zip(view["광고비_전"], view["광고비_후"])]
+                        tbl["광고비 증감률"] = [format_delta_text(pct_change(b, a) if a > 0 else None)
+                                             for a, b in zip(view["광고비_전"], view["광고비_후"])]
+                        tbl["ROAS"] = [_arrow(a, b, _roas_txt) for a, b in zip(view["ROAS_전"], view["ROAS_후"])]
+                        tbl["ROAS 증감률"] = [format_delta_text(pct_change(b, a) if pd.notna(a) and pd.notna(b) and a > 0 else None)
+                                           for a, b in zip(view["ROAS_전"], view["ROAS_후"])]
+                        tbl["효율 신호"] = view.apply(_eff_signal, axis=1)
                         if ex_target != "노출":
                             tbl["노출(일평균)"] = [_arrow(a, b, _fmt0) for a, b in zip(view["노출수_전"], view["노출수_후"])]
                         if ex_target != "클릭":
@@ -4137,8 +4187,10 @@ elif menu == "상품군 효율":
 
                         sign_cols = [c for c in [f"{ex_unit_word} 증감", f"{ex_unit_word} 기여도", "상품수 몫", f"상품당{ex_unit_word} 몫"]
                                      if c in tbl.columns]
-                        st.dataframe(tbl.style.map(_sign_color, subset=sign_cols), use_container_width=True, hide_index=True,
-                                     height=min(35 * (len(tbl) + 1) + 3, 560))
+                        st.dataframe(
+                            tbl.style.map(_sign_color, subset=sign_cols).map(delta_cell_style, subset=["ROAS 증감률"]),
+                            use_container_width=True, hide_index=True, height=min(35 * (len(tbl) + 1) + 3, 560),
+                        )
 
                         # 증감을 두 몫으로 쪼갠 막대 (상품수 데이터가 있으면), 없으면 증감만
                         chart_df = view.reindex(view["대상증감"].abs().sort_values(ascending=False).index).head(15).iloc[::-1]
@@ -4170,7 +4222,9 @@ elif menu == "상품군 효율":
                                 else "그 날 클릭이 발생한 서로 다른 상품코드 수")
                     st.caption(
                         f"📅 이번 {ap_start_ts.date()} ~ {ap_end_ts.date()} vs {ex_label} {ex_ps.date()} ~ {ex_pe.date()} · "
-                        f"{ex_unit_word}·{ex_count_label} 모두 일평균 · {ex_count_label} = {_cnt_def} · "
+                        f"{ex_unit_word}·{ex_count_label}·광고비 모두 일평균 · {ex_count_label} = {_cnt_def} · "
+                        "ROAS = 판매액(NBOS 매칭) ÷ 광고비, 광고비 일평균이 1,000원 미만이면 '-' · "
+                        "효율 신호는 광고비·ROAS의 ±5% 초과 변화로 판단한 참고용이에요(🔴 = 광고비는 늘었는데 ROAS가 떨어져 효율화가 필요한 곳) · "
                         f"분해식: {ex_unit_word} 증감 = (상품수 변화) × (이전 상품당 {ex_unit_word}) + (이번 상품수) × (상품당 {ex_unit_word} 변화) — 파란 막대는 "
                         f"'상품이 늘고 줄어서', 주황 막대는 '상품당 {ex_unit_word}이 달라져서' 생긴 변화예요. 이전/이번 기간에 상품이 없던 항목은 "
                         "전부 상품수 몫으로 봅니다."

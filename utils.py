@@ -1380,7 +1380,7 @@ def ad_exposure_breakdown(df: pd.DataFrame, count_df, group_col: str, cur_start,
                           own: str = "전체", large_cat: str = "전체", mid_cat: str = "전체",
                           metric: str = "노출수", count_col: str = "클릭상품수") -> pd.DataFrame:
     """그룹(대카테고리/중카테고리/브랜드명/자사/입점)별로 '노출·클릭이 왜 늘고 줄었는지' 쪼갠다 (일평균 기준).
-    열: 노출_전/후, 클릭_전/후, CTR_전/후, 상품수_전/후(데이터 없으면 NaN), 상품당노출_전/후,
+    열: 노출_전/후, 클릭_전/후, 판매액_전/후, 광고비_전/후, ROAS_전/후(판매액/광고비), CPC_전/후, 광고비증감, CTR_전/후, 상품수_전/후(데이터 없으면 NaN), 상품당노출_전/후,
         노출증감, 클릭증감, 노출기여도(%p, 전체 노출 증감률에 대한 기여),
         상품수효과·상품당노출효과(노출 증감을 '운영 상품수가 달라진 몫'과 '상품 1개당 노출이 달라진 몫'으로 분해, 합=노출증감).
     분해식: Δ노출 = (n후−n전)×(전 상품당노출) + n후×(후 상품당노출−전 상품당노출). 한쪽 기간에 상품이 없던 그룹은 전부 상품수 몫.
@@ -1391,7 +1391,7 @@ def ad_exposure_breakdown(df: pd.DataFrame, count_df, group_col: str, cur_start,
         scope = df[(df["date"] >= pd.Timestamp(start)) & (df["date"] <= pd.Timestamp(end))]
         scope = _ad_product_scope(scope, own, large_cat, mid_cat)
         nd = max(int(scope["date"].nunique()), 1)
-        g = scope.groupby(group_col)[["노출수", "클릭수", "판매액"]].sum() / nd
+        g = scope.groupby(group_col)[["노출수", "클릭수", "판매액", "광고비"]].sum() / nd
         n = pd.Series(dtype=float)
         if count_df is not None and count_col in count_df.columns:
             cs = count_df[(count_df["date"] >= pd.Timestamp(start)) & (count_df["date"] <= pd.Timestamp(end))]
@@ -1404,7 +1404,7 @@ def ad_exposure_breakdown(df: pd.DataFrame, count_df, group_col: str, cur_start,
     a, has_a = _period(prev_start, prev_end)
     b, has_b = _period(cur_start, cur_end)
     out = a.add_suffix("_전").join(b.add_suffix("_후"), how="outer")
-    for c in ["노출수", "클릭수", "판매액"]:
+    for c in ["노출수", "클릭수", "판매액", "광고비"]:
         out[f"{c}_전"] = out[f"{c}_전"].fillna(0.0)
         out[f"{c}_후"] = out[f"{c}_후"].fillna(0.0)
     out["노출증감"] = out["노출수_후"] - out["노출수_전"]
@@ -1413,6 +1413,14 @@ def ad_exposure_breakdown(df: pd.DataFrame, count_df, group_col: str, cur_start,
     out["노출기여도"] = out["노출증감"] / tot_imp * 100 if tot_imp else None
     out["CTR_전"] = out["클릭수_전"] / out["노출수_전"].where(out["노출수_전"] > 0)
     out["CTR_후"] = out["클릭수_후"] / out["노출수_후"].where(out["노출수_후"] > 0)
+    # 효율: 광고비(일평균)·ROAS(=판매액/광고비)·CPC(=광고비/클릭). 광고비가 min_cost 미만이면 분모가 작아 튀므로 NaN.
+    min_cost = 1000.0
+    for sfx in ("전", "후"):
+        cost = out[f"광고비_{sfx}"]
+        ok = cost >= min_cost
+        out[f"ROAS_{sfx}"] = (out[f"판매액_{sfx}"] / cost.where(ok))
+        out[f"CPC_{sfx}"] = (cost / out[f"클릭수_{sfx}"].where(out[f"클릭수_{sfx}"] > 0)).where(ok)
+    out["광고비증감"] = out["광고비_후"] - out["광고비_전"]
     n_a, n_b = out["상품수_전"], out["상품수_후"]
     m_a, m_b = out[f"{metric}_전"], out[f"{metric}_후"]
     m_delta = m_b - m_a
