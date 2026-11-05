@@ -140,10 +140,10 @@ def _src_info(kind):
                 f"1일 전(D-1)까지, {PRODUCT_TXN_MIN_DATE} 이후만 보유")
     if kind == "adprod" and ad_product_df is not None:
         return ("상품군 광고 리포트 (노출·클릭·광고비·판매액, NBOS 매칭)", "ad_product_category_daily(_YYYYH1/H2).csv", "쇼핑검색리포트_RAW.xlsx",
-                AD_PRODUCT_MAX_DATE, "원본을 변환한 날짜까지")
+                AD_PRODUCT_MAX_DATE, "1일 전(D-1)까지")
     if kind == "adcount" and ad_count_df is not None:
         return ("운영 상품수 (광고가 노출된 상품코드 수)", "ad_product_count_daily(_2026H2).csv", "쇼핑검색리포트_RAW.xlsx(상품코드)",
-                ad_count_df["date"].max().date(), f"{ad_count_df['date'].min().date()} 이후만 보유")
+                ad_count_df["date"].max().date(), f"1일 전(D-1)까지, {ad_count_df['date'].min().date()} 이후만 보유")
     if kind == "event":
         return ("행사 일정", "event_calendar.csv", "EP_dashboard 폴더의 행사 달력을 복사", None, "일정이 바뀌면 다시 복사")
     return None
