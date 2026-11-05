@@ -20,7 +20,7 @@ from utils import (
     CATTXN_TXN_TYPE_OPTIONS, CATTXN_CHANNEL_OPTIONS, CATTXN_METRIC_OPTIONS,
     load_product_txn_data, top_products_by_revenue, brand_label,
     load_event_calendar, event_period_metrics, event_category_compare, EVENT_AVG_METRICS,
-    top_products_excel_bytes, brand_ad_ep_response, AD_RESPONSE_CLASSES, NEW_PCT,
+    top_products_excel_bytes, brand_ad_ep_response, AD_RESPONSE_CLASSES, NEW_PCT, ad_product_flow_points,
 )
 from styles import (
     inject_css, render_kpi_cards, render_page_header, render_section_title,
@@ -2962,7 +2962,7 @@ elif menu == "상품군 효율":
             )
     render_insight_box(ap_insight_lines)
 
-    p4_tabs = st.tabs(["🔻 퍼널 · 진단", "🏷️ 랭킹", "⚖️ 광고비 조정 후보", "📦 카테고리 거래액 · 상품 TOP10"])
+    p4_tabs = st.tabs(["🔻 퍼널 · 진단", "🏷️ 랭킹", "🧭 판매액 × ROAS 추이", "⚖️ 광고비 조정 후보", "📦 카테고리 거래액 · 상품 TOP10"])
     with p4_tabs[0]:
         # ── 실적 퍼널 (노출 → 클릭 → 구매) — 상단 자사/입점·대/중카테고리 필터를 그대로 반영.
         # ad_product 리포트에는 UV(방문) 개념이 없어(광고 클릭→매칭된 구매만 추적) 01페이지와
@@ -3093,7 +3093,7 @@ elif menu == "상품군 효율":
                 tone="success",
             )
 
-    with p4_tabs[3]:
+    with p4_tabs[4]:
         # ══════════════════════════════════════════════════════════
         # 카테고리별 거래액 현황 → 행을 클릭하면 그 카테고리의 거래액 상위 상품 TOP10
         # (03페이지와 같은 카테고리 체계·상품명 데이터 — 이 페이지 위·아래의 NBOS 대/중카테고리와는 별개)
@@ -3336,6 +3336,121 @@ elif menu == "상품군 효율":
         )
 
     with p4_tabs[2]:
+        render_section_title("판매액 × ROAS 추이 · 카테고리별 흐름 지도")
+        st.caption(
+            "가로축은 판매액(일평균), 세로축은 ROAS예요. 점 하나가 한 구간(주/월)이고 선이 시간 흐름이며, 가장 큰 점이 "
+            "최근 구간입니다. 오른쪽 위로 갈수록 규모와 효율이 함께 좋아지고, 점선 아래는 ROAS 700% 미만이에요. "
+            "상단 자사/입점·대/중카테고리 필터와 기준일자(마지막 구간)를 따라가요."
+        )
+        fm1, fm2, fm3, fm4 = st.columns([1.7, 1.2, 1.3, 1.5])
+        with fm1:
+            fm_group_label = st.radio("묶음 기준", ["대카테고리", "중카테고리", "브랜드"], horizontal=True, key="adprod_flow_group")
+        with fm2:
+            fm_unit = st.radio("추이 단위", ["주별", "월별"], horizontal=True, key="adprod_flow_unit")
+        with fm3:
+            fm_n = st.slider("구간 수", min_value=3, max_value=12, value=6, key="adprod_flow_n")
+        with fm4:
+            fm_top = st.slider("표시 개수 (판매액 상위)", min_value=3, max_value=15, value=8, key="adprod_flow_top")
+        fm_group_col = {"대카테고리": "대카테고리", "중카테고리": "중카테고리", "브랜드": "브랜드명"}[fm_group_label]
+        fm_df = ad_product_flow_points(
+            ad_product_df, fm_group_col, fm_unit, fm_n, ap_end_ts, ap_own, ap_large, ap_mid, fm_top,
+        )
+        if fm_df.empty or fm_df["ROAS"].notna().sum() == 0:
+            st.info("선택한 조건에서 그릴 데이터가 없습니다 (광고비가 거의 없으면 ROAS를 계산하지 않아요).")
+        else:
+            fm_last_sales = fm_df[fm_df["bucket"] == fm_df["bucket"].max()].set_index("group")["판매액"]
+            fm_groups = fm_last_sales.sort_values(ascending=False).index.tolist()
+            fm_palette = ["#2563EB", "#F59E0B", "#10B981", "#EF4444", "#8B5CF6", "#0EA5E9", "#EC4899",
+                          "#84CC16", "#F97316", "#14B8A6", "#6366F1", "#A16207", "#DB2777", "#0891B2", "#65A30D"]
+            fig_flow = go.Figure()
+            for i, grp in enumerate(fm_groups):
+                gdf = fm_df[(fm_df["group"] == grp) & fm_df["ROAS"].notna()].sort_values("bucket")
+                if gdf.empty:
+                    continue
+                color = fm_palette[i % len(fm_palette)]
+                sizes = [8] * (len(gdf) - 1) + [16]
+                fig_flow.add_trace(go.Scatter(
+                    x=_to_million(gdf["판매액"].tolist()), y=(gdf["ROAS"] * 100).tolist(),
+                    mode="lines+markers+text", name=grp, legendgroup=grp,
+                    line=dict(width=1.6, color=color), marker=dict(size=sizes, color=color, opacity=0.9),
+                    text=[""] * (len(gdf) - 1) + [grp], textposition="top center", textfont=dict(size=11, color=color),
+                    customdata=list(zip(
+                        gdf["label"], gdf["days"], (gdf["광고비"] / 1_000_000).round(2),
+                        ["(진행 중)" if p else "" for p in gdf["is_partial"]],
+                    )),
+                    hovertemplate=(
+                        "<b>" + grp.replace("<", "&lt;") + "</b> · %{customdata[0]} %{customdata[3]}<br>"
+                        "판매액(일평균): %{x:,.2f}백만<br>ROAS: %{y:,.0f}%<br>"
+                        "광고비(일평균): %{customdata[2]:,.2f}백만 · 집계 %{customdata[1]}일<extra></extra>"
+                    ),
+                ))
+            fig_flow.add_hline(
+                y=700, line_dash="dash", line_color="#94A3B8",
+                annotation_text="ROAS 700% 기준", annotation_position="bottom right", annotation_font_color="#64748B",
+            )
+            # 세로축은 이상치(광고비가 작아 ROAS가 튄 구간)에 끌려가지 않게 상위 5% 기준으로 상한을 둔다
+            fm_roas_pct = (fm_df["ROAS"].dropna() * 100)
+            fm_y_cap = min(max(1500.0, fm_roas_pct.quantile(0.95) * 1.25), fm_roas_pct.max() * 1.08)
+            fm_clipped = fm_roas_pct.max() > fm_y_cap
+            fig_flow.update_layout(
+                height=540, margin=dict(t=20, b=20, l=10, r=10),
+                xaxis=dict(title="판매액 (일평균, 백만원)", tickformat=",.1f", ticksuffix="백만", rangemode="tozero"),
+                yaxis=dict(title="ROAS (%)", tickformat=",.0f", range=[0, fm_y_cap]),
+                hovermode="closest", dragmode="pan",
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
+            )
+            st.plotly_chart(fig_flow, use_container_width=True, config={"scrollZoom": True})
+
+            # ── 첫 구간 → 최근 구간 움직임 요약표 (최근 판매액 큰 순) ──
+            def _flow_move(sales_pct, roas_pct, thr=5.0):
+                if sales_pct is None or roas_pct is None:
+                    return "-"
+                if sales_pct > thr and roas_pct > thr:
+                    return "🟢 판매액↑ ROAS↑"
+                if sales_pct > thr and roas_pct < -thr:
+                    return "🟡 판매액↑ ROAS↓"
+                if sales_pct < -thr and roas_pct > thr:
+                    return "🔵 판매액↓ ROAS↑"
+                if sales_pct < -thr and roas_pct < -thr:
+                    return "🔴 판매액↓ ROAS↓"
+                return "⚫ 변화 미미"
+
+            fm_rows = []
+            for grp in fm_groups:
+                gdf = fm_df[fm_df["group"] == grp].sort_values("bucket")
+                gv = gdf[gdf["ROAS"].notna()]
+                if len(gv) < 2:
+                    continue
+                first, last = gv.iloc[0], gv.iloc[-1]
+                s_pct = pct_change(last["판매액"], first["판매액"])
+                r_pct = pct_change(last["ROAS"], first["ROAS"])
+                fm_rows.append({
+                    "그룹": grp,
+                    f"판매액 {last['label']}": f"{last['판매액']:,.0f}",
+                    f"판매액 {first['label']} 대비": format_delta_text(s_pct),
+                    f"ROAS {last['label']}": f"{last['ROAS'] * 100:,.0f}%",
+                    f"ROAS {first['label']} 대비": format_delta_text(r_pct),
+                    "움직임": _flow_move(s_pct, r_pct),
+                })
+            if fm_rows:
+                fm_table = pd.DataFrame(fm_rows)
+                st.dataframe(
+                    fm_table.style.map(delta_cell_style, subset=[c for c in fm_table.columns if c.endswith("대비")]),
+                    use_container_width=True, hide_index=True,
+                    height=min(35 * (len(fm_table) + 1) + 3, 460),
+                )
+            if fm_clipped:
+                st.caption(
+                    f"※ 일부 구간의 ROAS가 {fm_roas_pct.max():,.0f}%까지 올라가 차트 세로축은 {fm_y_cap:,.0f}%까지만 보여줘요 "
+                    "(범위를 넘은 점은 잘려 보이니 아래 표의 값을 참고하세요)."
+                )
+            st.caption(
+                f"📅 마지막 구간은 기준일자({ap_end_ts.date()})까지 · 판매액·광고비는 구간의 데이터 일수로 나눈 일평균이라 "
+                "진행 중인 주/월도 공정하게 비교돼요(진행 중 구간은 마우스를 올리면 표시) · 광고비 일평균이 3,000원 미만인 "
+                "구간은 ROAS가 튀어서 그리지 않아요 · 표의 움직임은 첫 구간 대비 ±5% 초과 변화 기준이에요."
+            )
+
+    with p4_tabs[3]:
         # ══════════════════════════════════════════════════════════
         # 광고비 조정 후보 — 줄일 후보(저효율) / 늘릴 후보(고효율)
         # ══════════════════════════════════════════════════════════

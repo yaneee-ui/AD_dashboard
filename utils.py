@@ -1255,6 +1255,59 @@ def aggregate_ad_product_by(df: pd.DataFrame, group_col: str, own: str = "전체
     return grouped
 
 
+def ad_product_flow_points(df: pd.DataFrame, group_col: str, unit: str, n_buckets: int, end_date,
+                           own: str = "전체", large_cat: str = "전체", mid_cat: str = "전체",
+                           top_n: int = 8, min_daily_cost: float = 3000.0) -> pd.DataFrame:
+    """그룹(대카테고리/중카테고리/브랜드명)별로 최근 n_buckets개 주/월 구간의 (판매액 일평균, ROAS)를
+    계산해 '판매액 × ROAS 흐름 지도'용 점 목록을 만든다. 시간 순으로 이어 그리면 각 그룹이 어디로
+    움직이는지 보인다.
+    - 판매액·광고비는 구간 안에 데이터가 있는 일수로 나눈 일평균 — 아직 끝나지 않은 주/월도 공정하게 비교.
+    - 중카테고리는 이름만으로 묶으면 남성/여성 등 다른 대카테고리가 합쳐지므로 '대 · 중' 쌍으로 묶는다.
+    - 광고비 일평균이 min_daily_cost 미만이면 ROAS가 분모가 작아 튀므로 ROAS를 비워둔다(NaN).
+    - 최근 구간 판매액이 큰 순으로 상위 top_n 그룹만 남긴다.
+    반환 컬럼: group, bucket(구간 시작일), label, days, 판매액, 광고비, ROAS(배수), is_partial"""
+    scope = _ad_product_scope(df, own, large_cat, mid_cat)
+    scope = scope[scope["date"] <= pd.Timestamp(end_date)].copy()
+    cols = ["group", "bucket", "label", "days", "판매액", "광고비", "ROAS", "is_partial"]
+    if scope.empty:
+        return pd.DataFrame(columns=cols)
+
+    if group_col == "중카테고리":
+        scope["_grp"] = scope["대카테고리"] + " · " + scope["중카테고리"]
+    else:
+        scope["_grp"] = scope[group_col]
+    if unit == "월별":
+        scope["_b"] = scope["date"].dt.to_period("M").dt.start_time
+    else:
+        scope["_b"] = scope["date"] - pd.to_timedelta(scope["date"].dt.weekday, unit="D")
+
+    buckets = sorted(scope["_b"].unique())[-n_buckets:]
+    scope = scope[scope["_b"].isin(buckets)]
+    days = scope.groupby("_b")["date"].nunique()
+
+    g = scope.groupby(["_grp", "_b"])[["광고비", "판매액"]].sum().reset_index()
+    g["days"] = g["_b"].map(days)
+    g["판매액"] = g["판매액"] / g["days"]
+    g["광고비"] = g["광고비"] / g["days"]
+    # 광고비가 너무 작거나 판매액이 0 이하(환불·취소가 매출보다 많음)인 구간은 ROAS가 의미 없어 비운다
+    g["ROAS"] = (g["판매액"] / g["광고비"]).where((g["광고비"] >= min_daily_cost) & (g["판매액"] > 0))
+
+    def _full_days(b):
+        return b.days_in_month if unit == "월별" else 7
+
+    g["is_partial"] = [d < _full_days(pd.Timestamp(b)) for b, d in zip(g["_b"], g["days"])]
+    g["label"] = [
+        f"{pd.Timestamp(b):%Y-%m}" if unit == "월별" else f"{pd.Timestamp(b):%m/%d} 주"
+        for b in g["_b"]
+    ]
+    g = g.rename(columns={"_grp": "group", "_b": "bucket"})
+
+    last_bucket = g["bucket"].max()
+    last_sales = g[g["bucket"] == last_bucket].set_index("group")["판매액"]
+    keep = last_sales.sort_values(ascending=False).head(top_n).index
+    return g[g["group"].isin(keep)][cols].sort_values(["group", "bucket"]).reset_index(drop=True)
+
+
 def _pct_change_simple(cur, prev):
     if cur is None or prev is None or pd.isna(cur) or pd.isna(prev) or prev == 0:
         return None
