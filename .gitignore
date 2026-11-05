@@ -11,3 +11,4 @@ __pycache__/
 
 # Streamlit
 .streamlit/
+ad_product_count_daily.csv

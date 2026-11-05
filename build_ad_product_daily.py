@@ -40,6 +40,8 @@ REQUIRED_COLS = [
     "노출수", "클릭수", "총비용(VAT포함,원)", "구매수량", "판매액",
 ]
 NUMERIC_KEYS = ["노출수", "클릭수", "총비용(VAT포함,원)", "구매수량", "판매액"]
+# 운영 상품수(그 날 광고가 실제로 노출된 서로 다른 상품코드 수)를 세기 위한 선택 컬럼 — 없으면 상품수는 건너뛴다.
+PRODUCT_CODE_COL = "상품코드"
 
 
 def _to_num(v):
@@ -51,14 +53,16 @@ def _to_num(v):
         return 0.0
 
 
-def _process_sheet(ws, acc, sheet_label):
+def _process_sheet(ws, acc, sheet_label, prod_acc=None):
     col_idx = {}
     n_rows = 0
     for i, row in enumerate(ws.iter_rows(values_only=True)):
         if i == 0:
             for j, name in enumerate(row):
-                if name in REQUIRED_COLS:
+                if name in REQUIRED_COLS or name == PRODUCT_CODE_COL:
                     col_idx[name] = j
+            if PRODUCT_CODE_COL not in col_idx:
+                print(f"  [주의] '{sheet_label}'에 '{PRODUCT_CODE_COL}' 컬럼이 없어 이 시트는 운영 상품수를 세지 않습니다.")
             missing = [c for c in REQUIRED_COLS if c not in col_idx]
             if missing:
                 raise ValueError(f"[{sheet_label}] 컬럼을 찾을 수 없습니다: {missing}")
@@ -85,8 +89,13 @@ def _process_sheet(ws, acc, sheet_label):
             row[col_idx["자사/입점"]],
         )
         rec = acc[key]
-        rec[0] += _to_num(row[col_idx["노출수"]])
+        imp_v = _to_num(row[col_idx["노출수"]])
+        rec[0] += imp_v
         rec[1] += _to_num(row[col_idx["클릭수"]])
+        if prod_acc is not None and PRODUCT_CODE_COL in col_idx and imp_v > 0:
+            code = row[col_idx[PRODUCT_CODE_COL]]
+            if code not in (None, "", "-"):
+                prod_acc[key].add(str(code).strip())
         rec[2] += _to_num(row[col_idx["총비용(VAT포함,원)"]])
         rec[3] += _to_num(row[col_idx["구매수량"]])
         rec[4] += _to_num(row[col_idx["판매액"]])
@@ -95,8 +104,9 @@ def _process_sheet(ws, acc, sheet_label):
     return n_rows
 
 
-def convert(raw_paths: list, out_path: str):
+def convert(raw_paths: list, out_path: str, counts_only: bool = False):
     acc = defaultdict(lambda: [0.0, 0.0, 0.0, 0.0, 0.0])  # 노출수,클릭수,광고비,구매수량,판매액
+    prod_acc = defaultdict(set)  # 키(날짜·카테고리·브랜드·자사입점) -> 그 날 노출된 상품코드 집합
     total_rows = 0
 
     for raw_path in raw_paths:
@@ -104,7 +114,7 @@ def convert(raw_paths: list, out_path: str):
         wb = openpyxl.load_workbook(raw_path, read_only=True, data_only=True)
         for sheet_name in wb.sheetnames:
             ws = wb[sheet_name]
-            n = _process_sheet(ws, acc, f"{os.path.basename(raw_path)}::{sheet_name}")
+            n = _process_sheet(ws, acc, f"{os.path.basename(raw_path)}::{sheet_name}", prod_acc)
             total_rows += n
             print(f"  시트 '{sheet_name}': {n:,}행 처리 (누적 {total_rows:,}행)")
         wb.close()
@@ -126,6 +136,11 @@ def convert(raw_paths: list, out_path: str):
           f"({agg['date'].min().date()} ~ {agg['date'].max().date()}, "
           f"대카테고리 {agg['대카테고리'].nunique()}개, 브랜드 {agg['브랜드명'].nunique()}개)")
 
+    _write_product_counts(prod_acc, out_path)
+    if counts_only:
+        print("--counts-only: 운영 상품수 파일만 갱신하고 끝냅니다.")
+        return
+
     if os.path.exists(out_path):
         existing = pd.read_csv(out_path, parse_dates=["date"], encoding="utf-8-sig")
         new_dates = set(agg["date"].unique())
@@ -142,6 +157,32 @@ def convert(raw_paths: list, out_path: str):
           f"(전체 날짜 범위: {merged['date'].min().date()} ~ {merged['date'].max().date()})")
 
     _write_year_splits(merged, out_path)
+
+
+def _write_product_counts(prod_acc, out_path: str):
+    """날짜 x 대카테고리 x 중카테고리 x 브랜드명 x 자사/입점별 '운영 상품수'(노출수>0인 서로 다른 상품코드 수)를
+    ad_product_count_daily.csv(+반기별 조각)로 저장한다. 한 상품은 한 카테고리·브랜드에만 속하므로 이 단위의 합이
+    곧 상위 단위(전체/대카테고리/자사·입점) 상품수다. 하루 단위 값이라 기간 값은 '일평균 운영 상품수'로 쓴다.
+    기존 파일이 있으면 새로 센 날짜만 덮어쓰고 나머지 날짜는 유지한다(원본이 없는 과거 날짜는 비어 있게 됨)."""
+    if not prod_acc:
+        print("[주의] 상품코드 기반 운영 상품수를 하나도 세지 못했습니다 — 상품수 파일은 건드리지 않습니다.")
+        return
+    rows = [
+        {"date": k[0], "대카테고리": k[1], "중카테고리": k[2], "브랜드명": k[3], "자사/입점": k[4], "운영상품수": len(v)}
+        for k, v in prod_acc.items()
+    ]
+    cnt = pd.DataFrame(rows)
+    cnt["date"] = pd.to_datetime(cnt["date"])
+    cnt_path = os.path.join(os.path.dirname(os.path.abspath(out_path)), "ad_product_count_daily.csv")
+    if os.path.exists(cnt_path):
+        old = pd.read_csv(cnt_path, parse_dates=["date"], encoding="utf-8-sig")
+        cnt = pd.concat([old[~old["date"].isin(set(cnt["date"].unique()))], cnt], ignore_index=True)
+    cnt = cnt.sort_values(["date", "대카테고리", "중카테고리", "브랜드명"]).reset_index(drop=True)
+    cnt.to_csv(cnt_path, index=False, encoding="utf-8-sig")
+    daily = cnt.groupby("date")["운영상품수"].sum()
+    print(f"운영 상품수 저장: {cnt_path} ({len(cnt):,}행, {cnt['date'].min().date()} ~ {cnt['date'].max().date()}, "
+          f"일별 전체 상품수 {daily.min():,}~{daily.max():,})")
+    _write_year_splits(cnt, cnt_path)
 
 
 def _write_year_splits(merged: pd.DataFrame, out_path: str):
@@ -166,5 +207,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("raw_paths", nargs="+", help="원본 엑셀 파일 경로(여러 개 가능, 각 파일의 모든 시트를 처리)")
     parser.add_argument("--out", default="ad_product_category_daily.csv", help="출력 CSV 경로")
+    parser.add_argument("--counts-only", action="store_true",
+                        help="카테고리별 실적 CSV는 건드리지 않고 운영 상품수 파일(ad_product_count_daily.csv)만 만든다")
     args = parser.parse_args()
-    convert(args.raw_paths, args.out)
+    convert(args.raw_paths, args.out, args.counts_only)

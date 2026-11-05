@@ -1335,6 +1335,96 @@ def aggregate_ad_product_by(df: pd.DataFrame, group_col: str, own: str = "전체
     return grouped
 
 
+# ── 운영 상품수 (그 날 광고가 노출된 서로 다른 상품 수) ──────────────────
+# build_ad_product_daily.py가 상품코드 기준으로 세어 ad_product_count_daily.csv(+반기 조각)로 저장한다.
+# 상품코드가 있는 원본으로 다시 변환한 날짜부터만 값이 있어서, 데이터가 없는 기간은 None('-')으로 다룬다.
+@st.cache_data
+def load_ad_product_count_data():
+    paths = [os.path.join(BASE_DIR, "data", "ad_product_count_daily.csv"),
+             os.path.join(BASE_DIR, "ad_product_count_daily.csv")]
+    main = next((p for p in paths if os.path.exists(p)), None)
+    if main:
+        return pd.read_csv(main, parse_dates=["date"], encoding="utf-8-sig")
+    split_paths = []
+    for pattern in (os.path.join(BASE_DIR, "data", "ad_product_count_daily_*.csv"),
+                    os.path.join(BASE_DIR, "ad_product_count_daily_*.csv")):
+        split_paths = sorted(glob.glob(pattern))
+        if split_paths:
+            break
+    if not split_paths:
+        return None
+    return pd.concat([pd.read_csv(p, parse_dates=["date"], encoding="utf-8-sig") for p in split_paths],
+                     ignore_index=True)
+
+
+def avg_operating_products(count_df, start, end, own: str = "전체", large_cat: str = "전체",
+                           mid_cat: str = "전체", brand: str = "전체"):
+    """기간 안 '일평균 운영 상품수'와 상품수 데이터가 있는 일수를 (평균, 일수)로 반환.
+    데이터가 없으면 (None, 0). 일별 값(범위 안 상품수 합)을 평균내므로 일수가 다른 기간끼리도 비교된다."""
+    if count_df is None:
+        return None, 0
+    scope = count_df[(count_df["date"] >= pd.Timestamp(start)) & (count_df["date"] <= pd.Timestamp(end))]
+    scope = _ad_product_scope(scope, own, large_cat, mid_cat, brand)
+    if scope.empty:
+        return None, 0
+    daily = scope.groupby("date")["운영상품수"].sum()
+    return float(daily.mean()), int(len(daily))
+
+
+def ad_exposure_breakdown(df: pd.DataFrame, count_df, group_col: str, cur_start, cur_end, prev_start, prev_end,
+                          own: str = "전체", large_cat: str = "전체", mid_cat: str = "전체") -> pd.DataFrame:
+    """그룹(대카테고리/중카테고리/브랜드명/자사/입점)별로 '노출·클릭이 왜 늘고 줄었는지' 쪼갠다 (일평균 기준).
+    열: 노출_전/후, 클릭_전/후, CTR_전/후, 상품수_전/후(데이터 없으면 NaN), 상품당노출_전/후,
+        노출증감, 클릭증감, 노출기여도(%p, 전체 노출 증감률에 대한 기여),
+        상품수효과·상품당노출효과(노출 증감을 '운영 상품수가 달라진 몫'과 '상품 1개당 노출이 달라진 몫'으로 분해, 합=노출증감).
+    분해식: Δ노출 = (n후−n전)×(전 상품당노출) + n후×(후 상품당노출−전 상품당노출). 한쪽 기간에 상품이 없던 그룹은 전부 상품수 몫.
+    상품수 데이터가 없는 그룹은 두 효과 열이 NaN."""
+    def _period(start, end):
+        scope = df[(df["date"] >= pd.Timestamp(start)) & (df["date"] <= pd.Timestamp(end))]
+        scope = _ad_product_scope(scope, own, large_cat, mid_cat)
+        nd = max(int(scope["date"].nunique()), 1)
+        g = scope.groupby(group_col)[["노출수", "클릭수"]].sum() / nd
+        n = pd.Series(dtype=float)
+        if count_df is not None:
+            cs = count_df[(count_df["date"] >= pd.Timestamp(start)) & (count_df["date"] <= pd.Timestamp(end))]
+            cs = _ad_product_scope(cs, own, large_cat, mid_cat)
+            if not cs.empty:
+                n = cs.groupby(["date", group_col])["운영상품수"].sum().groupby(group_col).mean()
+        g["상품수"] = n
+        return g, (not (count_df is None or n.empty))
+
+    a, has_a = _period(prev_start, prev_end)
+    b, has_b = _period(cur_start, cur_end)
+    out = a.add_suffix("_전").join(b.add_suffix("_후"), how="outer")
+    for c in ["노출수", "클릭수"]:
+        out[f"{c}_전"] = out[f"{c}_전"].fillna(0.0)
+        out[f"{c}_후"] = out[f"{c}_후"].fillna(0.0)
+    out["노출증감"] = out["노출수_후"] - out["노출수_전"]
+    out["클릭증감"] = out["클릭수_후"] - out["클릭수_전"]
+    tot_imp = out["노출수_전"].sum()
+    out["노출기여도"] = out["노출증감"] / tot_imp * 100 if tot_imp else None
+    out["CTR_전"] = out["클릭수_전"] / out["노출수_전"].where(out["노출수_전"] > 0)
+    out["CTR_후"] = out["클릭수_후"] / out["노출수_후"].where(out["노출수_후"] > 0)
+    n_a, n_b = out["상품수_전"], out["상품수_후"]
+    out["상품당노출_전"] = out["노출수_전"] / n_a.where(n_a > 0)
+    out["상품당노출_후"] = out["노출수_후"] / n_b.where(n_b > 0)
+    if has_a and has_b:
+        na, nb = n_a.fillna(0.0), n_b.fillna(0.0)
+        ia = (out["노출수_전"] / na.where(na > 0)).fillna(0.0)
+        both = (na > 0) & (nb > 0)
+        out["상품수효과"] = (nb - na) * ia
+        out["상품당노출효과"] = nb * (out["노출수_후"] / nb.where(nb > 0) - ia)
+        # 한쪽 기간에 상품이 없던 그룹은 노출 증감 전부를 상품수 몫으로
+        out.loc[~both, "상품수효과"] = out.loc[~both, "노출증감"]
+        out.loc[~both, "상품당노출효과"] = 0.0
+    else:
+        out["상품수효과"] = float("nan")
+        out["상품당노출효과"] = float("nan")
+    out.attrs["has_counts"] = bool(has_a and has_b)
+    out.attrs["has_counts_each"] = (bool(has_a), bool(has_b))
+    return out.reset_index().sort_values("노출증감").reset_index(drop=True)
+
+
 def ad_product_flow_points(df: pd.DataFrame, group_col: str, unit: str, n_buckets: int, end_date,
                            own: str = "전체", large_cat: str = "전체", mid_cat: str = "전체",
                            top_n: int = 8, min_daily_cost: float = 3000.0) -> pd.DataFrame:
