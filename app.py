@@ -4024,6 +4024,23 @@ elif menu == "상품군 효율":
             ex_group_col = {"대카테고리": "대카테고리", "중카테고리": "중카테고리", "브랜드": "브랜드명",
                             "자사/입점": "자사/입점"}[ex_group_label]
             ex_ps, ex_pe = ex_opts[ex_label]
+            with st.expander("❓ '몫'은 어떻게 계산되나요?", expanded=False):
+                st.markdown(
+                    f"**{ex_unit_word} = {ex_count_label} × 상품 1개당 {ex_unit_word}** 이라서, {ex_unit_word}이 늘거나 줄어든 이유를 두 가지로 나눠요.\n\n"
+                    f"- **상품수 몫** = (이번 {ex_count_label} − 이전 {ex_count_label}) × **이전** 상품당 {ex_unit_word}\n"
+                    f"- **상품당 {ex_unit_word} 몫** = **이번** {ex_count_label} × (이번 상품당 {ex_unit_word} − 이전 상품당 {ex_unit_word})\n"
+                    f"- 두 몫을 더하면 실제 {ex_unit_word} 증감과 정확히 같아요.\n\n"
+                    "**예시** — 이전: 상품 100개 × 상품당 1,000 = 100,000 / 이번: 상품 90개 × 상품당 1,200 = 108,000 (증감 +8,000)\n\n"
+                    "- 상품수 몫 = (90 − 100) × 1,000 = **−10,000** (상품이 10개 줄어서 빠진 양)\n"
+                    "- 상품당 몫 = 90 × (1,200 − 1,000) = **+18,000** (상품당 값이 올라서 늘어난 양)\n"
+                    "- 합계 −10,000 + 18,000 = **+8,000** ✔\n\n"
+                    "**알아둘 점**\n"
+                    "- 상품수와 상품당 값이 동시에 크게 바뀌면(예: 상품수 4배) 두 몫이 큰 값으로 서로 상쇄돼요 — 그럴 땐 크기보다 부호·방향을 보세요.\n"
+                    f"- 카테고리·브랜드별 표의 몫을 합친 값은 항목마다 계산한 몫의 합이라 전체 {ex_count_label} 증감과 부호가 다를 수 있어요.\n"
+                    "- 이전 기간에 상품이 없던 항목은 증감 전체를 상품수 몫으로 봐요.\n"
+                    "- 상품수 기준: 노출·클릭은 '클릭이 발생한 상품 수', 판매액은 '판매액이 발생한 상품 수'예요. 표의 숫자는 화면 표시용으로 반올림돼 있고 계산은 소수점까지 해요."
+                )
+
             def _ex_render(own_val, tag):
                 ex = ad_exposure_breakdown(
                     ad_product_df, ad_count_df, ex_group_col, ap_start_ts, ap_end_ts, ex_ps, ex_pe,
