@@ -142,7 +142,7 @@ def _src_info(kind):
         return ("상품군 광고 리포트 (노출·클릭·광고비·판매액, NBOS 매칭)", "ad_product_category_daily(_YYYYH1/H2).csv", "쇼핑검색리포트_RAW.xlsx",
                 AD_PRODUCT_MAX_DATE, "1일 전(D-1)까지")
     if kind == "adcount" and ad_count_df is not None:
-        return ("운영 상품수 (클릭이 발생한 상품코드 수)", "ad_product_count_daily(_YYYYH1/H2).csv", "쇼핑검색리포트_RAW.xlsx(상품코드)",
+        return ("운영·매출 상품수 (클릭 / 판매액 발생 상품코드 수)", "ad_product_count_daily(_YYYYH1/H2).csv", "쇼핑검색리포트_RAW.xlsx(상품코드)",
                 ad_count_df["date"].max().date(), f"1일 전(D-1)까지, {ad_count_df['date'].min().date()} 이후만 보유")
     if kind == "event":
         return ("행사 일정", "event_calendar.csv", "EP_dashboard 폴더의 행사 달력을 복사", None, "일정이 바뀌면 다시 복사")
@@ -827,6 +827,19 @@ if menu == "쇼핑검색광고 실적":
                 f"{immediate_label}(%)": format_delta_text(pct_change(op_cur, op_prev)),
                 yoy_col_name: f"{op_yoy:,.0f}" if op_yoy is not None else "-",
                 "전년비(%)": format_delta_text(pct_change(op_cur, op_yoy)),
+            })
+        # 매출 발생 상품수: 그 날 상품별 판매액 순합(취소·반품 반영)이 0보다 큰 상품 수의 일평균
+        sl_cur, _ = avg_operating_products(ad_count_df, start_ts, end_ts, col="매출상품수")
+        sl_prev, _ = avg_operating_products(ad_count_df, prev_start, prev_end, col="매출상품수")
+        sl_yoy, _ = avg_operating_products(ad_count_df, yoy_start, yoy_end, col="매출상품수")
+        if sl_cur is not None and op_cur is not None:
+            rows.insert(2, {
+                "지표": "매출 발생 상품수(일평균)",
+                prev_col_name: f"{sl_prev:,.0f}" if sl_prev is not None else "-",
+                cur_label: f"{sl_cur:,.0f}",
+                f"{immediate_label}(%)": format_delta_text(pct_change(sl_cur, sl_prev)),
+                yoy_col_name: f"{sl_yoy:,.0f}" if sl_yoy is not None else "-",
+                "전년비(%)": format_delta_text(pct_change(sl_cur, sl_yoy)),
             })
         summary_df = pd.DataFrame(rows)
 
@@ -3219,6 +3232,13 @@ elif menu == "상품군 효율":
             _pv = avg_operating_products(ad_count_df, _ps, _pe, ap_own, ap_large, ap_mid)[0] if _ps <= _pe else None
             ap_op_deltas.append((_lbl, pct_change(ap_op_cur, _pv), f"{_pv:,.0f}" if _pv is not None else None))
         ap_cards.append({"label": "운영 상품수 · 일평균 (클릭 발생)", "value": f"{ap_op_cur:,.0f}", "deltas": ap_op_deltas})
+    ap_sl_cur, _ = avg_operating_products(ad_count_df, ap_start_ts, ap_end_ts, ap_own, ap_large, ap_mid, col="매출상품수")
+    if ap_sl_cur is not None and ap_op_cur is not None:
+        ap_sl_deltas = []
+        for _lbl, (_ps, _pe) in ap_comp_periods.items():
+            _pv = avg_operating_products(ad_count_df, _ps, _pe, ap_own, ap_large, ap_mid, col="매출상품수")[0] if _ps <= _pe else None
+            ap_sl_deltas.append((_lbl, pct_change(ap_sl_cur, _pv), f"{_pv:,.0f}" if _pv is not None else None))
+        ap_cards.append({"label": "매출 발생 상품수 · 일평균", "value": f"{ap_sl_cur:,.0f}", "deltas": ap_sl_deltas})
     render_kpi_cards(ap_cards)
     ap_comp_strs = [
         f"{label} = {period_label(p_start, p_end, unit) if p_start <= p_end else '데이터 없음(보유 기간 밖)'}"

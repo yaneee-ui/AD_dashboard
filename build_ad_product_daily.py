@@ -53,7 +53,7 @@ def _to_num(v):
         return 0.0
 
 
-def _process_sheet(ws, acc, sheet_label, prod_acc=None, clk_acc=None):
+def _process_sheet(ws, acc, sheet_label, prod_acc=None, clk_acc=None, sale_acc=None):
     col_idx = {}
     n_rows = 0
     for i, row in enumerate(ws.iter_rows(values_only=True)):
@@ -91,6 +91,7 @@ def _process_sheet(ws, acc, sheet_label, prod_acc=None, clk_acc=None):
         rec = acc[key]
         imp_v = _to_num(row[col_idx["노출수"]])
         clk_v = _to_num(row[col_idx["클릭수"]])
+        sale_v = _to_num(row[col_idx["판매액"]])
         rec[0] += imp_v
         rec[1] += clk_v
         if prod_acc is not None and PRODUCT_CODE_COL in col_idx:
@@ -101,9 +102,12 @@ def _process_sheet(ws, acc, sheet_label, prod_acc=None, clk_acc=None):
                     prod_acc[key].add(code)
                 if clk_acc is not None and clk_v > 0:
                     clk_acc[key].add(code)
+                # 매출 발생 상품: 그 날 상품별 판매액 순합(취소·반품 반영)이 0보다 큰 상품 — 판매액이 0이 아닌 행만 모아 가볍게 센다
+                if sale_acc is not None and sale_v != 0:
+                    sale_acc[(key, code)] += sale_v
         rec[2] += _to_num(row[col_idx["총비용(VAT포함,원)"]])
         rec[3] += _to_num(row[col_idx["구매수량"]])
-        rec[4] += _to_num(row[col_idx["판매액"]])
+        rec[4] += sale_v
         n_rows += 1
 
     return n_rows
@@ -113,6 +117,7 @@ def convert(raw_paths: list, out_path: str, counts_only: bool = False):
     acc = defaultdict(lambda: [0.0, 0.0, 0.0, 0.0, 0.0])  # 노출수,클릭수,광고비,구매수량,판매액
     prod_acc = defaultdict(set)  # 키(날짜·카테고리·브랜드·자사입점) -> 그 날 노출된 상품코드 집합
     clk_acc = defaultdict(set)   # 같은 키 -> 그 날 클릭이 발생한 상품코드 집합
+    sale_acc = defaultdict(float)  # (키, 상품코드) -> 그 날 판매액 순합
     total_rows = 0
 
     for raw_path in raw_paths:
@@ -120,7 +125,7 @@ def convert(raw_paths: list, out_path: str, counts_only: bool = False):
         wb = openpyxl.load_workbook(raw_path, read_only=True, data_only=True)
         for sheet_name in wb.sheetnames:
             ws = wb[sheet_name]
-            n = _process_sheet(ws, acc, f"{os.path.basename(raw_path)}::{sheet_name}", prod_acc, clk_acc)
+            n = _process_sheet(ws, acc, f"{os.path.basename(raw_path)}::{sheet_name}", prod_acc, clk_acc, sale_acc)
             total_rows += n
             print(f"  시트 '{sheet_name}': {n:,}행 처리 (누적 {total_rows:,}행)")
         wb.close()
@@ -142,7 +147,7 @@ def convert(raw_paths: list, out_path: str, counts_only: bool = False):
           f"({agg['date'].min().date()} ~ {agg['date'].max().date()}, "
           f"대카테고리 {agg['대카테고리'].nunique()}개, 브랜드 {agg['브랜드명'].nunique()}개)")
 
-    _write_product_counts(prod_acc, out_path, clk_acc)
+    _write_product_counts(prod_acc, out_path, clk_acc, sale_acc)
     if counts_only:
         print("--counts-only: 운영 상품수 파일만 갱신하고 끝냅니다.")
         return
@@ -165,9 +170,9 @@ def convert(raw_paths: list, out_path: str, counts_only: bool = False):
     _write_year_splits(merged, out_path)
 
 
-def _write_product_counts(prod_acc, out_path: str, clk_acc=None):
+def _write_product_counts(prod_acc, out_path: str, clk_acc=None, sale_acc=None):
     """날짜 x 대카테고리 x 중카테고리 x 브랜드명 x 자사/입점별 '운영 상품수'(노출수>0인 서로 다른 상품코드 수)와
-    '클릭 상품수'(클릭수>0인 서로 다른 상품코드 수)를
+    '클릭 상품수'(클릭수>0인 서로 다른 상품코드 수), '매출 상품수'(상품별 판매액 순합>0인 상품코드 수)를
     ad_product_count_daily.csv(+반기별 조각)로 저장한다. 한 상품은 한 카테고리·브랜드에만 속하므로 이 단위의 합이
     곧 상위 단위(전체/대카테고리/자사·입점) 상품수다. 하루 단위 값이라 기간 값은 '일평균 운영 상품수'로 쓴다.
     기존 파일이 있으면 새로 센 날짜만 덮어쓰고 나머지 날짜는 유지한다(원본이 없는 과거 날짜는 비어 있게 됨).
@@ -178,9 +183,13 @@ def _write_product_counts(prod_acc, out_path: str, clk_acc=None):
         print("[주의] 상품코드 기반 운영 상품수를 하나도 세지 못했습니다 — 상품수 파일은 건드리지 않습니다.")
         return
     clk_acc = clk_acc or {}
+    sale_cnt = defaultdict(int)
+    for (k, _code), v in (sale_acc or {}).items():
+        if v > 0:
+            sale_cnt[k] += 1
     rows = [
         {"date": k[0], "대카테고리": k[1], "중카테고리": k[2], "브랜드명": k[3], "자사/입점": k[4],
-         "운영상품수": len(v), "클릭상품수": len(clk_acc.get(k, ()))}
+         "운영상품수": len(v), "클릭상품수": len(clk_acc.get(k, ())), "매출상품수": sale_cnt.get(k, 0)}
         for k, v in prod_acc.items()
     ]
     cnt = pd.DataFrame(rows)
