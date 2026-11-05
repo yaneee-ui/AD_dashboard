@@ -28,7 +28,7 @@ from styles import (
     inject_css, render_kpi_cards, render_page_header, render_section_title,
     pct_change, format_delta_text, delta_cell_style, render_custom_funnel, render_insight_box,
     render_trend_card_header, render_trend_summary_boxes, render_colored_caption,
-    render_comparison_table, render_monthly_comparison_table,
+    render_comparison_table, render_monthly_comparison_table, highlight_current,
 )
 
 st.set_page_config(page_title="쇼핑검색광고 실적 대시보드", layout="wide")
@@ -472,6 +472,7 @@ def _render_category_mix_section(start_ts, end_ts, ref_date, unit, mode, key_pre
         cat_table_df = pd.DataFrame(cat_table_rows)
         render_comparison_table(
             cat_table_df, delta_cols=["전년동요일", cat_immediate_label], bold_rows={"합계(전체)"},
+            highlight_cols=["거래액"],
         )
     cat_comp_strs = [
         f"{lbl} = {p[0].date()} ~ {p[1].date()}" if p else f"{lbl} = 데이터 없음"
@@ -554,6 +555,7 @@ def _render_category_mix_section(start_ts, end_ts, ref_date, unit, mode, key_pre
         ep_table_df = pd.DataFrame(ep_table_rows)
         render_comparison_table(
             ep_table_df, delta_cols=["전년동요일", cat_immediate_label], bold_rows={"합계(전체)"},
+            highlight_cols=["EP 거래액"],
         )
         st.caption(
             "💡 EP(오가닉) 채널 거래액이 높은 카테고리는 광고 반응 가능성이 있는 확대 후보로 "
@@ -844,7 +846,8 @@ if menu == "쇼핑검색광고 실적":
         summary_df = pd.DataFrame(rows)
 
         st.dataframe(
-            summary_df.style.map(delta_cell_style, subset=[f"{immediate_label}(%)", "전년비(%)"]),
+            highlight_current(
+                summary_df.style.map(delta_cell_style, subset=[f"{immediate_label}(%)", "전년비(%)"]), [cur_label]),
             use_container_width=True, hide_index=True, height=35 * (len(summary_df) + 1) + 3,
         )
         if op_cur is not None and (op_prev is None or op_yoy is None):
@@ -1174,7 +1177,7 @@ elif menu == "전년비교":
                 ]
                 compare_table["증감률(%)"] = compare_table["증감률(%)"].apply(format_delta_text)
                 st.dataframe(
-                    compare_table.style.map(delta_cell_style, subset=["증감률(%)"]),
+                    highlight_current(compare_table.style.map(delta_cell_style, subset=["증감률(%)"]), ["날짜(올해)", "올해"]),
                     use_container_width=True, height=300,
                 )
                 st.download_button(
@@ -1253,7 +1256,8 @@ elif menu == "전년비교":
                 wide_display = pd.DataFrame(display_cols)
 
                 st.dataframe(
-                    wide_display.style.map(delta_cell_style, subset=yoy_col_names),
+                    highlight_current(wide_display.style.map(delta_cell_style, subset=yoy_col_names),
+                                      [f"{m} · 올해" for m in wide_metrics]),
                     use_container_width=True, hide_index=True, height=560,
                 )
                 st.download_button(
@@ -1475,7 +1479,7 @@ elif menu == "전년비교":
                     })
                 ev_table = pd.DataFrame(ev_rows)
                 st.dataframe(
-                    ev_table.style.map(delta_cell_style, subset=["증감률"]),
+                    highlight_current(ev_table.style.map(delta_cell_style, subset=["증감률"]), [ev_label_b]),
                     use_container_width=True, hide_index=True,
                 )
                 st.download_button(
@@ -1519,7 +1523,7 @@ elif menu == "전년비교":
                         "증감률": ev_cat["증감률"].apply(format_delta_text),
                     })
                     st.dataframe(
-                        ev_cat_table.style.map(delta_cell_style, subset=["증감률"]),
+                        highlight_current(ev_cat_table.style.map(delta_cell_style, subset=["증감률"]), [f"{ev_label_b} (일평균)"]),
                         use_container_width=True, hide_index=True,
                         height=min(35 * (len(ev_cat_table) + 1) + 3, 560),
                     )
@@ -1554,7 +1558,7 @@ elif menu == "전년비교":
                     st.markdown("**① 정상 / 이월 / 입점별**")
                     ev_t1 = _bd_fmt(ev_bd_total, ["txn_type"], ["구분"])
                     st.dataframe(
-                        ev_t1.style.map(delta_cell_style, subset=["증감률"]),
+                        highlight_current(ev_t1.style.map(delta_cell_style, subset=["증감률"]), [f"{ev_label_b} (일평균)"]),
                         use_container_width=True, hide_index=True, height=35 * (len(ev_t1) + 1) + 3,
                     )
 
@@ -1599,7 +1603,7 @@ elif menu == "전년비교":
                         else:
                             ev_t2 = _bd_fmt(ev_bd_view, ev_bd_cols, [ev_bd_names[c] for c in ev_bd_cols])
                             st.dataframe(
-                                ev_t2.style.map(delta_cell_style, subset=["증감률"]),
+                                highlight_current(ev_t2.style.map(delta_cell_style, subset=["증감률"]), [f"{ev_label_b} (일평균)"]),
                                 use_container_width=True, hide_index=True,
                                 height=min(35 * (len(ev_t2) + 1) + 3, 520),
                             )
@@ -1646,7 +1650,7 @@ elif menu == "전년비교":
                             else:
                                 ev_t3 = _bd_fmt(ev_pr_view, ["product_name", "brand", "category"], ["상품명", "브랜드", "카테고리"])
                                 st.dataframe(
-                                    ev_t3.style.map(delta_cell_style, subset=["증감률"]),
+                                    highlight_current(ev_t3.style.map(delta_cell_style, subset=["증감률"]), [f"{ev_label_b} (일평균)"]),
                                     use_container_width=True, hide_index=True,
                                     height=min(35 * (len(ev_t3) + 1) + 3, 560),
                                 )
@@ -1983,6 +1987,7 @@ elif menu == "카테고리별 실적":
         pd.DataFrame(txs_rows),
         delta_cols=[f"쇼핑검색광고 {l}" for l in txs_labels] + [f"EP채널 {l}" for l in txs_labels],
         bold_rows={"합계(전체)"}, groups=_txs_groups, sub_labels=_txs_sub,
+        highlight_cols=["쇼핑검색광고 거래액", "EP채널 거래액", "합계 거래액"],
     )
 
     # ── 카테고리 × 정상/이월/입점 (선택 기간, 직전기간 대비) ──
@@ -2051,6 +2056,7 @@ elif menu == "카테고리별 실적":
             groups=[{"title": g, "cols": [g, f"{g} {cattxn_immediate_label}"], "bg": TXN_GROUP_BG[g]} for g in txc_groups],
             sub_labels={**{g: "거래액" for g in txc_groups},
                         **{f"{g} {cattxn_immediate_label}": cattxn_immediate_label for g in txc_groups}},
+            highlight_cols=list(txc_groups),
         )
         st.caption(
             f"📅 {cattxn_cur_label} vs {cattxn_immediate_label} 기간 · {cattxn_mode} 기준 · 합계 = 정상+이월+입점 · "
@@ -2095,7 +2101,8 @@ elif menu == "카테고리별 실적":
     st.dataframe(
         cattxn_summary_df.style
             .apply(style_channel_rows, axis=1)
-            .map(delta_cell_style, subset=[f"{cattxn_immediate_label}(%)", "전년비(%)"]),
+            .map(delta_cell_style, subset=[f"{cattxn_immediate_label}(%)", "전년비(%)"])
+            .pipe(highlight_current, [cattxn_cur_label]),
         use_container_width=True, hide_index=True,
     )
 
@@ -2789,7 +2796,7 @@ elif menu == "카테고리별 실적":
                     lambda v: format_million(v / cattxn_cur_days) if cattxn_mode == "일평균" and cattxn_cur_days else format_million(v)
                 )
             cat_yoy_display = pd.DataFrame(cat_yoy_cols)
-            render_comparison_table(cat_yoy_display, delta_cols=comp_pct_cols)
+            render_comparison_table(cat_yoy_display, delta_cols=comp_pct_cols, highlight_cols=["거래액"])
             st.caption(f"📅 전년비 기준: 전년 동요일비(364일=52주 전, 요일 정렬) · 거래액은 {cattxn_cat_yoy_channel} 기준입니다.")
             st.caption("📅 비교대상 기간 — " + " · ".join(cattxn_comp_strs))
             st.caption("📁 데이터 출처: category_brand_txn_daily.csv ← 정상이월입점_RAW.xlsx (01·02페이지 태블로 원본과는 별도 집계)")
@@ -2952,7 +2959,7 @@ elif menu == "카테고리별 실적":
                     lambda v: format_million(v / cattxn_cur_days) if cattxn_mode == "일평균" and cattxn_cur_days else format_million(v)
                 )
             brand_yoy_display = pd.DataFrame(brand_yoy_cols)
-            render_comparison_table(brand_yoy_display, delta_cols=brand_comp_pct_cols)
+            render_comparison_table(brand_yoy_display, delta_cols=brand_comp_pct_cols, highlight_cols=["거래액"])
             st.caption(f"※ 전체 {len(brand_yoy_display)}개 브랜드입니다. "
                       f"📅 전년비 기준: 전년 동요일비(364일=52주 전, 요일 정렬) · 거래액은 {cattxn_brand_yoy_channel} 기준입니다.")
             st.caption("📅 비교대상 기간 — " + " · ".join(cattxn_comp_strs))
@@ -3084,6 +3091,7 @@ elif menu == "카테고리별 실적":
         render_comparison_table(
             cattxn_wide_display, delta_cols=cattxn_wide_pct_cols, bold_rows={"합계(전체)"},
             groups=cattxn_wide_grp_defs, sub_labels=cattxn_wide_sub,
+            highlight_cols=[f"{g} · {cattxn_wide_cur_year}년" for g in cattxn_wide_groups],
         )
         st.caption("💡 맨 왼쪽 \"합계\" 열 = 정상+이월+입점 합산 · 맨 위 \"합계(전체)\" 행 = 전체 카테고리 합산")
         st.caption("📁 데이터 출처: category_brand_txn_daily.csv ← 정상이월입점_RAW.xlsx (01·02페이지 태블로 원본과는 별도 집계)")
@@ -3655,7 +3663,7 @@ elif menu == "상품군 효율":
                     delta_cell_style,
                     subset=[f"판매액 {ap_immediate_label}", f"광고비 {ap_immediate_label}",
                             f"ROAS {ap_immediate_label}", f"CR {ap_immediate_label}", "ROAS 상태"],
-                ).set_properties(subset=ap_current_cols, **{"font-weight": "700", "color": "#0F172A"}),
+                ).pipe(highlight_current, ap_current_cols),
                 use_container_width=True, hide_index=True,
                 height=min(35 * (len(ap_display) + 1) + 3, 560),
             )
@@ -3811,7 +3819,8 @@ elif menu == "상품군 효율":
             if fm_rows:
                 fm_table = pd.DataFrame(fm_rows)
                 fm_table = fm_table.sort_values("_s", ascending=False).drop(columns="_s").reset_index(drop=True)
-                render_comparison_table(fm_table, delta_cols=[f"판매액 {fm_cmp}", f"ROAS {fm_cmp}"])
+                render_comparison_table(fm_table, delta_cols=[f"판매액 {fm_cmp}", f"ROAS {fm_cmp}"],
+                                        highlight_cols=["최근 판매액(일평균)", "최근 ROAS"])
             if fm_clipped:
                 st.caption(
                     f"※ 일부 구간의 ROAS가 {fm_all_roas.max():,.0f}%까지 올라가 차트 세로축은 {fm_y_cap:,.0f}%까지만 보여줘요 "

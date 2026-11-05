@@ -424,6 +424,19 @@ def inject_css(pin_filters: bool = True):
     table.dtbl th.grp-start, table.dtbl td.grp-start {{
         border-left: 1px solid #CBD5E1;
     }}
+    /* 전년비 표의 '올해/이번' 값 열: 연한 파란 음영 + 굵게 (머리글은 진한 파랑) */
+    table.dtbl thead th.dtbl-cur {{
+        background: #DBEAFE !important;
+        color: #1E3A8A !important;
+        border-bottom: 2px solid #2563EB;
+    }}
+    table.dtbl tbody td.dtbl-cur {{
+        background: #EAF2FF;
+        font-weight: 700;
+    }}
+    table.dtbl tbody tr.dtbl-bold td.dtbl-cur {{
+        background: #DBEAFE;
+    }}
     .dtbl-delta {{
         font-weight: 600;
     }}
@@ -763,7 +776,7 @@ def format_delta_text(delta) -> str:
 
 
 def render_comparison_table(df: pd.DataFrame, delta_cols: list, bold_rows: set = None,
-                            groups: list = None, sub_labels: dict = None):
+                            groups: list = None, sub_labels: dict = None, highlight_cols: list = None):
     """비교(전년비/전월비 등) 컬럼과 그 옆의 "{컬럼명} 값"(비교대상 실제값) 컬럼을 한 셀로
     합쳐서 raw HTML 테이블로 렌더링한다 — st.dataframe(Styler)은 셀 안 일부만 스타일링을
     못 해서, 지금까지는 "전년비" | "전년비 값" 두 컬럼으로 쪼개 보여줬는데, EP_dashboard의
@@ -779,7 +792,10 @@ def render_comparison_table(df: pd.DataFrame, delta_cols: list, bold_rows: set =
         얹은 2단 헤더로 그리고, 묶음 사이에 세로 구분선을 넣는다(열이 많은 표에서 어느 열이 어느 묶음인지
         한눈에 보이게). 묶음에 안 든 열은 두 줄에 걸친 머리글이 된다. 묶음의 열은 서로 붙어 있어야 한다.
     sub_labels: {열이름: 2단 헤더의 아랫줄에 쓸 짧은 라벨} (groups를 쓸 때만 의미 있음).
+    highlight_cols: '올해/이번' 값이 든 열 이름 리스트 — 연한 파란 음영+굵게(머리글은 진한 파랑)로 강조해서
+        전년·직전기간 비교 열과 한눈에 구분되게 한다.
     """
+    hl = set(highlight_cols or [])
     value_cols = {d: f"{d} 값" for d in delta_cols if f"{d} 값" in df.columns}
     display_cols = [c for c in df.columns if c not in value_cols.values()]
     sub_labels = sub_labels or {}
@@ -810,20 +826,25 @@ def render_comparison_table(df: pd.DataFrame, delta_cols: list, bold_rows: set =
                     row1.append(
                         f'<th class="dtbl-grp grp-start" colspan="{span}" style="background:{bg};">{g["title"]}</th>'
                     )
-                cls = ' class="grp-start"' if c in group_first else ""
+                cls_list = (["grp-start"] if c in group_first else []) + (["dtbl-cur"] if c in hl else [])
+                cls = f' class="{" ".join(cls_list)}"' if cls_list else ""
                 row2.append(f'<th{cls} style="background:{bg};">{sub_labels.get(c, c)}</th>')
             else:
-                row1.append(f'<th rowspan="2">{c}</th>')
+                cls = ' class="dtbl-cur"' if c in hl else ""
+                row1.append(f'<th{cls} rowspan="2">{c}</th>')
         header_html = f"<tr>{''.join(row1)}</tr><tr>{''.join(row2)}</tr>"
     else:
-        header_html = "<tr>" + "".join(f"<th>{c}</th>" for c in display_cols) + "</tr>"
+        header_html = "<tr>" + "".join(
+            f'<th class="dtbl-cur">{c}</th>' if c in hl else f"<th>{c}</th>" for c in display_cols
+        ) + "</tr>"
     body_rows = []
     for _, row in df.iterrows():
         is_bold = bold_rows is not None and row[display_cols[0]] in bold_rows
         tr_cls = ' class="dtbl-bold"' if is_bold else ""
         cells = []
         for c in display_cols:
-            td_cls = ' class="grp-start"' if c in group_first else ""
+            td_list = (["grp-start"] if c in group_first else []) + (["dtbl-cur"] if c in hl else [])
+            td_cls = f' class="{" ".join(td_list)}"' if td_list else ""
             if c in value_cols:
                 cells.append(f"<td{td_cls}>{_delta_cell(row[c], row[value_cols[c]])}</td>")
             else:
@@ -941,21 +962,25 @@ def render_monthly_comparison_table(df: pd.DataFrame, title: str, metric_defs: l
     else:
         prev_day_label = last_day_label
 
-    def _th(m, day_label=None):
+    def _th(m, day_label=None, shade=False):
         dl = day_label if day_label is not None else last_day_label
         hl = CUR_HL_TOP if m == cur_month else ""
+        if shade:
+            hl += "background:#DBEAFE;color:#1E3A8A;"
         lbl = f"{m}월{f'({dl})' if m == cur_month else ''}"
         return f"<th style='white-space:nowrap;{hl}'>{lbl}</th>"
 
-    headers_cur = "".join(_th(m) for m in range(1, cur_month + 1))
+    headers_cur = "".join(_th(m, shade=True) for m in range(1, cur_month + 1))
     headers_yoy = "".join(_th(m) for m in range(1, cur_month + 1))
     headers_prev = "".join(_th(m, prev_day_label) for m in range(1, cur_month + 1))
 
-    def _td(v, m, is_pct=False, is_million=False, is_delta=False, is_last_row=False):
+    def _td(v, m, is_pct=False, is_million=False, is_delta=False, is_last_row=False, shade=False):
         if m == cur_month:
             hl = CUR_HL_BOTTOM if is_last_row else CUR_HL
         else:
             hl = ""
+        if shade:
+            hl += "background:#EAF2FF;font-weight:700;"
         content = _delta_span(v) if is_delta else _fmt(v, is_pct, is_million)
         return f"<td style='text-align:right;white-space:nowrap;{hl}'>{content}</td>"
 
@@ -965,7 +990,7 @@ def render_monthly_comparison_table(df: pd.DataFrame, title: str, metric_defs: l
         v_cur = _monthly_actual(cur_year, num_col, den_col, is_ratio, scale)
         v_prev = _monthly_actual(prev_year, num_col, den_col, is_ratio, scale)
         v_prev[cur_month - 1], _ = _cur_month_yoy_matched(num_col, den_col, is_ratio, scale)
-        cells_cur = "".join(_td(v_cur[m - 1], m, is_pct, is_million, is_last_row=is_last) for m in range(1, cur_month + 1))
+        cells_cur = "".join(_td(v_cur[m - 1], m, is_pct, is_million, is_last_row=is_last, shade=True) for m in range(1, cur_month + 1))
         cells_prev = "".join(_td(v_prev[m - 1], m, is_pct, is_million, is_last_row=is_last) for m in range(1, cur_month + 1))
         cells_yoy = "".join(
             _td(pct_change(v_cur[m - 1], v_prev[m - 1]) if v_cur[m - 1] is not None else None,
@@ -981,7 +1006,7 @@ def render_monthly_comparison_table(df: pd.DataFrame, title: str, metric_defs: l
         '<div class="mtbl-wrap" style="overflow-x:auto;"><table class="mtbl">'
         '<thead>'
         '<tr><th rowspan="2" style="white-space:nowrap;">구분</th>'
-        f'<th colspan="{cur_month}" style="text-align:center;background:#EEF2FF;white-space:nowrap;">{cur_year}년</th>'
+        f'<th colspan="{cur_month}" style="text-align:center;background:#2563EB;color:#fff;white-space:nowrap;">{cur_year}년 (올해)</th>'
         f'<th colspan="{cur_month}" style="text-align:center;background:#FEF3C7;white-space:nowrap;">전년비</th>'
         f'<th colspan="{cur_month}" style="text-align:center;background:#F3F4F6;white-space:nowrap;">{prev_year}년</th></tr>'
         f'<tr>{headers_cur}{headers_yoy}{headers_prev}</tr>'
@@ -994,6 +1019,18 @@ def render_monthly_comparison_table(df: pd.DataFrame, title: str, metric_defs: l
     if caption_extra:
         cap += f" {caption_extra}"
     st.caption(cap)
+
+
+CUR_COL_BG = "#EAF2FF"
+
+
+def highlight_current(styler, cols):
+    """st.dataframe용 Styler에서 '올해/이번' 값 열에 연한 파란 음영+굵게를 준다(전년비 표에서 올해 값이 한눈에 보이게).
+    cols 중 표에 없는 열은 무시. 다른 스타일(▲▼ 색 등) 뒤에 마지막으로 적용해서 배경이 덮이지 않게 한다."""
+    cols = [c for c in cols if c in styler.data.columns]
+    if not cols:
+        return styler
+    return styler.set_properties(subset=cols, **{"background-color": CUR_COL_BG, "font-weight": "700", "color": "#0F172A"})
 
 
 def delta_cell_style(val: str) -> str:
