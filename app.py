@@ -3296,7 +3296,7 @@ elif menu == "상품군 효율":
             )
     render_insight_box(ap_insight_lines)
 
-    p4_tabs = st.tabs(["🔻 퍼널 · 진단", "🏷️ 랭킹", "🧭 판매액 × ROAS 추이", "⚖️ 광고비 조정 후보", "📦 카테고리 거래액 · 상품 TOP10", "🔎 노출·클릭 분해"])
+    p4_tabs = st.tabs(["🔻 퍼널 · 진단", "🏷️ 랭킹", "🧭 판매액 × ROAS 추이", "⚖️ 광고비 조정 후보", "📦 카테고리 거래액 · 상품 TOP10", "🔎 노출·클릭·판매액 분해"])
     with p4_tabs[0]:
         # ── 실적 퍼널 (노출 → 클릭 → 구매) — 상단 자사/입점·대/중카테고리 필터를 그대로 반영.
         # ad_product 리포트에는 UV(방문) 개념이 없어(광고 클릭→매칭된 구매만 추적) 01페이지와
@@ -3987,19 +3987,20 @@ elif menu == "상품군 효율":
     # 🔎 노출·클릭 변화 분해: 어느 카테고리에서 늘고 줄었는지 + 운영 상품수 영향
     # ════════════════════════════════════════════════════════════════
     with p4_tabs[5]:
-        render_section_title("노출·클릭 변화 분해 (어디서, 왜 늘고 줄었나)")
+        render_section_title("노출·클릭·판매액 변화 분해 (어디서, 왜 늘고 줄었나)")
         st.caption(src_tag("adprod", "adcount"))
         ex_opts = {lbl: pr for lbl, pr in ap_comp_periods.items() if pr[0] <= pr[1]}
         if not ex_opts:
             st.info("비교할 수 있는 이전 기간이 없습니다.")
         else:
             ex_target = st.radio(
-                "분해 대상", ["노출", "클릭"], horizontal=True, key="adprod_ex_target",
-                help="상품수는 항상 '클릭이 발생한 상품 수'(운영 상품수) 기준이에요. 선택한 지표(노출/클릭)의 증감을 "
-                     "'운영 상품수가 달라진 몫'과 '상품 1개당 값이 달라진 몫'으로 나눠 보여줘요.",
+                "분해 대상", ["노출", "클릭", "판매액"], horizontal=True, key="adprod_ex_target",
+                help="선택한 지표의 증감을 '상품수가 달라진 몫'과 '상품 1개당 값이 달라진 몫'으로 나눠 보여줘요. "
+                     "노출·클릭은 '클릭이 발생한 상품 수(운영 상품수)', 판매액은 '매출이 발생한 상품 수' 기준이에요.",
             )
-            ex_metric = "클릭수" if ex_target == "클릭" else "노출수"
-            ex_count_col = "클릭상품수"
+            ex_metric = {"노출": "노출수", "클릭": "클릭수", "판매액": "판매액"}[ex_target]
+            ex_count_col = "매출상품수" if ex_target == "판매액" else "클릭상품수"
+            ex_count_label = "매출 발생 상품수" if ex_target == "판매액" else "운영 상품수"
             ex_unit_word = ex_target
             ex1, ex2, ex3 = st.columns([1.6, 2.2, 1.6])
             with ex1:
@@ -4026,38 +4027,43 @@ elif menu == "상품군 효율":
             else:
                 tot_a, tot_b = ex["노출수_전"].sum(), ex["노출수_후"].sum()
                 clk_a, clk_b = ex["클릭수_전"].sum(), ex["클릭수_후"].sum()
+                sal_a, sal_b = ex["판매액_전"].sum(), ex["판매액_후"].sum()
                 lines = [
                     f"노출 일평균 {tot_a:,.0f} → {tot_b:,.0f} (**{tot_b - tot_a:+,.0f}**, {format_delta_text(pct_change(tot_b, tot_a))}) · "
                     f"클릭 일평균 {clk_a:,.0f} → {clk_b:,.0f} ({format_delta_text(pct_change(clk_b, clk_a))}) · "
                     f"CTR {(clk_a / tot_a * 100 if tot_a else 0):.2f}% → {(clk_b / tot_b * 100 if tot_b else 0):.2f}%",
                 ]
-                drop = ex[ex["노출증감"] < 0].head(3)
-                rise = ex[ex["노출증감"] > 0].sort_values("노출증감", ascending=False).head(3)
+                if ex_target == "판매액":
+                    lines.append(
+                        f"판매액 일평균 {sal_a:,.0f} → {sal_b:,.0f} (**{sal_b - sal_a:+,.0f}**, {format_delta_text(pct_change(sal_b, sal_a))})"
+                    )
+                drop = ex[ex["대상증감"] < 0].head(3)
+                rise = ex[ex["대상증감"] > 0].sort_values("대상증감", ascending=False).head(3)
                 if not drop.empty:
-                    lines.append("📉 노출이 가장 크게 **줄어든** 곳: " + " · ".join(
-                        f"**{_ex_nm(r[ex_group_col])}** {r['노출증감']:+,.0f}" for _, r in drop.iterrows()))
+                    lines.append(f"📉 {ex_unit_word}이 가장 크게 **줄어든** 곳: " + " · ".join(
+                        f"**{_ex_nm(r[ex_group_col])}** {r['대상증감']:+,.0f}" for _, r in drop.iterrows()))
                 if not rise.empty:
-                    lines.append("📈 노출이 가장 크게 **늘어난** 곳: " + " · ".join(
-                        f"**{_ex_nm(r[ex_group_col])}** {r['노출증감']:+,.0f}" for _, r in rise.iterrows()))
+                    lines.append(f"📈 {ex_unit_word}이 가장 크게 **늘어난** 곳: " + " · ".join(
+                        f"**{_ex_nm(r[ex_group_col])}** {r['대상증감']:+,.0f}" for _, r in rise.iterrows()))
                 if ex_has_n:
                     eff_n, eff_i = ex["상품수효과"].sum(), ex["상품당노출효과"].sum()
-                    n_a, _ = avg_operating_products(ad_count_df, ex_ps, ex_pe, ap_own, ap_large, ap_mid)
-                    n_b, _ = avg_operating_products(ad_count_df, ap_start_ts, ap_end_ts, ap_own, ap_large, ap_mid)
-                    _d_total = (clk_b - clk_a) if ex_metric == "클릭수" else (tot_b - tot_a)
+                    n_a, _ = avg_operating_products(ad_count_df, ex_ps, ex_pe, ap_own, ap_large, ap_mid, col=ex_count_col)
+                    n_b, _ = avg_operating_products(ad_count_df, ap_start_ts, ap_end_ts, ap_own, ap_large, ap_mid, col=ex_count_col)
+                    _d_total = ex["대상증감"].sum()
                     lines.append(
-                        f"🧮 {ex_unit_word} 증감 {_d_total:+,.0f} = 운영 상품수 변화 몫 **{eff_n:+,.0f}** + 상품 1개당 {ex_unit_word} 변화 몫 **{eff_i:+,.0f}** "
-                        f"({ex_group_label}별 몫을 합친 값 · 전체 운영 상품수는 일평균 {n_a:,.0f}개 → {n_b:,.0f}개)"
+                        f"🧮 {ex_unit_word} 증감 {_d_total:+,.0f} = {ex_count_label} 변화 몫 **{eff_n:+,.0f}** + 상품 1개당 {ex_unit_word} 변화 몫 **{eff_i:+,.0f}** "
+                        f"({ex_group_label}별 몫을 합친 값 · 전체 {ex_count_label}는 일평균 {n_a:,.0f}개 → {n_b:,.0f}개)"
                     )
-                render_insight_box(lines, title=f"{ex_label} 기준 · {ex_group_label}별")
+                render_insight_box(lines, title=f"{ex_label} 기준 · {ex_group_label}별 · {ex_unit_word}")
 
                 view = ex.copy()
                 if ex_dir == "감소만":
-                    view = view[view["노출증감"] < 0].sort_values("노출증감")
+                    view = view[view["대상증감"] < 0].sort_values("대상증감")
                 elif ex_dir == "증가만":
-                    view = view[view["노출증감"] > 0].sort_values("노출증감", ascending=False)
+                    view = view[view["대상증감"] > 0].sort_values("대상증감", ascending=False)
                 else:
-                    view = view.sort_values("노출수_후", ascending=False)
-                view = view[(view["노출수_전"] + view["노출수_후"]) > 0]
+                    view = view.sort_values("대상_후", ascending=False)
+                view = view[(view["대상_전"].abs() + view["대상_후"].abs()) > 0]
                 if view.empty:
                     st.info(f"'{ex_dir}'에 해당하는 항목이 없습니다.")
                 else:
@@ -4068,7 +4074,7 @@ elif menu == "상품군 효율":
                         return f"{fmt(a)} → {fmt(b)}"
 
                     def _verdict(r):
-                        if not ex_has_n or pd.isna(r["상품수효과"]) or abs(r["노출증감"]) < 0.5:
+                        if not ex_has_n or pd.isna(r["상품수효과"]) or abs(r["대상증감"]) < 0.5:
                             return "-"
                         if abs(r["상품수효과"]) >= abs(r["상품당노출효과"]):
                             return "📦 상품수 영향" + (" (감소)" if r["상품수효과"] < 0 else " (증가)")
@@ -4078,14 +4084,16 @@ elif menu == "상품군 효율":
                         return "-" if pd.isna(v) else f"{v * 100:.2f}%"
 
                     tbl = pd.DataFrame({ex_group_label: view[ex_group_col].map(_ex_nm)})
-                    tbl["노출(일평균)"] = [_arrow(a, b, _fmt0) for a, b in zip(view["노출수_전"], view["노출수_후"])]
-                    tbl["노출 증감"] = view["노출증감"].apply(lambda v: f"{v:+,.0f}")
-                    tbl["노출 기여도"] = view["노출기여도"].apply(lambda v: "-" if pd.isna(v) else f"{v:+.1f}%p")
-                    tbl["클릭(일평균)"] = [_arrow(a, b, _fmt0) for a, b in zip(view["클릭수_전"], view["클릭수_후"])]
-                    tbl["클릭 증감"] = view["클릭증감"].apply(lambda v: f"{v:+,.0f}")
+                    tbl[f"{ex_unit_word}(일평균)"] = [_arrow(a, b, _fmt0) for a, b in zip(view["대상_전"], view["대상_후"])]
+                    tbl[f"{ex_unit_word} 증감"] = view["대상증감"].apply(lambda v: f"{v:+,.0f}")
+                    tbl[f"{ex_unit_word} 기여도"] = view["대상기여도"].apply(lambda v: "-" if pd.isna(v) else f"{v:+.1f}%p")
+                    if ex_target != "노출":
+                        tbl["노출(일평균)"] = [_arrow(a, b, _fmt0) for a, b in zip(view["노출수_전"], view["노출수_후"])]
+                    if ex_target != "클릭":
+                        tbl["클릭(일평균)"] = [_arrow(a, b, _fmt0) for a, b in zip(view["클릭수_전"], view["클릭수_후"])]
                     tbl["CTR"] = [_arrow(a, b, _ctr_txt) for a, b in zip(view["CTR_전"], view["CTR_후"])]
                     if ex_has_n:
-                        tbl["운영 상품수(일평균)"] = [_arrow(a, b, _fmt0) for a, b in zip(view["상품수_전"], view["상품수_후"])]
+                        tbl[f"{ex_count_label}(일평균)"] = [_arrow(a, b, _fmt0) for a, b in zip(view["상품수_전"], view["상품수_후"])]
                         tbl[f"상품당 {ex_unit_word}"] = [_arrow(a, b, _fmt0) for a, b in zip(view["상품당노출_전"], view["상품당노출_후"])]
                         tbl["상품수 몫"] = view["상품수효과"].apply(lambda v: f"{v:+,.0f}")
                         tbl[f"상품당{ex_unit_word} 몫"] = view["상품당노출효과"].apply(lambda v: f"{v:+,.0f}")
@@ -4098,22 +4106,23 @@ elif menu == "상품군 효율":
                             return "color:#16A34A"
                         return ""
 
-                    sign_cols = [c for c in ["노출 증감", "노출 기여도", "클릭 증감", "상품수 몫", f"상품당{ex_unit_word} 몫"] if c in tbl.columns]
+                    sign_cols = [c for c in [f"{ex_unit_word} 증감", f"{ex_unit_word} 기여도", "상품수 몫", f"상품당{ex_unit_word} 몫"]
+                                 if c in tbl.columns]
                     st.dataframe(tbl.style.map(_sign_color, subset=sign_cols), use_container_width=True, hide_index=True,
                                  height=min(35 * (len(tbl) + 1) + 3, 560))
 
-                    # 노출 증감을 두 몫으로 쪼갠 막대 (상품수 데이터가 있으면), 없으면 노출 증감만
-                    chart_df = view.reindex(view["노출증감"].abs().sort_values(ascending=False).index).head(15).iloc[::-1]
+                    # 증감을 두 몫으로 쪼갠 막대 (상품수 데이터가 있으면), 없으면 증감만
+                    chart_df = view.reindex(view["대상증감"].abs().sort_values(ascending=False).index).head(15).iloc[::-1]
                     fig_ex = go.Figure()
                     names = chart_df[ex_group_col].map(_ex_nm)
                     if ex_has_n:
                         fig_ex.add_trace(go.Bar(y=names, x=chart_df["상품수효과"], orientation="h",
-                                                name="운영 상품수 변화 몫", marker_color="#2563EB"))
+                                                name=f"{ex_count_label} 변화 몫", marker_color="#2563EB"))
                         fig_ex.add_trace(go.Bar(y=names, x=chart_df["상품당노출효과"], orientation="h",
                                                 name=f"상품 1개당 {ex_unit_word} 변화 몫", marker_color="#F59E0B"))
                         fig_ex.update_layout(barmode="relative")
                     else:
-                        fig_ex.add_trace(go.Bar(y=names, x=chart_df["클릭증감" if ex_metric == "클릭수" else "노출증감"], orientation="h",
+                        fig_ex.add_trace(go.Bar(y=names, x=chart_df["대상증감"], orientation="h",
                                                 name=f"{ex_unit_word} 증감(일평균)", marker_color="#2563EB"))
                     fig_ex.update_layout(
                         height=max(300, 28 * len(chart_df) + 120), margin=dict(t=10, b=10, l=10, r=10),
@@ -4123,19 +4132,21 @@ elif menu == "상품군 효율":
                     st.plotly_chart(fig_ex, use_container_width=True, key="adprod_ex_chart")
                     st.download_button(
                         "📥 Excel 다운로드", data=to_excel_bytes(tbl),
-                        file_name=f"노출클릭분해_{ex_group_label}_{ap_start_ts.date()}.xlsx",
+                        file_name=f"{ex_unit_word}분해_{ex_group_label}_{ap_start_ts.date()}.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         key="dl_adprod_exposure",
                     )
                 ex_na, ex_nb = ex.attrs.get("has_counts_each", (False, False))
+                _cnt_def = ("그 날 상품별 판매액 합(취소·반품 반영)이 0보다 큰 서로 다른 상품코드 수" if ex_target == "판매액"
+                            else "그 날 클릭이 발생한 서로 다른 상품코드 수")
                 st.caption(
                     f"📅 이번 {ap_start_ts.date()} ~ {ap_end_ts.date()} vs {ex_label} {ex_ps.date()} ~ {ex_pe.date()} · "
-                    "노출·클릭·운영 상품수 모두 일평균 · 운영 상품수 = 그 날 클릭이 발생한 서로 다른 상품코드 수 · "
+                    f"{ex_unit_word}·{ex_count_label} 모두 일평균 · {ex_count_label} = {_cnt_def} · "
                     f"분해식: {ex_unit_word} 증감 = (상품수 변화) × (이전 상품당 {ex_unit_word}) + (이번 상품수) × (상품당 {ex_unit_word} 변화) — 파란 막대는 "
                     f"'상품이 늘고 줄어서', 주황 막대는 '상품당 {ex_unit_word}이 달라져서' 생긴 변화예요. 이전/이번 기간에 상품이 없던 항목은 "
                     "전부 상품수 몫으로 봅니다."
                     + ("" if ex_has_n else
                        f"  ⚠️ 상품수 데이터가 없는 기간이 있어(이번 {'있음' if ex_nb else '없음'} / {ex_label} "
-                       f"{'있음' if ex_na else '없음'}) 상품수 분해는 표시하지 않고 노출·클릭 증감만 보여줘요 — "
+                       f"{'있음' if ex_na else '없음'}) 상품수 분해는 표시하지 않고 증감만 보여줘요 — "
                        "상품코드가 있는 쇼핑검색리포트 원본을 변환하면 채워집니다.")
                 )

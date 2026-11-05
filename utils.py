@@ -1385,13 +1385,13 @@ def ad_exposure_breakdown(df: pd.DataFrame, count_df, group_col: str, cur_start,
         상품수효과·상품당노출효과(노출 증감을 '운영 상품수가 달라진 몫'과 '상품 1개당 노출이 달라진 몫'으로 분해, 합=노출증감).
     분해식: Δ노출 = (n후−n전)×(전 상품당노출) + n후×(후 상품당노출−전 상품당노출). 한쪽 기간에 상품이 없던 그룹은 전부 상품수 몫.
     상품수 데이터가 없는 그룹은 두 효과 열이 NaN.
-    metric: 분해할 지표('노출수'|'클릭수'), count_col: 상품수 기준('클릭상품수'=클릭 발생 상품(기본) | '운영상품수'=노출 발생 상품).
+    metric: 분해할 지표('노출수'|'클릭수'|'판매액'), count_col: 상품수 기준('클릭상품수'=클릭 발생 상품(기본) | '매출상품수'=판매액 발생 상품(판매액 분해용) | '운영상품수'=노출 발생 상품).
     '상품당노출*' 열 이름은 그대로지만 metric이 클릭수면 '상품당 클릭'을 뜻한다."""
     def _period(start, end):
         scope = df[(df["date"] >= pd.Timestamp(start)) & (df["date"] <= pd.Timestamp(end))]
         scope = _ad_product_scope(scope, own, large_cat, mid_cat)
         nd = max(int(scope["date"].nunique()), 1)
-        g = scope.groupby(group_col)[["노출수", "클릭수"]].sum() / nd
+        g = scope.groupby(group_col)[["노출수", "클릭수", "판매액"]].sum() / nd
         n = pd.Series(dtype=float)
         if count_df is not None and count_col in count_df.columns:
             cs = count_df[(count_df["date"] >= pd.Timestamp(start)) & (count_df["date"] <= pd.Timestamp(end))]
@@ -1404,7 +1404,7 @@ def ad_exposure_breakdown(df: pd.DataFrame, count_df, group_col: str, cur_start,
     a, has_a = _period(prev_start, prev_end)
     b, has_b = _period(cur_start, cur_end)
     out = a.add_suffix("_전").join(b.add_suffix("_후"), how="outer")
-    for c in ["노출수", "클릭수"]:
+    for c in ["노출수", "클릭수", "판매액"]:
         out[f"{c}_전"] = out[f"{c}_전"].fillna(0.0)
         out[f"{c}_후"] = out[f"{c}_후"].fillna(0.0)
     out["노출증감"] = out["노출수_후"] - out["노출수_전"]
@@ -1415,7 +1415,11 @@ def ad_exposure_breakdown(df: pd.DataFrame, count_df, group_col: str, cur_start,
     out["CTR_후"] = out["클릭수_후"] / out["노출수_후"].where(out["노출수_후"] > 0)
     n_a, n_b = out["상품수_전"], out["상품수_후"]
     m_a, m_b = out[f"{metric}_전"], out[f"{metric}_후"]
-    m_delta = out["노출증감"] if metric == "노출수" else out["클릭증감"]
+    m_delta = m_b - m_a
+    # 선택한 지표(노출/클릭/판매액) 기준 공통 열 — 화면에서 정렬·필터·기여도에 쓴다
+    out["대상_전"], out["대상_후"], out["대상증감"] = m_a, m_b, m_delta
+    tot_m = m_a.sum()
+    out["대상기여도"] = m_delta / tot_m * 100 if tot_m else None
     out["상품당노출_전"] = m_a / n_a.where(n_a > 0)
     out["상품당노출_후"] = m_b / n_b.where(n_b > 0)
     if has_a and has_b:
@@ -1432,7 +1436,7 @@ def ad_exposure_breakdown(df: pd.DataFrame, count_df, group_col: str, cur_start,
         out["상품당노출효과"] = float("nan")
     out.attrs["has_counts"] = bool(has_a and has_b)
     out.attrs["has_counts_each"] = (bool(has_a), bool(has_b))
-    return out.reset_index().sort_values("노출증감").reset_index(drop=True)
+    return out.reset_index().sort_values("대상증감").reset_index(drop=True)
 
 
 def ad_product_flow_points(df: pd.DataFrame, group_col: str, unit: str, n_buckets: int, end_date,
