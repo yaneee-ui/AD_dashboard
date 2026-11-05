@@ -53,7 +53,7 @@ def _to_num(v):
         return 0.0
 
 
-def _process_sheet(ws, acc, sheet_label, prod_acc=None):
+def _process_sheet(ws, acc, sheet_label, prod_acc=None, clk_acc=None):
     col_idx = {}
     n_rows = 0
     for i, row in enumerate(ws.iter_rows(values_only=True)):
@@ -90,12 +90,17 @@ def _process_sheet(ws, acc, sheet_label, prod_acc=None):
         )
         rec = acc[key]
         imp_v = _to_num(row[col_idx["노출수"]])
+        clk_v = _to_num(row[col_idx["클릭수"]])
         rec[0] += imp_v
-        rec[1] += _to_num(row[col_idx["클릭수"]])
-        if prod_acc is not None and PRODUCT_CODE_COL in col_idx and imp_v > 0:
+        rec[1] += clk_v
+        if prod_acc is not None and PRODUCT_CODE_COL in col_idx:
             code = row[col_idx[PRODUCT_CODE_COL]]
             if code not in (None, "", "-"):
-                prod_acc[key].add(str(code).strip())
+                code = str(code).strip()
+                if imp_v > 0:
+                    prod_acc[key].add(code)
+                if clk_acc is not None and clk_v > 0:
+                    clk_acc[key].add(code)
         rec[2] += _to_num(row[col_idx["총비용(VAT포함,원)"]])
         rec[3] += _to_num(row[col_idx["구매수량"]])
         rec[4] += _to_num(row[col_idx["판매액"]])
@@ -107,6 +112,7 @@ def _process_sheet(ws, acc, sheet_label, prod_acc=None):
 def convert(raw_paths: list, out_path: str, counts_only: bool = False):
     acc = defaultdict(lambda: [0.0, 0.0, 0.0, 0.0, 0.0])  # 노출수,클릭수,광고비,구매수량,판매액
     prod_acc = defaultdict(set)  # 키(날짜·카테고리·브랜드·자사입점) -> 그 날 노출된 상품코드 집합
+    clk_acc = defaultdict(set)   # 같은 키 -> 그 날 클릭이 발생한 상품코드 집합
     total_rows = 0
 
     for raw_path in raw_paths:
@@ -114,7 +120,7 @@ def convert(raw_paths: list, out_path: str, counts_only: bool = False):
         wb = openpyxl.load_workbook(raw_path, read_only=True, data_only=True)
         for sheet_name in wb.sheetnames:
             ws = wb[sheet_name]
-            n = _process_sheet(ws, acc, f"{os.path.basename(raw_path)}::{sheet_name}", prod_acc)
+            n = _process_sheet(ws, acc, f"{os.path.basename(raw_path)}::{sheet_name}", prod_acc, clk_acc)
             total_rows += n
             print(f"  시트 '{sheet_name}': {n:,}행 처리 (누적 {total_rows:,}행)")
         wb.close()
@@ -136,7 +142,7 @@ def convert(raw_paths: list, out_path: str, counts_only: bool = False):
           f"({agg['date'].min().date()} ~ {agg['date'].max().date()}, "
           f"대카테고리 {agg['대카테고리'].nunique()}개, 브랜드 {agg['브랜드명'].nunique()}개)")
 
-    _write_product_counts(prod_acc, out_path)
+    _write_product_counts(prod_acc, out_path, clk_acc)
     if counts_only:
         print("--counts-only: 운영 상품수 파일만 갱신하고 끝냅니다.")
         return
@@ -159,16 +165,22 @@ def convert(raw_paths: list, out_path: str, counts_only: bool = False):
     _write_year_splits(merged, out_path)
 
 
-def _write_product_counts(prod_acc, out_path: str):
-    """날짜 x 대카테고리 x 중카테고리 x 브랜드명 x 자사/입점별 '운영 상품수'(노출수>0인 서로 다른 상품코드 수)를
+def _write_product_counts(prod_acc, out_path: str, clk_acc=None):
+    """날짜 x 대카테고리 x 중카테고리 x 브랜드명 x 자사/입점별 '운영 상품수'(노출수>0인 서로 다른 상품코드 수)와
+    '클릭 상품수'(클릭수>0인 서로 다른 상품코드 수)를
     ad_product_count_daily.csv(+반기별 조각)로 저장한다. 한 상품은 한 카테고리·브랜드에만 속하므로 이 단위의 합이
     곧 상위 단위(전체/대카테고리/자사·입점) 상품수다. 하루 단위 값이라 기간 값은 '일평균 운영 상품수'로 쓴다.
-    기존 파일이 있으면 새로 센 날짜만 덮어쓰고 나머지 날짜는 유지한다(원본이 없는 과거 날짜는 비어 있게 됨)."""
+    기존 파일이 있으면 새로 센 날짜만 덮어쓰고 나머지 날짜는 유지한다(원본이 없는 과거 날짜는 비어 있게 됨).
+    주의: 2025-11-10 이전 원본에는 클릭이 있었던 상품 행만 담겨 있고(클릭 0 행 약 3%), 2025-11-11부터는 노출만 있고
+    클릭 없는 상품까지 담긴다(클릭 0 행 약 79%) — 총 노출·클릭·광고비는 거의 같다. 그래서 '운영 상품수'(노출 기준)는 그 경계를
+    넘어 비교할 수 없고, 기간 비교에는 '클릭 상품수'를 쓴다."""
     if not prod_acc:
         print("[주의] 상품코드 기반 운영 상품수를 하나도 세지 못했습니다 — 상품수 파일은 건드리지 않습니다.")
         return
+    clk_acc = clk_acc or {}
     rows = [
-        {"date": k[0], "대카테고리": k[1], "중카테고리": k[2], "브랜드명": k[3], "자사/입점": k[4], "운영상품수": len(v)}
+        {"date": k[0], "대카테고리": k[1], "중카테고리": k[2], "브랜드명": k[3], "자사/입점": k[4],
+         "운영상품수": len(v), "클릭상품수": len(clk_acc.get(k, ()))}
         for k, v in prod_acc.items()
     ]
     cnt = pd.DataFrame(rows)
