@@ -16,6 +16,8 @@ CARD_BG = "#FFFFFF"
 PAGE_BG = "#F5F7FA"
 UP_COLOR = "#16A34A"    # 증가 = 초록
 DOWN_COLOR = "#DC2626"  # 감소 = 빨강
+UP_BG = "#DCFCE7"       # 증가 셀 음영(연초록)
+DOWN_BG = "#FEE2E2"     # 감소 셀 음영(연빨강)
 
 
 def inject_css(pin_filters: bool = True):
@@ -148,9 +150,15 @@ def inject_css(pin_filters: bool = True):
     }}
     .kpi-delta-value.up {{
         color: {UP_COLOR};
+        background: {UP_BG};
+        padding: 0 6px;
+        border-radius: 4px;
     }}
     .kpi-delta-value.down {{
         color: {DOWN_COLOR};
+        background: {DOWN_BG};
+        padding: 0 6px;
+        border-radius: 4px;
     }}
     .kpi-delta-value.flat {{
         color: #64748B;
@@ -440,8 +448,8 @@ def inject_css(pin_filters: bool = True):
     .dtbl-delta {{
         font-weight: 600;
     }}
-    .dtbl-delta.up {{ color: {UP_COLOR}; }}
-    .dtbl-delta.down {{ color: {DOWN_COLOR}; }}
+    .dtbl-delta.up {{ color: {UP_COLOR}; background: {UP_BG}; padding: 1px 6px; border-radius: 4px; }}
+    .dtbl-delta.down {{ color: {DOWN_COLOR}; background: {DOWN_BG}; padding: 1px 6px; border-radius: 4px; }}
     .dtbl-delta.flat {{ color: #64748B; font-weight: 400; }}
     .dtbl-ref {{
         color: #94A3B8;
@@ -489,8 +497,8 @@ def inject_css(pin_filters: bool = True):
     table.mtbl td.m {{
         font-weight: 500;
     }}
-    table.mtbl .delta.up {{ color: {UP_COLOR}; font-weight: 600; }}
-    table.mtbl .delta.down {{ color: {DOWN_COLOR}; font-weight: 600; }}
+    table.mtbl .delta.up {{ color: {UP_COLOR}; font-weight: 600; background: {UP_BG}; padding: 1px 5px; border-radius: 4px; }}
+    table.mtbl .delta.down {{ color: {DOWN_COLOR}; font-weight: 600; background: {DOWN_BG}; padding: 1px 5px; border-radius: 4px; }}
     table.mtbl .delta.neutral {{ color: #9CA3AF; font-weight: 600; }}
     </style>
     """), unsafe_allow_html=True)
@@ -1034,10 +1042,31 @@ def highlight_current(styler, cols):
 
 
 def delta_cell_style(val: str) -> str:
-    """▲(증가)=초록, ▼(감소)=빨강 — 표 전체에서 KPI 카드와 동일한 색 규칙을 쓰기 위한 스타일러."""
+    """▲(증가)=초록 글자+연초록 음영, ▼(감소)=빨강 글자+연빨강 음영 — 표 전체에서 KPI 카드와 동일한 색 규칙을 쓰기 위한 스타일러."""
     if isinstance(val, str):
         if val.startswith("▲"):
-            return f"color: {UP_COLOR}; font-weight: 600;"
+            return f"color: {UP_COLOR}; font-weight: 600; background-color: {UP_BG};"
         if val.startswith("▼"):
-            return f"color: {DOWN_COLOR}; font-weight: 600;"
+            return f"color: {DOWN_COLOR}; font-weight: 600; background-color: {DOWN_BG};"
+    return ""
+
+
+def signed_cell_style(val: str) -> str:
+    """'+1,234' / '-1,234' / '+3.4%p' 처럼 부호로 증감을 나타낸 칸도 같은 규칙(증가=초록, 감소=빨강, 음영 포함)으로 칠한다.
+    ▲/▼ 로 시작하면 delta_cell_style과 같다. 0(+0, -0)이나 '-' 는 칠하지 않는다."""
+    if not isinstance(val, str):
+        return ""
+    if val.startswith(("▲", "▼")):
+        return delta_cell_style(val)
+    body = val[1:].replace(",", "").replace("%p", "").replace("%", "").strip()
+    try:
+        num = float(body)
+    except ValueError:
+        return ""
+    if num == 0:
+        return ""
+    if val.startswith("+"):
+        return f"color: {UP_COLOR}; font-weight: 600; background-color: {UP_BG};"
+    if val.startswith("-"):
+        return f"color: {DOWN_COLOR}; font-weight: 600; background-color: {DOWN_BG};"
     return ""

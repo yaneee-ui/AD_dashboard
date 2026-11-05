@@ -1399,6 +1399,14 @@ def ad_exposure_breakdown(df: pd.DataFrame, count_df, group_col: str, cur_start,
             if not cs.empty:
                 n = cs.groupby(["date", group_col])[count_col].sum().dropna().groupby(group_col).mean()
         g["상품수"] = n
+        # 분해 기준과 상관없이 '클릭 발생 상품수'와 '매출 발생 상품수'를 항상 같이 싣는다(표·타일에서 둘 다 보여주기 위해)
+        for _c in ("클릭상품수", "매출상품수"):
+            g[_c] = float("nan")
+            if count_df is not None and _c in count_df.columns:
+                cs2 = count_df[(count_df["date"] >= pd.Timestamp(start)) & (count_df["date"] <= pd.Timestamp(end))]
+                cs2 = _ad_product_scope(cs2, own, large_cat, mid_cat)
+                if not cs2.empty:
+                    g[_c] = cs2.groupby(["date", group_col])[_c].sum().dropna().groupby(group_col).mean()
         return g, (not (count_df is None or n.empty))
 
     a, has_a = _period(prev_start, prev_end)
