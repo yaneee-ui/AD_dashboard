@@ -1649,11 +1649,57 @@ elif menu == "카테고리별 실적":
         title=f"카테고리별 실적 — {cattxn_cur_label}{cattxn_cat_suffix}{cattxn_brand_suffix}{cattxn_txn_suffix}",
         sub=f"조회단위: {unit}  ·  표시방식: {cattxn_mode}  ·  집계기간: {cattxn_start_ts.date()} ~ {cattxn_end_ts.date()} ({cattxn_cur_days}일)",
     )
-    st.caption(
-        f"ℹ️ 이 데이터는 2일 전 실적까지 반영됩니다 (최신일자: {CATTXN_MAX_DATE}). "
-        f"01·02페이지의 일일리포트[태블로]는 1일 전 실적까지 반영됩니다 (최신일자: {MAX_DATE}) — "
-        f"두 페이지의 '오늘' 기준이 하루 차이날 수 있습니다."
-    )
+    # ── 데이터 출처 · 반영 시점: 이 페이지는 파일마다 반영 시점(D-1/D-2)이 달라 한눈에 보이게 정리 ──
+    _today_ts = pd.Timestamp.today().normalize()
+
+    def _ago(d):
+        n = (_today_ts - pd.Timestamp(d)).days
+        return "오늘" if n == 0 else f"{n}일 전"
+
+    CATTXN_SRC = {
+        "cattxn": ("category_brand_txn_daily.csv", "정상이월입점_RAW.xlsx", CATTXN_MAX_DATE, "D-2"),
+        "tableau": ("tableau_daily.csv", "일일리포트_RAW.xlsx", MAX_DATE, "D-1"),
+    }
+
+    def cattxn_src_tag(*kinds):
+        """섹션 제목 아래에 붙이는 한 줄 출처 표기."""
+        names = {
+            "cattxn": "거래액·주문고객수",
+            "tableau": "광고비·ROAS",
+        }
+        parts = []
+        for k in kinds:
+            f, raw, mx, lag = CATTXN_SRC[k]
+            parts.append(f"{names[k]} = {f} ← {raw} · 최신 {mx} (보통 {lag} 반영)")
+        return "📁 출처: " + "  /  ".join(parts)
+
+    with st.expander("📁 데이터 출처 · 반영 시점 (파일마다 최신일자가 달라요)", expanded=True):
+        _src_rows = [
+            "| 구분 | 어디서 | 원본 | 최신일자 | 반영 시점 |",
+            "|---|---|---|---|---|",
+            f"| **거래액·주문고객수·객단가** (쇼핑검색광고 / EP채널, 카테고리·브랜드·정상/이월/입점) "
+            f"| category_brand_txn_daily.csv | 정상이월입점_RAW.xlsx | **{CATTXN_MAX_DATE}** ({_ago(CATTXN_MAX_DATE)}) | 보통 **2일 전(D-2)** 까지 |",
+            f"| **광고비·ROAS** (전체채널, 카테고리 구분 없음 · 01·02페이지와 동일) "
+            f"| tableau_daily.csv | 일일리포트_RAW.xlsx | **{MAX_DATE}** ({_ago(MAX_DATE)}) | 보통 **1일 전(D-1)** 까지 |",
+        ]
+        if product_txn_df is not None:
+            _src_rows.append(
+                f"| **TOP20 상품** (상품명 단위) | product_txn_daily(_2026H1/H2).csv | 정상이월입점_RAW.xlsx(상품명 포함) "
+                f"| **{PRODUCT_TXN_MAX_DATE}** ({_ago(PRODUCT_TXN_MAX_DATE)}) | 카테고리·브랜드 집계와 같은 D-2, **{PRODUCT_TXN_MIN_DATE} 이후만** 보유 |"
+            )
+        st.markdown("\n".join(_src_rows))
+        if CATTXN_MAX_DATE != MAX_DATE:
+            _gap = abs((pd.Timestamp(MAX_DATE) - pd.Timestamp(CATTXN_MAX_DATE)).days)
+            _min_d = min(CATTXN_MAX_DATE, MAX_DATE)
+            st.caption(
+                f"⚠️ 지금은 일일리포트가 {MAX_DATE}, 카테고리 거래액이 {CATTXN_MAX_DATE}까지라 {_gap}일 차이가 나요. "
+                f"광고비·ROAS와 거래액을 같은 날짜로 맞춰 보려면 {_min_d} 이하 기간을 보세요."
+            )
+        else:
+            st.caption(
+                f"현재는 두 파일 모두 {CATTXN_MAX_DATE}까지 반영돼 있어요 — 다만 파이프라인상 카테고리 거래액은 보통 하루 더 늦게 "
+                "들어와서, 갱신 시점에 따라 두 파일의 최신일자가 하루 어긋날 수 있어요."
+            )
 
     cattxn_mask = (cattxn_df["date"] >= cattxn_start_ts) & (cattxn_df["date"] <= cattxn_end_ts)
     cattxn_view = cattxn_df.loc[cattxn_mask]
@@ -1761,7 +1807,9 @@ elif menu == "카테고리별 실적":
     st.markdown(
         f'<div class="kpi-footnote">※ 거래액·주문고객수는 선택한 표시방식({cattxn_mode}) 기준이며, '
         f'객단가는 거래액÷주문고객수로 재산정한 값입니다. 광고비·ROAS는 카테고리별 광고비 원본이 없어 '
-        f'<b>쇼핑검색광고 전체 채널 기준</b>입니다(카테고리 필터와 무관, 01페이지와 동일 소스).</div>',
+        f'<b>쇼핑검색광고 전체 채널 기준</b>입니다(카테고리 필터와 무관, 01페이지와 동일 소스).<br>'
+        f'📁 거래액·주문고객수·객단가 = category_brand_txn_daily.csv (최신 {CATTXN_MAX_DATE}, 보통 D-2) · '
+        f'광고비·ROAS = tableau_daily.csv (최신 {MAX_DATE}, 보통 D-1)</div>',
         unsafe_allow_html=True,
     )
     cattxn_comp_strs = [
@@ -1802,6 +1850,7 @@ elif menu == "카테고리별 실적":
     # (거래유형에 따라 실적이 크게 달라 한 값으로 합쳐 보면 판단이 어렵기 때문)
     # ══════════════════════════════════════════════════════════
     render_section_title(f"정상 / 이월 / 입점별 실적 · {cattxn_cur_label} ({cattxn_mode})")
+    st.caption(cattxn_src_tag("cattxn"))
     st.caption(
         "위 '정상/이월/입점' 필터와 상관없이 세 유형을 항상 나눠서 보여줍니다. "
         "카테고리·브랜드 필터는 그대로 적용되고, 거래액이 큰 순서로 정렬해요."
@@ -1949,6 +1998,7 @@ elif menu == "카테고리별 실적":
     cattxn_yoy_start, cattxn_yoy_end = cattxn_comp_periods["전년비"]
 
     render_section_title(f"실적요약 · {cattxn_immediate_label} · 전년비 비교 ({cattxn_mode})")
+    st.caption(cattxn_src_tag("cattxn"))
 
     cattxn_summary_metrics = [
         "쇼핑검색광고_거래액", "쇼핑검색광고_주문고객수", "쇼핑검색광고_객단가",
@@ -2214,6 +2264,7 @@ elif menu == "카테고리별 실적":
 
         # ── SA/EP 거래액 비중 추이 (조회단위 기준 최근 구간) ──
         render_section_title(f"SA/EP 거래액 비중 추이 · {unit}")
+        st.caption(cattxn_src_tag("cattxn"))
         share_buckets = flow_overview_buckets(cattxn_df, unit)
         share_labels, sa_share, ep_share = cattxn_share_series(
             cattxn_df, share_buckets, cattxn_txn_filter, cattxn_category_filter, cattxn_brand_filter
@@ -2236,6 +2287,7 @@ elif menu == "카테고리별 실적":
 
         # ── SA×EP 통합 흐름: 광고비 · 거래액 · ROAS · EP채널 (메인 3지표 + EP 흐름 한 화면) ──
         render_section_title(f"SA×EP 통합 흐름 — 광고비 · 거래액 · ROAS · EP채널 · {unit}")
+        st.caption(cattxn_src_tag("tableau", "cattxn"))
         overview = ad_cost_vs_sa_ep_weekly(df, cattxn_df, share_buckets, cattxn_txn_filter)
         roas_pct = (overview["ROAS"] * 100).round(1)
         ad_cost_m = _to_million(overview["광고비"])
@@ -2541,6 +2593,7 @@ elif menu == "카테고리별 실적":
                           "(계절성·프로모션·광고 예산 변경 등은 반영되지 않습니다).")
 
         render_section_title("카테고리·브랜드별 거래액 추이")
+        st.caption(cattxn_src_tag("cattxn"))
         fc0, fc1 = st.columns([2, 2])
         with fc0:
             flow_group_label = st.radio("그룹 기준", ["카테고리", "브랜드"], horizontal=True, key="cattxn_flow_group")
@@ -2591,6 +2644,7 @@ elif menu == "카테고리별 실적":
                       f"마지막 구간이 아직 끝나지 않은 부분기간이어도 일평균으로 맞춰서 공정하게 비교됩니다.")
 
         render_section_title(f"카테고리별 비교(스냅샷) · {cattxn_cur_label} ({cattxn_mode}{cattxn_txn_suffix})")
+        st.caption(cattxn_src_tag("cattxn"))
         cattxn_rank_metric = st.radio("비교 지표", ["거래액", "객단가"], horizontal=True, key="cattxn_rank_metric")
 
         cattxn_rank = aggregate_cattxn_by(cattxn_view, "category", cattxn_txn_filter, brand=cattxn_brand_filter)
@@ -2751,6 +2805,7 @@ elif menu == "카테고리별 실적":
     with tab_brand:
         brand_scope_note = f" · {cattxn_category_filter} 안에서" if cattxn_category_filter != "전체" else " · 전체 카테고리"
         render_section_title(f"브랜드별 비교(스냅샷){brand_scope_note} · {cattxn_cur_label} ({cattxn_mode}{cattxn_txn_suffix})")
+        st.caption(cattxn_src_tag("cattxn"))
         cattxn_brand_rank_metric = st.radio("비교 지표", ["거래액", "객단가"], horizontal=True, key="cattxn_brand_rank_metric")
 
         cattxn_brand_rank = aggregate_cattxn_by(cattxn_view, "brand", cattxn_txn_filter, category=cattxn_category_filter)
@@ -2838,6 +2893,7 @@ elif menu == "카테고리별 실적":
     # ══════════════════════════════════════════════════════════
     with tab_txn:
         render_section_title(f"정상/이월/입점별 구성 · {cattxn_cur_label}{cattxn_cat_suffix}{cattxn_brand_suffix}")
+        st.caption(cattxn_src_tag("cattxn"))
         cattxn_breakdown = cattxn_txn_type_breakdown(cattxn_view, cattxn_category_filter, cattxn_brand_filter)
         cattxn_breakdown = cattxn_breakdown.iloc[
             (-(cattxn_breakdown["쇼핑검색광고 거래액"] + cattxn_breakdown["EP채널 거래액"])).argsort()
@@ -2869,6 +2925,7 @@ elif menu == "카테고리별 실적":
         render_section_title(
             f"정상/이월/입점 × 카테고리 · 연간 비교 ({cattxn_wide_prev_year}년 vs {cattxn_wide_cur_year}년, {cattxn_mode})"
         )
+        st.caption(cattxn_src_tag("cattxn"))
         cattxn_wide_channel = st.radio(
             "채널", ["전체(Total)", "쇼핑검색광고", "EP채널"], horizontal=True, key="cattxn_wide_channel",
         )
