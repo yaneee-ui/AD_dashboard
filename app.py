@@ -4040,7 +4040,7 @@ elif menu == "상품군 효율":
             with ex4:
                 ex_top_label = st.selectbox("표시 개수", ["상위 20", "상위 50", "전체"], key="adprod_ex_top")
             ex_top = {"상위 20": 20, "상위 50": 50, "전체": None}[ex_top_label]
-            ex_group_col = {"대카테고리": "대카테고리", "중카테고리": "중카테고리", "브랜드": "브랜드명",
+            ex_group_col = {"대카테고리": "대카테고리", "중카테고리": "대·중카테고리", "브랜드": "브랜드명",
                             "자사/입점": "자사/입점"}[ex_group_label]
             ex_ps, ex_pe = ex_opts[ex_label]
             with st.expander("❓ '몫'은 어떻게 계산되나요?", expanded=False):

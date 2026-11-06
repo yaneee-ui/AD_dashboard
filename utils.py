@@ -1387,15 +1387,21 @@ def ad_exposure_breakdown(df: pd.DataFrame, count_df, group_col: str, cur_start,
     상품수 데이터가 없는 그룹은 두 효과 열이 NaN.
     metric: 분해할 지표('노출수'|'클릭수'|'판매액'), count_col: 상품수 기준('클릭상품수'=클릭 발생 상품(기본) | '매출상품수'=판매액 발생 상품(판매액 분해용) | '운영상품수'=노출 발생 상품).
     '상품당노출*' 열 이름은 그대로지만 metric이 클릭수면 '상품당 클릭'을 뜻한다."""
+    def _with_key(frame):
+        """중카테고리는 이름만으로 묶으면 '여성의류 점퍼'와 '남성의류 점퍼'가 합쳐지므로 '대 · 중' 쌍으로 묶는다."""
+        if group_col == "대·중카테고리" and not frame.empty:
+            frame = frame.assign(**{"대·중카테고리": frame["대카테고리"].astype(str) + " · " + frame["중카테고리"].astype(str)})
+        return frame
+
     def _period(start, end):
         scope = df[(df["date"] >= pd.Timestamp(start)) & (df["date"] <= pd.Timestamp(end))]
-        scope = _ad_product_scope(scope, own, large_cat, mid_cat)
+        scope = _with_key(_ad_product_scope(scope, own, large_cat, mid_cat))
         nd = max(int(scope["date"].nunique()), 1)
         g = scope.groupby(group_col)[["노출수", "클릭수", "판매액", "광고비"]].sum() / nd
         n = pd.Series(dtype=float)
         if count_df is not None and count_col in count_df.columns:
             cs = count_df[(count_df["date"] >= pd.Timestamp(start)) & (count_df["date"] <= pd.Timestamp(end))]
-            cs = _ad_product_scope(cs, own, large_cat, mid_cat)
+            cs = _with_key(_ad_product_scope(cs, own, large_cat, mid_cat))
             if not cs.empty:
                 n = cs.groupby(["date", group_col])[count_col].sum().dropna().groupby(group_col).mean()
         g["상품수"] = n
@@ -1404,7 +1410,7 @@ def ad_exposure_breakdown(df: pd.DataFrame, count_df, group_col: str, cur_start,
             g[_c] = float("nan")
             if count_df is not None and _c in count_df.columns:
                 cs2 = count_df[(count_df["date"] >= pd.Timestamp(start)) & (count_df["date"] <= pd.Timestamp(end))]
-                cs2 = _ad_product_scope(cs2, own, large_cat, mid_cat)
+                cs2 = _with_key(_ad_product_scope(cs2, own, large_cat, mid_cat))
                 if not cs2.empty:
                     g[_c] = cs2.groupby(["date", group_col])[_c].sum().dropna().groupby(group_col).mean()
         return g, (not (count_df is None or n.empty))
