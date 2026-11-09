@@ -259,6 +259,28 @@ def event_category_compare(cattxn: pd.DataFrame, days_a, days_b, channel: str = 
     return out.reset_index(names="category").sort_values("B", ascending=False).reset_index(drop=True)
 
 
+def event_channel_total(cattxn: pd.DataFrame, days, channel: str = "합계") -> float:
+    """선택한 날짜들의 채널별 거래액 일평균 합계 (category_brand_txn_daily 기준)."""
+    view = cattxn[cattxn["date"].isin(list(days))]
+    if view.empty:
+        return 0.0
+    col = {"쇼핑검색광고": view["ad_거래액"], "EP채널": view["ep_거래액"]}.get(channel, view["ad_거래액"] + view["ep_거래액"])
+    return float(col.sum() / view["date"].nunique())
+
+
+def event_source_mismatch_days(tableau: pd.DataFrame, cattxn: pd.DataFrame, days, tol: float = 0.01):
+    """쇼핑검색광고 거래액이 태블로 일일리포트와 category_brand_txn_daily에서 tol(비율) 이상 다른 날짜.
+    반환: [(날짜, 카테고리파일 값, 태블로 값)]."""
+    days = list(days)
+    t = tableau[tableau["date"].isin(days)].groupby("date")["거래액"].sum()
+    c = cattxn[cattxn["date"].isin(days)].groupby("date")["ad_거래액"].sum()
+    out = []
+    for d in sorted(set(t.index) & set(c.index)):
+        if t[d] and abs(c[d] / t[d] - 1) > tol:
+            out.append((d, float(c[d]), float(t[d])))
+    return out
+
+
 def event_breakdown_compare(df: pd.DataFrame, days_a, days_b, group_cols, channel: str = "합계",
                             txn_type: str = "전체") -> pd.DataFrame:
     """두 날짜 목록(일평균)을 group_cols 단위(예: ['txn_type'], ['category'], ['brand'],
@@ -648,7 +670,7 @@ def brand_label(code) -> str:
     return f"{code} ({name})" if name else str(code)
 
 
-@st.cache_data
+@st.cache_resource(show_spinner=False)  # 큰 데이터는 cache_data처럼 복사하지 않고 공유(메모리 절약, 읽기 전용으로만 쓸 것)
 def load_product_txn_data():
     """상품명 단위 정상/이월/입점 데이터(2026년부터만 보유, 03페이지 TOP20 상품 표 전용).
     파일이 아직 없을 수도 있는 선택적 데이터라 cattxn_data와 달리 없어도 앱을 멈추지
@@ -1273,7 +1295,7 @@ AD_PRODUCT_OWN_OPTIONS = ["전체", "자사", "입점"]
 AD_PRODUCT_BASE_METRICS = ["노출수", "클릭수", "광고비", "구매수량", "판매액"]
 
 
-@st.cache_data
+@st.cache_resource(show_spinner=False)  # 큰 데이터는 cache_data처럼 복사하지 않고 공유(메모리 절약, 읽기 전용으로만 쓸 것)
 def load_ad_product_data():
     if os.path.exists(AD_PRODUCT_DATA_PATH):
         df = pd.read_csv(AD_PRODUCT_DATA_PATH, parse_dates=["date"], encoding="utf-8-sig")
@@ -1338,7 +1360,7 @@ def aggregate_ad_product_by(df: pd.DataFrame, group_col: str, own: str = "전체
 # ── 운영 상품수 (그 날 광고가 노출된 서로 다른 상품 수) ──────────────────
 # build_ad_product_daily.py가 상품코드 기준으로 세어 ad_product_count_daily.csv(+반기 조각)로 저장한다.
 # 상품코드가 있는 원본으로 다시 변환한 날짜부터만 값이 있어서, 데이터가 없는 기간은 None('-')으로 다룬다.
-@st.cache_data
+@st.cache_resource(show_spinner=False)  # 큰 데이터는 cache_data처럼 복사하지 않고 공유(메모리 절약, 읽기 전용으로만 쓸 것)
 def load_ad_product_count_data():
     paths = [os.path.join(BASE_DIR, "data", "ad_product_count_daily.csv"),
              os.path.join(BASE_DIR, "ad_product_count_daily.csv")]

@@ -21,6 +21,7 @@ from utils import (
     CATTXN_TXN_TYPE_OPTIONS, CATTXN_CHANNEL_OPTIONS, CATTXN_METRIC_OPTIONS,
     load_product_txn_data, top_products_by_revenue, brand_label,
     load_event_calendar, event_days_metrics, event_category_compare, event_breakdown_compare, EVENT_AVG_METRICS,
+    event_channel_total, event_source_mismatch_days,
     resolve_event_days, describe_event_pairs,
     top_products_excel_bytes, brand_ad_ep_response, AD_RESPONSE_CLASSES, NEW_PCT, ad_product_flow_points,
 )
@@ -1492,11 +1493,64 @@ elif menu == "전년비교":
                 # ── 카테고리별 거래액 변동 (cattxn, 1일 전까지 반영) ──
                 render_section_title("📦 카테고리별 거래액 변동")
                 ev_channel = st.radio(
-                    "채널", ["합계", "쇼핑검색광고", "EP채널"], horizontal=True, key="event_cat_channel",
+                    "채널", ["쇼핑검색광고", "EP채널", "합계"], horizontal=True, key="event_cat_channel",
+                    help="위 '지표별 상세'의 거래액은 쇼핑검색광고 거래액이에요. 같은 기준으로 비교하려면 '쇼핑검색광고'를 보세요. "
+                         "'합계'는 EP채널 거래액까지 더한 값이라 지표별 상세와 숫자가 달라요.",
                 )
                 ev_cat_days_a, ev_cat_days_b = resolve_event_days(
                     set(pd.to_datetime(cattxn_df["date"].unique())), ev_range_a, ev_range_b, ev_cmp_mode,
                 )
+
+                def _bold_total(styler):
+                    return styler.apply(
+                        lambda r: ["font-weight:700;border-bottom:2px solid #9CA3AF"] * len(r) if r.name == 0 else [""] * len(r),
+                        axis=1,
+                    )
+
+                def _prepend_total(t, a, b, label="합계"):
+                    """표 맨 위에 합계 행(일평균 A·B·증감)을 붙인다. t: 이름 열이 맨 앞에 있는 서식 적용된 표."""
+                    net = b - a
+                    row = {c: "" for c in t.columns}
+                    row[t.columns[0]] = label
+                    for c in t.columns:
+                        if c.endswith("(일평균)") and c.startswith(ev_label_a):
+                            row[c] = f"{a:,.0f}"
+                        elif c.endswith("(일평균)") and c.startswith(ev_label_b):
+                            row[c] = f"{b:,.0f}"
+                    if "증감액(일평균)" in t.columns:
+                        row["증감액(일평균)"] = f"{net:+,.0f}"
+                    row["증감률"] = format_delta_text(pct_change(b, a))
+                    if "기여도" in t.columns:
+                        row["기여도"] = f"{net / a * 100:+.1f}%p" if a else "-"
+                    return pd.concat([pd.DataFrame([row]), t], ignore_index=True)
+
+                # 지표별 상세(태블로)와 이 분해(category_brand_txn_daily)의 합계가 맞는지 대조
+                if ev_cat_days_a and ev_cat_days_b:
+                    _rc_a = event_channel_total(cattxn_df, ev_cat_days_a, ev_channel)
+                    _rc_b = event_channel_total(cattxn_df, ev_cat_days_b, ev_channel)
+                    _tab_a, _tab_b = ev_m_a["거래액"], ev_m_b["거래액"]
+                    if ev_channel == "쇼핑검색광고":
+                        _bad = event_source_mismatch_days(df, cattxn_df, list(ev_cat_days_a) + list(ev_cat_days_b))
+                        _rc_txt = (
+                            f"✅ 위 '지표별 상세' 거래액(일평균) {ev_label_a} {_tab_a:,.0f} → {ev_label_b} {_tab_b:,.0f} "
+                            f"({format_delta_text(pct_change(_tab_b, _tab_a))}) / 이 분해 합계 {_rc_a:,.0f} → {_rc_b:,.0f} "
+                            f"({format_delta_text(pct_change(_rc_b, _rc_a))})"
+                        )
+                        if _bad:
+                            st.warning(
+                                "⚠️ 아래 날짜는 '정상이월입점' 파일의 쇼핑검색광고 거래액이 태블로 일일리포트와 달라요 "
+                                "(최근 D-1 데이터는 다음 날 보정될 수 있어요): "
+                                + " · ".join(f"{d:%m/%d} (카테고리 {c:,.0f} vs 태블로 {t:,.0f})" for d, c, t in _bad)
+                                + " — 이 날짜가 포함돼 합계가 지표별 상세와 어긋납니다. 해당 파일을 다시 받아 업데이트해주세요."
+                            )
+                        else:
+                            st.caption(_rc_txt)
+                    else:
+                        st.caption(
+                            f"ℹ️ '{ev_channel}' 기준이라 위 '지표별 상세'(쇼핑검색광고 거래액 {_tab_a:,.0f} → {_tab_b:,.0f}, "
+                            f"{format_delta_text(pct_change(_tab_b, _tab_a))})와 숫자가 달라요. "
+                            f"이 분해 합계(일평균): {_rc_a:,.0f} → {_rc_b:,.0f} ({format_delta_text(pct_change(_rc_b, _rc_a))})"
+                        )
                 ev_cat = event_category_compare(cattxn_df, ev_cat_days_a, ev_cat_days_b, ev_channel)
                 if ev_cat.empty or not ev_cat.attrs.get("ndays", (0, 0))[0] or not ev_cat.attrs["ndays"][1]:
                     st.info("카테고리 데이터가 없는 구간이 있어 비교할 수 없습니다.")
@@ -1522,9 +1576,10 @@ elif menu == "전년비교":
                         "증감액(일평균)": ev_cat["증감액"].apply(lambda v: f"{v:+,.0f}"),
                         "증감률": ev_cat["증감률"].apply(format_delta_text),
                     })
+                    ev_cat_table = _prepend_total(ev_cat_table, float(ev_cat["A"].sum()), float(ev_cat["B"].sum()))
                     st.dataframe(
-                        highlight_current(ev_cat_table.style.map(delta_cell_style, subset=["증감률"]).map(signed_cell_style, subset=["증감액(일평균)"]),
-                                          [f"{ev_label_b} (일평균)"]),
+                        _bold_total(highlight_current(ev_cat_table.style.map(delta_cell_style, subset=["증감률"]).map(signed_cell_style, subset=["증감액(일평균)"]),
+                                          [f"{ev_label_b} (일평균)"])),
                         use_container_width=True, hide_index=True,
                         height=min(35 * (len(ev_cat_table) + 1) + 3, 560),
                     )
@@ -1557,10 +1612,10 @@ elif menu == "전년비교":
 
                     ev_bd_total = ev_bd_total.sort_values("B", ascending=False).reset_index(drop=True)
                     st.markdown("**① 정상 / 이월 / 입점별**")
-                    ev_t1 = _bd_fmt(ev_bd_total, ["txn_type"], ["구분"])
+                    ev_t1 = _prepend_total(_bd_fmt(ev_bd_total, ["txn_type"], ["구분"]), ev_tot_a, ev_tot_b)
                     st.dataframe(
-                        highlight_current(ev_t1.style.map(delta_cell_style, subset=["증감률"]).map(signed_cell_style, subset=["증감액(일평균)"]),
-                                          [f"{ev_label_b} (일평균)"]),
+                        _bold_total(highlight_current(ev_t1.style.map(delta_cell_style, subset=["증감률"]).map(signed_cell_style, subset=["증감액(일평균)"]),
+                                          [f"{ev_label_b} (일평균)"])),
                         use_container_width=True, hide_index=True, height=35 * (len(ev_t1) + 1) + 3,
                     )
 
@@ -1603,10 +1658,13 @@ elif menu == "전년비교":
                         if ev_bd_view.empty:
                             st.info(f"'{ev_bd_dir}'에 해당하는 항목이 없습니다.")
                         else:
-                            ev_t2 = _bd_fmt(ev_bd_view, ev_bd_cols, [ev_bd_names[c] for c in ev_bd_cols])
+                            ev_t2 = _prepend_total(
+                                _bd_fmt(ev_bd_view, ev_bd_cols, [ev_bd_names[c] for c in ev_bd_cols]), bd_a, bd_b,
+                                label=f"합계 ({ev_bd_txn} 전체)",
+                            )
                             st.dataframe(
-                                highlight_current(ev_t2.style.map(delta_cell_style, subset=["증감률"]).map(signed_cell_style, subset=["증감액(일평균)"]),
-                                          [f"{ev_label_b} (일평균)"]),
+                                _bold_total(highlight_current(ev_t2.style.map(delta_cell_style, subset=["증감률"]).map(signed_cell_style, subset=["증감액(일평균)"]),
+                                          [f"{ev_label_b} (일평균)"])),
                                 use_container_width=True, hide_index=True,
                                 height=min(35 * (len(ev_t2) + 1) + 3, 520),
                             )
@@ -1651,10 +1709,13 @@ elif menu == "전년비교":
                             if ev_pr_view.empty:
                                 st.info("해당하는 상품이 없습니다.")
                             else:
-                                ev_t3 = _bd_fmt(ev_pr_view, ["product_name", "brand", "category"], ["상품명", "브랜드", "카테고리"])
+                                ev_t3 = _prepend_total(
+                                    _bd_fmt(ev_pr_view, ["product_name", "brand", "category"], ["상품명", "브랜드", "카테고리"]),
+                                    *ev_pr.attrs["total"], label=f"합계 ({ev_pr_txn} 전체 상품)",
+                                )
                                 st.dataframe(
-                                    highlight_current(ev_t3.style.map(delta_cell_style, subset=["증감률"]).map(signed_cell_style, subset=["증감액(일평균)"]),
-                                          [f"{ev_label_b} (일평균)"]),
+                                    _bold_total(highlight_current(ev_t3.style.map(delta_cell_style, subset=["증감률"]).map(signed_cell_style, subset=["증감액(일평균)"]),
+                                          [f"{ev_label_b} (일평균)"])),
                                     use_container_width=True, hide_index=True,
                                     height=min(35 * (len(ev_t3) + 1) + 3, 560),
                                 )
