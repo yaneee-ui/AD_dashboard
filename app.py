@@ -963,10 +963,11 @@ if menu == "쇼핑검색광고 실적":
             is_million_metric = metric_choice in MILLION_SCALE_METRICS
 
             if show_combo:
-                _, ad_cost_vals, _ = bucket_yoy_series(df, buckets, "광고비", mode, unit)
+                _, ad_cost_vals, ad_cost_prev_vals = bucket_yoy_series(df, buckets, "광고비", mode, unit)
                 _, roas_vals, _ = bucket_yoy_series(df, buckets, "ROAS", mode, unit)
                 roas_pct_vals = [round(v * 100, 1) if v is not None else None for v in roas_vals]
                 ad_cost_plot = _to_million(ad_cost_vals)
+                ad_cost_prev_plot = _to_million(ad_cost_prev_vals)
                 cur_plot, prev_plot = _to_million(cur_vals), _to_million(prev_vals)
 
                 fig.add_trace(go.Bar(
@@ -982,6 +983,11 @@ if menu == "쇼핑검색광고 실적":
                 fig.add_trace(go.Scatter(
                     x=x_vals, y=prev_plot, mode=line_mode, name="거래액(전년비)",
                     line=dict(width=2, dash="dash", color="#93C5FD"), connectgaps=True,
+                ))
+                fig.add_trace(go.Scatter(
+                    x=x_vals, y=ad_cost_prev_plot, mode=line_mode, name="광고비(전년비)", yaxis="y2",
+                    line=dict(width=2, dash="dot", color="#F97316"), connectgaps=True,
+                    hovertemplate="%{x}<br>전년 광고비: %{y:,.1f}백만<extra></extra>",
                 ))
                 if show_ma:
                     fig.add_trace(go.Scatter(
@@ -999,7 +1005,7 @@ if menu == "쇼핑검색광고 실적":
                     dragmode="pan",
                 )
                 st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True})
-                st.caption("📊 막대=광고비(우측 보조축) · 거래액 라인에 마우스를 올리면 해당 시점 ROAS%가 함께 표시됩니다."
+                st.caption("📊 막대=올해 광고비 · 주황 점선=전년 광고비(둘 다 우측 보조축) · 거래액 라인에 마우스를 올리면 해당 시점 ROAS%가 함께 표시됩니다."
                           + (" 마우스 스크롤로 확대/축소, 클릭한 채로 드래그하면 좌우 이동됩니다." if use_date_axis else "")
                           + (" 위쪽 버튼으로 기간(1주/1개월/3개월/6개월/전체)을 바꿔볼 수 있습니다." if use_date_axis else ""))
             else:
