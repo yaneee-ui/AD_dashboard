@@ -984,9 +984,9 @@ if menu == "쇼핑검색광고 실적":
                     x=x_vals, y=prev_plot, mode=line_mode, name="거래액(전년비)",
                     line=dict(width=2, dash="dash", color="#93C5FD"), connectgaps=True,
                 ))
-                fig.add_trace(go.Scatter(
-                    x=x_vals, y=ad_cost_prev_plot, mode=line_mode, name="광고비(전년비)", yaxis="y2",
-                    line=dict(width=2, dash="dot", color="#F97316"), connectgaps=True,
+                fig.add_trace(go.Bar(
+                    x=x_vals, y=ad_cost_prev_plot, name="광고비(전년비)", yaxis="y2",
+                    marker_color="rgba(249,115,22,0.55)",
                     hovertemplate="%{x}<br>전년 광고비: %{y:,.1f}백만<extra></extra>",
                 ))
                 if show_ma:
@@ -1001,11 +1001,12 @@ if menu == "쇼핑검색광고 실적":
                     yaxis=_money_axis(f"거래액 ({mode})"),
                     yaxis2=dict(**_money_axis("광고비"), overlaying="y", side="right", showgrid=False),
                     hovermode="closest",
+                    barmode="group", bargap=0.2,
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
                     dragmode="pan",
                 )
                 st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True})
-                st.caption("📊 막대=올해 광고비 · 주황 점선=전년 광고비(둘 다 우측 보조축) · 거래액 라인에 마우스를 올리면 해당 시점 ROAS%가 함께 표시됩니다."
+                st.caption("📊 막대 나란히: 회색=올해 광고비 · 주황=전년 광고비(우측 보조축) · 거래액 라인에 마우스를 올리면 해당 시점 ROAS%가 함께 표시됩니다."
                           + (" 마우스 스크롤로 확대/축소, 클릭한 채로 드래그하면 좌우 이동됩니다." if use_date_axis else "")
                           + (" 위쪽 버튼으로 기간(1주/1개월/3개월/6개월/전체)을 바꿔볼 수 있습니다." if use_date_axis else ""))
             else:
