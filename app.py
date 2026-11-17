@@ -21,7 +21,7 @@ from utils import (
     CATTXN_TXN_TYPE_OPTIONS, CATTXN_CHANNEL_OPTIONS, CATTXN_METRIC_OPTIONS,
     load_product_txn_data, top_products_by_revenue, brand_label,
     load_event_calendar, event_days_metrics, event_category_compare, event_breakdown_compare, EVENT_AVG_METRICS,
-    event_channel_total, event_source_mismatch_days,
+    event_channel_total, event_source_mismatch_days, yoy_diagnosis,
     resolve_event_days, describe_event_pairs,
     top_products_excel_bytes, brand_ad_ep_response, AD_RESPONSE_CLASSES, NEW_PCT, ad_product_flow_points,
 )
@@ -1112,6 +1112,18 @@ elif menu == "전년비교":
         else:
             cur_agg = aggregate(cur_view)
             prev_agg = aggregate(prev_view)
+
+            # ── 해석 · 액션 (선택한 비교 구간 기준 자동 진단, 항상 표시) ──
+            _diag = yoy_diagnosis(df, cattxn_df, ad_product_df, list(cur_range), list(prev_range))
+            if _diag:
+                render_insight_box(
+                    [_diag["headline"]] + _diag["reads"],
+                    title=f"전년비 해석 · {cur_start} ~ {cur_end}", tone=_diag["tone"],
+                )
+                if _diag["actions"]:
+                    render_insight_box(_diag["actions"], title="이렇게 해보세요 (액션)")
+                for _n in _diag["notes"]:
+                    st.caption(f"ℹ️ {_n}")
 
             with st.container(key="card_yoy1_result"):
                 render_section_title("📊 지표 비교")

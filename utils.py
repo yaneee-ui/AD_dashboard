@@ -1706,3 +1706,157 @@ def classify_comovement(sa_pct, ep_pct, threshold: float = 5.0):
     if abs(sa_pct) <= threshold and abs(ep_pct) <= threshold:
         return "⚫ 변화 미미"
     return "🟡 혼조"
+
+
+
+# ════════════════════════════════════════════════════════════════
+# 전년비 자동 진단 (해석 · 액션) — 02 전년비교 상단 고정 박스
+# 규칙 기반(같은 데이터면 항상 같은 문장). 거래액 = 클릭 × (UV/클릭) × CR × 객단가 로 쪼개
+# '유입 / 유입 품질 / 전환 / 객단가' 중 어디가 가장 많이 빠졌는지 찾고, 어디서(정상·이월·입점/카테고리)와
+# 광고 효율(ROAS·전환율)로 연결해 액션까지 제안한다.
+# ════════════════════════════════════════════════════════════════
+def _arrow(p) -> str:
+    if p is None or pd.isna(p):
+        return "-"
+    return f"{'▲' if p >= 0 else '▼'}{abs(p):.1f}%"
+
+
+def yoy_diagnosis(df: pd.DataFrame, cattxn: pd.DataFrame, ad_df, cur_days, prev_days) -> dict:
+    """cur_days/prev_days: 같은 순서로 짝지어진 올해/전년 날짜 리스트. 반환:
+    {'tone': 'danger'|'info'|'success', 'headline': str, 'reads': [해석], 'actions': [액션], 'notes': [참고]}.
+    데이터가 모자라면 해당 항목만 건너뛴다."""
+    have = set(pd.to_datetime(df["date"].unique()))
+    pairs = [(pd.Timestamp(c), pd.Timestamp(p)) for c, p in zip(cur_days, prev_days)
+             if pd.Timestamp(c) in have and pd.Timestamp(p) in have]
+    if not pairs:
+        return {}
+    cur = [c for c, _ in pairs]
+    prev = [p for _, p in pairs]
+    n = len(pairs)
+    a, b = event_days_metrics(df, prev), event_days_metrics(df, cur)
+    if a is None or b is None:
+        return {}
+
+    def pc(m):
+        return (b[m] / a[m] - 1) * 100 if a[m] else None
+
+    sales = pc("거래액")
+    reads, actions, notes = [], [], []
+    headline = (f"거래액 일평균 {a['거래액']:,.0f} → {b['거래액']:,.0f}원 ({_arrow(sales)}) · "
+                f"광고비 {_arrow(pc('광고비'))} · ROAS {_arrow(pc('ROAS'))}")
+    tone = "danger" if sales is not None and sales <= -10 else ("success" if sales is not None and sales >= 10 else "info")
+
+    # ── 1) 퍼널 분해: 어느 단계가 가장 빠졌나 ──
+    def ratio(x, y):
+        return x / y if y else None
+
+    fa = {"클릭수": a["클릭수"], "UV/클릭": ratio(a["UV"], a["클릭수"]), "CR": a["CR"], "객단가": a["객단가"]}
+    fb = {"클릭수": b["클릭수"], "UV/클릭": ratio(b["UV"], b["클릭수"]), "CR": b["CR"], "객단가": b["객단가"]}
+    chg = {k: (fb[k] / fa[k] - 1) * 100 for k in fa
+           if fa[k] and fb[k] is not None and fa[k] > 0 and fb[k] > 0}
+    if len(chg) == 4 and sales is not None:
+        label = {"클릭수": "유입(클릭수)", "UV/클릭": "유입 품질(UV/클릭)", "CR": "구매 전환(CR)", "객단가": "객단가"}
+        worst = min(chg, key=lambda k: chg[k])
+        reads.append("거래액 = 클릭 × UV/클릭 × CR × 객단가로 보면 — "
+                     + " · ".join(f"{label[k]} {_arrow(chg[k])}" for k in chg))
+        if chg[worst] <= -10:
+            others_up = [label[k] for k in chg if chg[k] >= 5 and k != worst]
+            tail = f" ({', '.join(others_up)}는 늘었는데)" if others_up else ""
+            reads.append(f"👉 가장 크게 빠진 단계는 **{label[worst]}** {_arrow(chg[worst])}{tail}")
+            actions.append({
+                "클릭수": "노출·클릭 자체가 줄었어요 → 입찰가·예산·광고 노출 상품 수를 먼저 점검하세요.",
+                "UV/클릭": "클릭은 났는데 방문(UV)으로 이어지지 않아요 → 랜딩 URL·로딩·광고 소재 연결을 점검하세요.",
+                "CR": "유입은 있는데 구매로 안 이어져요 → 가격·재고·상품 상세·쿠폰 등 클릭 이후 구간을 먼저 점검하세요 (광고비를 더 쓰기 전에).",
+                "객단가": "구매 건당 금액이 낮아졌어요 → 고단가 상품 노출 비중, 묶음·쿠폰 구조를 점검하세요.",
+            }[worst])
+        elif sales <= -10:
+            reads.append("특정 단계 하나보다 여러 단계가 조금씩 같이 빠졌어요.")
+
+    # ── 2) 광고비 × ROAS 신호 ──
+    ac, ro = pc("광고비"), pc("ROAS")
+    if ac is not None and ro is not None:
+        if ro <= -10 and ac <= -5:
+            reads.append(f"광고비를 줄였는데({_arrow(ac)}) ROAS도 더 나빠졌어요({_arrow(ro)}) — 줄인 만큼 효율이 안 따라왔어요.")
+            actions.append("효율이 낮은 곳의 광고비를 더 줄이고, 효율이 유지되는 곳(자사·ROAS 높은 카테고리)에 재배분하세요.")
+        elif ro <= -10 and ac >= 5:
+            reads.append(f"광고비는 늘었는데({_arrow(ac)}) ROAS는 떨어졌어요({_arrow(ro)}) — 효율화가 필요한 상태예요.")
+            actions.append("광고비 증액분이 효율 낮은 상품·키워드로 갔는지 확인하고 입찰가를 낮추세요.")
+        elif ro <= -10:
+            reads.append(f"광고비는 비슷한데 ROAS가 {_arrow(ro)} — 같은 비용으로 거래액이 덜 나와요.")
+        elif ro >= 10 and sales is not None and sales < 0:
+            reads.append(f"ROAS는 {_arrow(ro)}로 효율은 유지되지만 광고비 축소({_arrow(ac)})로 규모가 줄었어요.")
+
+    # ── 3) 어디서 빠졌나: 정상/이월/입점 · 카테고리 (쇼핑검색광고 거래액) ──
+    try:
+        have_c = set(pd.to_datetime(cattxn["date"].unique()))
+        cc = [c for c, p in pairs if c in have_c and p in have_c]
+        pp = [p for c, p in pairs if c in have_c and p in have_c]
+        if cc and sales is not None and sales <= -5:
+            t = event_breakdown_compare(cattxn, pp, cc, ["txn_type"], "쇼핑검색광고")
+            tn = t[t["증감액"] < 0].sort_values("증감액").head(3)
+            if not tn.empty and t.attrs["total"][0]:
+                reads.append("📉 정상/이월/입점 기여도(전체 증감 중 몇 %p): " + " · ".join(
+                    f"{r['txn_type']} {r['기여도']:+.1f}%p({_arrow(r['증감률'])})" for _, r in tn.iterrows()))
+            k = event_breakdown_compare(cattxn, pp, cc, ["category"], "쇼핑검색광고")
+            kn = k[k["증감액"] < 0].sort_values("증감액").head(3)
+            if not kn.empty and k.attrs["total"][0]:
+                reads.append("📉 카테고리별 기여도: " + " · ".join(
+                    f"{r['category']} {r['기여도']:+.1f}%p({_arrow(r['증감률'])})" for _, r in kn.iterrows()))
+                top = kn.iloc[0]
+                actions.append(f"가장 많이 빠진 **{top['category']}**(기여 {top['기여도']:+.1f}%p)부터 상품·가격·재고를 점검하세요.")
+    except Exception:
+        pass
+
+    # ── 4) 광고 효율이 나쁜 곳: 클릭은 유지인데 전환율 급락 / ROAS 급락한 입점 ──
+    try:
+        if ad_df is not None and sales is not None and sales <= -5:
+            ac_ = ad_df[ad_df["date"].isin(cur)]
+            ap_ = ad_df[ad_df["date"].isin(prev)]
+            if not ac_.empty and not ap_.empty:
+                cols = ["클릭수", "광고비", "구매수량", "판매액"]
+                A = ap_.groupby("대카테고리")[cols].sum()
+                B = ac_.groupby("대카테고리")[cols].sum()
+                x = A.join(B, lsuffix="_전", rsuffix="_후", how="outer").fillna(0)
+                x = x[x["클릭수_전"] >= max(x["클릭수_전"].sum(), 1) * 0.03]
+                x["CVR전"] = x["구매수량_전"] / x["클릭수_전"]
+                x["CVR후"] = x["구매수량_후"] / x["클릭수_후"].where(x["클릭수_후"] > 0)
+                x["클릭증감"] = (x["클릭수_후"] / x["클릭수_전"] - 1) * 100
+                x["CVR증감"] = (x["CVR후"] / x["CVR전"] - 1) * 100
+                x["판매Δ"] = (x["판매액_후"] - x["판매액_전"]) / n
+                bad = x[(x["클릭증감"] >= -5) & (x["CVR증감"] <= -30)].sort_values("판매Δ").head(3)
+                if not bad.empty:
+                    reads.append("🖱️ 클릭은 유지·증가했는데 전환율이 크게 떨어진 카테고리: " + " · ".join(
+                        f"{i} (클릭 {_arrow(r['클릭증감'])}, 전환율 {_arrow(r['CVR증감'])})" for i, r in bad.iterrows()))
+                    actions.append(f"**{bad.index[0]}** 등은 유입이 아닌 전환 문제예요 → 상품 상세·가격·재고를 점검하고, 개선 전에는 광고비 증액을 보류하세요.")
+                oa = ap_.groupby("자사/입점")[["광고비", "판매액"]].sum()
+                ob = ac_.groupby("자사/입점")[["광고비", "판매액"]].sum()
+                if "입점" in oa.index and "입점" in ob.index and oa.loc["입점", "광고비"] and ob.loc["입점", "광고비"]:
+                    r_a = oa.loc["입점", "판매액"] / oa.loc["입점", "광고비"]
+                    r_b = ob.loc["입점", "판매액"] / ob.loc["입점", "광고비"]
+                    if r_a and r_b / r_a - 1 <= -0.25:
+                        reads.append(f"입점 상품 광고 ROAS {r_a*100:,.0f}% → {r_b*100:,.0f}% ({_arrow((r_b / r_a - 1) * 100)}) — 입점 쪽 광고 효율이 크게 나빠졌어요.")
+                        actions.append("입점 상품 중 ROAS가 낮은 대카테고리(04 페이지 '광고비 조정 후보')의 입찰가를 낮추거나 노출 상품을 줄이세요.")
+    except Exception:
+        pass
+
+    # ── 5) 최근 흐름 · 행사 기저 효과 ──
+    if n >= 10:
+        k = 5
+        recent, recent_p = event_days_metrics(df, cur[-k:]), event_days_metrics(df, prev[-k:])
+        if recent and recent_p and recent_p["거래액"] and sales is not None:
+            rp = (recent["거래액"] / recent_p["거래액"] - 1) * 100
+            if rp <= sales - 15:
+                reads.append(f"⏱️ 최근 {k}일은 전년비 {_arrow(rp)}로 구간 전체({_arrow(sales)})보다 더 나빠지고 있어요.")
+    try:
+        cal = load_event_calendar()
+
+        def ev_days(days):
+            return sum(1 for d in days if ((cal["시작일"] <= d) & (cal["종료일"] >= d)).any())
+
+        ep, ec = ev_days(prev), ev_days(cur)
+        if ep - ec >= 2:
+            notes.append(f"비교 구간 중 전년은 행사 {ep}일, 올해는 행사 {ec}일이 포함돼 전년 기저가 높아요 — 행사가 겹치지 않는 날끼리는 '행사기간 비교' 탭에서 확인하세요.")
+    except Exception:
+        pass
+    notes.append("규칙 기반 자동 해석이에요(같은 데이터면 같은 문장). 최신 하루(D-1)는 다음 날 보정될 수 있어요.")
+    return {"tone": tone, "headline": headline, "reads": reads, "actions": actions, "notes": notes}
