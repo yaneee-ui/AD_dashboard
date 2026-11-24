@@ -2114,55 +2114,63 @@ elif menu == "카테고리별 실적":
         return g["ad_거래액"] + g["ep_거래액"]
 
     txc_cur = _txc_totals(cattxn_view)
-    txc_prev = _txc_totals(txs_views[cattxn_immediate_label])
+    txc_prevs = {_l: _txc_totals(txs_views[_l]) for _l in txs_labels}
     if txc_cur.empty:
         st.info("선택한 기간에 데이터가 없습니다.")
     else:
-        txc_prev_days = cattxn_comp_days[cattxn_immediate_label]
         txc_groups = ["합계"] + txs_types
         txc_rows = []
         for _cat in sorted({c for (_, c) in txc_cur.index}):
             _row = {"카테고리": _cat}
-            _cur_sum = _prev_sum = 0.0
+            _cur_sum = 0.0
+            _psum = {_l: 0.0 for _l in txs_labels}
             for _t in txs_types:
                 _c = _txs_scale(float(txc_cur.get((_t, _cat), 0.0)), cattxn_cur_days)
-                _p = _txs_scale(float(txc_prev.get((_t, _cat), 0.0)), txc_prev_days) if not txc_prev.empty else None
-                _row[_t], _row[f"{_t}__prev"] = _c, _p
+                _row[_t] = _c
                 _cur_sum += _c
-                _prev_sum = (_prev_sum + _p) if (_p is not None and _prev_sum is not None) else None
-            _row["합계"], _row["합계__prev"] = _cur_sum, _prev_sum
+                for _l in txs_labels:
+                    _pv = txc_prevs[_l]
+                    _p = _txs_scale(float(_pv.get((_t, _cat), 0.0)), cattxn_comp_days[_l]) if not _pv.empty else None
+                    _row[f"{_t}__{_l}"] = _p
+                    _psum[_l] = (_psum[_l] + _p) if (_p is not None and _psum[_l] is not None) else None
+            _row["합계"] = _cur_sum
+            for _l in txs_labels:
+                _row[f"합계__{_l}"] = _psum[_l]
             txc_rows.append(_row)
         txc_df = pd.DataFrame(txc_rows)
-        # 이번·직전 기간 모두 0인 카테고리는 빈 줄만 늘려서 뺀다. 나머지는 합계 거래액 큰 순.
-        txc_df = txc_df[(txc_df["합계"].abs() >= 0.5) | (txc_df["합계__prev"].fillna(0).abs() >= 0.5)]
-        txc_df = txc_df.sort_values("합계", ascending=False).reset_index(drop=True)
+        # 이번·비교 기간 모두 0인 카테고리는 빈 줄만 늘려서 뺀다. 나머지는 합계 거래액 큰 순.
+        _keep = txc_df["합계"].abs() >= 0.5
+        for _l in txs_labels:
+            _keep = _keep | (txc_df[f"합계__{_l}"].fillna(0).abs() >= 0.5)
+        txc_df = txc_df[_keep].sort_values("합계", ascending=False).reset_index(drop=True)
 
         def _txc_display_row(name, src):
             out = {"카테고리": name}
             for _g in txc_groups:
-                _c, _p = src[_g], src[f"{_g}__prev"]
-                out[_g] = _fmt_amt(_c)
-                out[f"{_g} {cattxn_immediate_label}"], out[f"{_g} {cattxn_immediate_label} 값"] = _txs_delta(_c, _p)
+                out[_g] = _fmt_amt(src[_g])
+                for _l in txs_labels:
+                    out[f"{_g} {_l}"], out[f"{_g} {_l} 값"] = _txs_delta(src[_g], src[f"{_g}__{_l}"])
             return out
 
         txc_total_src = {"카테고리": "합계(전체)"}
         for _g in txc_groups:
             txc_total_src[_g] = txc_df[_g].sum()
-            _prevs = txc_df[f"{_g}__prev"]
-            txc_total_src[f"{_g}__prev"] = None if _prevs.isna().any() else _prevs.sum()
+            for _l in txs_labels:
+                _prevs = txc_df[f"{_g}__{_l}"]
+                txc_total_src[f"{_g}__{_l}"] = None if _prevs.isna().any() else _prevs.sum()
         txc_display = pd.DataFrame(
             [_txc_display_row("합계(전체)", txc_total_src)] + [_txc_display_row(r["카테고리"], r) for _, r in txc_df.iterrows()]
         )
         render_comparison_table(
-            txc_display, delta_cols=[f"{g} {cattxn_immediate_label}" for g in txc_groups], bold_rows={"합계(전체)"},
-            groups=[{"title": g, "cols": [g, f"{g} {cattxn_immediate_label}"], "bg": TXN_GROUP_BG[g]} for g in txc_groups],
+            txc_display, delta_cols=[f"{g} {l}" for g in txc_groups for l in txs_labels], bold_rows={"합계(전체)"},
+            groups=[{"title": g, "cols": [g] + [f"{g} {l}" for l in txs_labels], "bg": TXN_GROUP_BG[g]} for g in txc_groups],
             sub_labels={**{g: "거래액" for g in txc_groups},
-                        **{f"{g} {cattxn_immediate_label}": cattxn_immediate_label for g in txc_groups}},
+                        **{f"{g} {l}": l for g in txc_groups for l in txs_labels}},
             highlight_cols=list(txc_groups),
         )
         st.caption(
-            f"📅 {cattxn_cur_label} vs {cattxn_immediate_label} 기간 · {cattxn_mode} 기준 · 합계 = 정상+이월+입점 · "
-            "카테고리는 합계 거래액이 큰 순서"
+            f"📅 {cattxn_cur_label} vs {' · '.join(txs_labels)} 기간 · {cattxn_mode} 기준 · 합계 = 정상+이월+입점 · "
+            "카테고리는 합계 거래액이 큰 순서 · 전년비는 전년 동요일(364일 전) 기준"
         )
 
     # ── 실적요약 (직전기간 · 전년비) ──
