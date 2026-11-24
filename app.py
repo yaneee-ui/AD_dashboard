@@ -21,7 +21,7 @@ from utils import (
     CATTXN_TXN_TYPE_OPTIONS, CATTXN_CHANNEL_OPTIONS, CATTXN_METRIC_OPTIONS,
     load_product_txn_data, top_products_by_revenue, brand_label,
     load_event_calendar, event_days_metrics, event_category_compare, event_breakdown_compare, EVENT_AVG_METRICS,
-    event_channel_total, event_source_mismatch_days, yoy_diagnosis, APP_ATTRIBUTION_DATE,
+    event_channel_total, event_source_mismatch_days, yoy_diagnosis, APP_ATTRIBUTION_DATE, category_efficiency_yoy,
     resolve_event_days, describe_event_pairs,
     top_products_excel_bytes, brand_ad_ep_response, AD_RESPONSE_CLASSES, NEW_PCT, ad_product_flow_points,
 )
@@ -1201,6 +1201,54 @@ elif menu == "전년비교":
                     dragmode="pan",
                 )
                 st.plotly_chart(fig2, use_container_width=True, config={"scrollZoom": True})
+
+            # ── 카테고리별 광고 효율 전년비 (광고비·ROAS·CR·CPC) ──
+            with st.container(key="card_yoy1_cateff"):
+                render_section_title("🧮 카테고리별 광고 효율 · 전년비")
+                st.caption(src_tag("adprod"))
+                _ce1, _ce2 = st.columns(2)
+                with _ce1:
+                    _ce_group = st.radio("기준", ["대카테고리", "중카테고리", "브랜드"], horizontal=True, key="yoy_cateff_group")
+                with _ce2:
+                    _ce_own = st.radio("구분", ["전체", "자사", "입점"], horizontal=True, key="yoy_cateff_own")
+                _ce_col = {"대카테고리": "대카테고리", "중카테고리": "중카테고리", "브랜드": "브랜드명"}[_ce_group]
+                _ce = category_efficiency_yoy(ad_product_df, cur_range, prev_range, _ce_col, _ce_own)
+                if _ce.empty:
+                    st.info("선택한 구간에 광고 상품 리포트 데이터가 없습니다. (보유 기간 밖이거나 최신일 미반영)")
+                else:
+                    _ce_total = _ce.iloc[[0]]
+                    _ce_rest = _ce.iloc[1:]
+                    _ce_rest = _ce_rest[(_ce_rest["광고비|올해"] + _ce_rest["광고비|전년"]) > 0].head(30)
+                    _ce = pd.concat([_ce_total, _ce_rest]).reset_index(drop=True)
+
+                    def _m(v):
+                        return "-" if pd.isna(v) else f"{v:,.0f}"
+
+                    _ce_disp = pd.DataFrame({_ce_group: _ce[_ce_col]})
+                    for _nm in ("판매액", "광고비", "클릭수"):
+                        _ce_disp[f"{_nm}(일평균)"] = _ce[f"{_nm}|올해"].apply(_m)
+                        _ce_disp[f"{_nm} 전년비"] = _ce[f"{_nm}|전년비"].apply(format_delta_text)
+                    for _nm, _f in (("ROAS", lambda v: "-" if pd.isna(v) else f"{v * 100:,.0f}%"),
+                                    ("CR", lambda v: "-" if pd.isna(v) else f"{v * 100:.2f}%"),
+                                    ("CPC", lambda v: "-" if pd.isna(v) else f"{v:,.0f}")):
+                        _ce_disp[f"{_nm}(전년)"] = _ce[f"{_nm}|전년"].apply(_f)
+                        _ce_disp[f"{_nm}(올해)"] = _ce[f"{_nm}|올해"].apply(_f)
+                        _ce_disp[f"{_nm} 전년비"] = _ce[f"{_nm}|전년비"].apply(format_delta_text)
+                    _ce_delta_cols = [c for c in _ce_disp.columns if c.endswith("전년비")]
+                    _ce_cur_cols = [c for c in _ce_disp.columns if c.endswith("(올해)") or c.endswith("(일평균)")]
+                    st.dataframe(
+                        _ce_disp.style.map(delta_cell_style, subset=_ce_delta_cols)
+                        .apply(lambda r: ["font-weight:700" if r.name == 0 else "" for _ in r], axis=1)
+                        .pipe(highlight_current, _ce_cur_cols),
+                        use_container_width=True, hide_index=True,
+                        height=min(35 * (len(_ce_disp) + 1) + 3, 560),
+                    )
+                    st.caption(
+                        f"📅 올해 {cur_start} ~ {cur_end} vs 전년 동요일(364일 전) · 판매액·광고비·클릭수는 일평균 · "
+                        "ROAS=판매액/광고비, CR=구매수량/클릭수, CPC=광고비/클릭수 · 맨 위 '합계'는 선택한 구분 전체 · 판매액 큰 순 상위 30개 · "
+                        "CPC는 낮아져도 클릭 품질이 떨어졌을 수 있어 CR과 함께 보세요."
+                        + (" · ⚠️ 11/18부터 APP 집계 시작으로 이후 구간은 효율이 높게 나올 수 있어요." if cur_end >= APP_ATTRIBUTION_DATE.date() else "")
+                    )
 
             with st.container(key="card_yoy1_table"):
                 render_section_title("📋 일자별 상세")

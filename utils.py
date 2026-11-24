@@ -1867,3 +1867,38 @@ def yoy_diagnosis(df: pd.DataFrame, cattxn: pd.DataFrame, ad_df, cur_days, prev_
                         "전년(APP 미집계) 대비 개선폭은 과대할 수 있으니 11/17 이전 구간끼리의 비교도 함께 보세요.")
     notes.append("규칙 기반 자동 해석이에요(같은 데이터면 같은 문장). 최신 하루(D-1)는 다음 날 보정될 수 있어요.")
     return {"tone": tone, "headline": headline, "reads": reads, "actions": actions, "notes": notes}
+
+
+def category_efficiency_yoy(ad_df, cur_days, prev_days, group: str = "대카테고리", own: str = "전체") -> pd.DataFrame:
+    """카테고리(또는 중카테고리/브랜드)별 광고 효율의 올해 vs 전년(동요일) 비교.
+    금액·클릭은 일평균, ROAS=판매액/광고비, CR=구매수량/클릭수, CPC=광고비/클릭수. 맨 위에 '합계' 행."""
+    cur_days, prev_days = pd.DatetimeIndex(cur_days), pd.DatetimeIndex(prev_days)
+    if ad_df is None or len(cur_days) == 0 or len(prev_days) == 0:
+        return pd.DataFrame()
+    cols = ["클릭수", "광고비", "구매수량", "판매액"]
+    base = ad_df if own == "전체" else ad_df[ad_df["자사/입점"] == own]
+    cur = base[base["date"].isin(cur_days)]
+    prev = base[base["date"].isin(prev_days)]
+    if cur.empty or prev.empty:
+        return pd.DataFrame()
+    nc, npv = cur["date"].nunique(), prev["date"].nunique()
+    A, B = prev.groupby(group)[cols].sum(), cur.groupby(group)[cols].sum()
+    x = A.join(B, lsuffix="_전", rsuffix="_후", how="outer").fillna(0)
+    tot = pd.DataFrame([x.sum()], index=["합계"])
+    x = pd.concat([tot, x.sort_values("판매액_후", ascending=False)])
+
+    def div(a, b):
+        return (a / b.where(b > 0))
+
+    out = pd.DataFrame(index=x.index)
+    for nm, a, b, scale in (("판매액", "판매액_후", "판매액_전", True), ("광고비", "광고비_후", "광고비_전", True),
+                            ("클릭수", "클릭수_후", "클릭수_전", True)):
+        out[f"{nm}|올해"] = x[a] / (nc if scale else 1)
+        out[f"{nm}|전년"] = x[b] / (npv if scale else 1)
+    out["ROAS|올해"], out["ROAS|전년"] = div(x["판매액_후"], x["광고비_후"]), div(x["판매액_전"], x["광고비_전"])
+    out["CR|올해"], out["CR|전년"] = div(x["구매수량_후"], x["클릭수_후"]), div(x["구매수량_전"], x["클릭수_전"])
+    out["CPC|올해"], out["CPC|전년"] = div(x["광고비_후"], x["클릭수_후"]), div(x["광고비_전"], x["클릭수_전"])
+    for m in ("판매액", "광고비", "클릭수", "ROAS", "CR", "CPC"):
+        out[f"{m}|전년비"] = (out[f"{m}|올해"] / out[f"{m}|전년"].where(out[f"{m}|전년"] > 0) - 1) * 100
+    out.index.name = group
+    return out.reset_index()
