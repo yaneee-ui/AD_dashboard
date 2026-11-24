@@ -1715,6 +1715,10 @@ def classify_comovement(sa_pct, ep_pct, threshold: float = 5.0):
 # '유입 / 유입 품질 / 전환 / 객단가' 중 어디가 가장 많이 빠졌는지 찾고, 어디서(정상·이월·입점/카테고리)와
 # 광고 효율(ROAS·전환율)로 연결해 액션까지 제안한다.
 # ════════════════════════════════════════════════════════════════
+# 2026-11-18부터 APP 실적도 쇼핑검색광고로 집계 (이전엔 광고 파라미터 유실로 EP 실적에 잡힘) → 효율 지표 단절 주의
+APP_ATTRIBUTION_DATE = pd.Timestamp("2026-11-18")
+
+
 def _arrow(p) -> str:
     if p is None or pd.isna(p):
         return "-"
@@ -1858,5 +1862,8 @@ def yoy_diagnosis(df: pd.DataFrame, cattxn: pd.DataFrame, ad_df, cur_days, prev_
             notes.append(f"비교 구간 중 전년은 행사 {ep}일, 올해는 행사 {ec}일이 포함돼 전년 기저가 높아요 — 행사가 겹치지 않는 날끼리는 '행사기간 비교' 탭에서 확인하세요.")
     except Exception:
         pass
+    if max(cur) >= APP_ATTRIBUTION_DATE:
+        notes.insert(0, "⚠️ 11/18부터 APP 실적도 쇼핑검색광고로 집계되기 시작해 이후 효율(ROAS·전환율 등)이 집계 변경 효과와 섞여 있어요 — "
+                        "전년(APP 미집계) 대비 개선폭은 과대할 수 있으니 11/17 이전 구간끼리의 비교도 함께 보세요.")
     notes.append("규칙 기반 자동 해석이에요(같은 데이터면 같은 문장). 최신 하루(D-1)는 다음 날 보정될 수 있어요.")
     return {"tone": tone, "headline": headline, "reads": reads, "actions": actions, "notes": notes}

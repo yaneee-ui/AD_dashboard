@@ -21,7 +21,7 @@ from utils import (
     CATTXN_TXN_TYPE_OPTIONS, CATTXN_CHANNEL_OPTIONS, CATTXN_METRIC_OPTIONS,
     load_product_txn_data, top_products_by_revenue, brand_label,
     load_event_calendar, event_days_metrics, event_category_compare, event_breakdown_compare, EVENT_AVG_METRICS,
-    event_channel_total, event_source_mismatch_days, yoy_diagnosis,
+    event_channel_total, event_source_mismatch_days, yoy_diagnosis, APP_ATTRIBUTION_DATE,
     resolve_event_days, describe_event_pairs,
     top_products_excel_bytes, brand_ad_ep_response, AD_RESPONSE_CLASSES, NEW_PCT, ad_product_flow_points,
 )
@@ -315,6 +315,22 @@ def _hex_to_rgba(hex_color: str, alpha: float) -> str:
     h = hex_color.lstrip("#")
     r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
     return f"rgba({r},{g},{b},{alpha})"
+
+
+def _mark_app_attribution(fig, use_date_axis: bool, x_vals) -> None:
+    """2026-11-18부터 APP 실적도 쇼핑검색광고로 집계 → 날짜축 차트에 기준선 표시(해석 시 단절 주의)."""
+    if not use_date_axis or not len(x_vals):
+        return
+    try:
+        if pd.Timestamp(max(x_vals)) < APP_ATTRIBUTION_DATE:
+            return
+    except Exception:
+        return
+    x = APP_ATTRIBUTION_DATE.strftime("%Y-%m-%d")
+    fig.add_shape(type="line", x0=x, x1=x, xref="x", y0=0, y1=1, yref="paper",
+                  line=dict(color="#DC2626", width=1.5, dash="dash"))
+    fig.add_annotation(x=x, xref="x", y=1, yref="paper", yanchor="bottom", xanchor="left",
+                       text="11/18 APP 집계 시작", showarrow=False, font=dict(size=11, color="#DC2626"))
 
 
 def _trend_xaxis(x_vals, is_daily: bool, tickformat: str = "%m/%d") -> dict:
@@ -1005,6 +1021,7 @@ if menu == "쇼핑검색광고 실적":
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0),
                     dragmode="pan",
                 )
+                _mark_app_attribution(fig, use_date_axis, x_vals)
                 st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True})
                 st.caption("📊 막대 나란히: 회색=올해 광고비 · 주황=전년 광고비(우측 보조축) · 거래액 라인에 마우스를 올리면 해당 시점 ROAS%가 함께 표시됩니다."
                           + (" 마우스 스크롤로 확대/축소, 클릭한 채로 드래그하면 좌우 이동됩니다." if use_date_axis else "")
@@ -1034,6 +1051,7 @@ if menu == "쇼핑검색광고 실적":
                     hovermode="closest",
                     dragmode="pan",
                 )
+                _mark_app_attribution(fig, use_date_axis, x_vals)
                 st.plotly_chart(fig, use_container_width=True, config={"scrollZoom": True})
                 if use_date_axis:
                     default_window_note = "최근 90일" if is_daily else "최근 약 12주"
